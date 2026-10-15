@@ -10,8 +10,8 @@
 > 3. `docs/FX_EXPLICADO.md` — Uber Fx do zero (só se for mexer em composição)
 > 4. `PLANO.md` — plano completo (decisões A1–A14, checklist por fase, cronograma)
 >
-> **Não comece a codar sem ler o método de trabalho (seção 3 abaixo). Ele foi ajustado
-> depois de duas correções do usuário e desrespeitá-lo quebra a confiança da sessão.**
+> **Não comece a codar sem ler o método de trabalho (seção 3). Ele foi ajustado depois de
+> três correções do usuário e desrespeitá-lo quebra a confiança da sessão.**
 
 ---
 
@@ -39,7 +39,7 @@ solução + `ARCHITECTURE.md`.
 | Item | Estado |
 | --- | --- |
 | Fase 0 (fundação + infraestrutura) | ✅ **CONCLUÍDA E VALIDADA** com containers reais |
-| Fase 1 (`Money`) | 🔄 **EM ANDAMENTO — Bloco 1 de ~8 pronto para ser digitado** |
+| Fase 1 (`Money`) | 🔄 **EM ANDAMENTO — Bloco 1 CONCLUÍDO pelo usuário; próximo é o Bloco 2** |
 | Fases 2–12 | ⬜ Não iniciadas (ver checklist no `PLANO.md` §3) |
 
 ### Já funciona e está provado
@@ -62,35 +62,45 @@ Evidências completas (saídas reais dos comandos): `docs/evidencias/FASE_0.md`
 
 ### Histórico de commits (mais recente primeiro)
 ```
+7e43206 docs: adiciona PROXIMO_PASSO.md (handoff para continuar na Fase 1)
 f1ec2da docs(plano): marca a Fase 0 como concluida e validada com infraestrutura real
 1aaaa27 fix(infra): localstack community fixado e script de filas corrigido
 1444707 docs: FX_EXPLICADO.md ensinando Uber Fx do zero
 36a101c docs: adiciona INFRAESTRUTURA.md explicando o que sao as pecas antes da configuracao
 967ed2c docs: guia didatico da Fase 0, questoes de fixacao e contexto entre sessoes
-706d799 docs(plano): registra conclusao da Fase 0, decisoes de ambiente e bloqueios
+706d799 docs(plano): registra conclusao da Fase 0, decisões de ambiente e bloqueios
 1eef5b2 chore(setup): fundacao do projeto com Fx, config validada, HTTP e observabilidade
 ```
+
+> ⚠️ **O Bloco 1 corrigido AINDA NÃO FOI COMMITADO.** O usuário acabou de aplicar a correção
+> do `errors.As` e ainda não rodou build/vet. **Primeira ação da nova conversa: validar e
+> commitar.**
 
 ---
 
 ## 3. ⭐ MÉTODO DE TRABALHO (NÃO NEGOCIÁVEL)
 
-O usuário pediu explicitamente e **duas vezes** reclamou que a IA foi rápida demais e
-jogou configuração/código sem explicar. O ritmo combinado agora é:
+O usuário pediu explicitamente e **três vezes** corrigiu a IA por ir rápido demais, jogar
+configuração/código sem explicar, ou escrever código questionável. O ritmo combinado é:
 
 | Regra | Como aplicar |
 | --- | --- |
 | **MODO B: linha a linha, juntos** | A IA explica um **bloco pequeno** (~10–25 linhas), **o usuário digita**, e só então vem o próximo bloco. A IA **não escreve o código do núcleo no arquivo** — o usuário escreve |
 | **Explicar ANTES de escrever** | Regra, conceito, exigência do enunciado e o "porquê" vêm **antes** do código |
 | **Um bloco por vez, com checkpoint** | Nunca entregar vários arquivos ou fases de uma vez. Esperar o usuário dizer "bloco N pronto" |
-| **O núcleo é do usuário** | `Money`, `Wallet`, `LedgerEntry`, `WagerTransaction` são escritos por ELE. A IA entrega contrato + revisão. Infraestrutura (compose, migrations, repos, workers, testes de integração) a IA pode escrever |
-| **Perguntar antes de avançar** | Se o usuário não entendeu, PARAR e explicar de novo. Perguntar "faz sentido?" ao fim de cada bloco |
+| **O núcleo é do usuário** | `Money`, `Wallet`, `LedgerEntry`, `WagerTransaction` são escritos por ELE. Infraestrutura (compose, migrations, repos, workers, testes de integração) a IA pode escrever |
+| **Perguntar antes de avançar** | Se o usuário não entendeu, PARAR e explicar de novo |
 | **Linguagem** | Português do Brasil, tom de mentor sênior, analogias concretas, tabelas comparativas |
-| **Quando usar `write`/`edit`** | Preferir que o usuário digite. Usar `write` apenas quando ele pedir explicitamente ou quando o arquivo pedido for do bloco corrente (e avisar que foi escrito) |
+| **Aceitar contestação** | ⭐ O usuário **questiona o código** e isso é bom. Quando ele contestar, avaliar com honestidade: se ele estiver certo, **admitir e corrigir**, explicando o motivo do erro. Nunca defender código ruim |
+| **Quando usar `write`/`edit`** | Preferir que o usuário digite. Usar `write` apenas quando ele pedir explicitamente. Nunca "corrigir" o arquivo dele em silêncio |
 
-**Alternativa se o relógio apertar:** o usuário autorizou que a IA complete o código
-sozinha **se o tempo estiver acabando**, seguindo o padrão já construído. Nesse caso,
-avisar antes e explicar o que foi feito.
+**⭐ Princípio de qualidade que o usuário já cobrou e que deve ser seguido:**
+> Antes de escrever qualquer helper, verificar se **já existe na biblioteca padrão**.
+> Se existir, usar a stdlib. "Evitar um import" **nunca** é justificativa — `errors`,
+> `strings`, `time` são gratuitos. Reimplementar `errors.As` à mão foi um erro já corrigido.
+
+**Alternativa se o relógio apertar:** o usuário autorizou que a IA complete o código sozinha
+**se o tempo estiver acabando**, seguindo o padrão já construído. Avisar antes e explicar.
 
 ---
 
@@ -105,7 +115,7 @@ $env:GOPATH='E:\jungleg\.gocache\gopath'
 ```
 O `Makefile` já faz isso. `/.gocache/` está no `.gitignore`.
 
-### 4.2. Docker (funciona, mas com duas particularidades)
+### 4.2. Docker (funciona, com duas particularidades)
 ```powershell
 $env:Path = "C:\Users\PoxZe\AppData\Local\Programs\DockerDesktop\resources\bin;$env:Path"
 ```
@@ -146,47 +156,14 @@ Detalhamento completo em `PLANO.md` §1 (A1–A14). Resumo do que afeta a Fase 1
 
 ---
 
-## 6. 🎯 A TAREFA PONTUAL: CONTINUAR A FASE 1 (`Money`) — BLOCO 1
+## 6. 🎯 A TAREFA PONTUAL: FASE 1 (`Money`) — VALIDAR O BLOCO 1 E ENTREGAR O BLOCO 2
 
-### 6.1. Situação exata
+### 6.1. Estado exato do Bloco 1
 
-A IA acabou de entregar o **Bloco 1 de ~8** (o tipo `Currency`) e pediu que o usuário:
+**O usuário JÁ DIGITOU o Bloco 1** em `internal\domain\money\money.go` e **JÁ APLICOU uma
+correção** que a IA recomendou (remover a função `asError` e usar `errors.As`).
 
-1. Criasse a pasta e o arquivo:
-   ```powershell
-   cd E:\jungleg
-   New-Item -ItemType Directory -Force -Path internal\domain\money | Out-Null
-   New-Item -ItemType File -Force -Path internal\domain\money\money.go | Out-Null
-   ```
-2. **Digitasse o Bloco 1** em `internal\domain\money\money.go`
-3. Respondesse **"bloco 1 pronto"**
-
-**⚠️ O usuário ainda NÃO confirmou que digitou.** A primeira coisa a fazer na nova conversa é
-**perguntar se ele digitou o Bloco 1**. Se não digitou, reenviar o Bloco 1 (está reproduzido
-na seção 6.3, para não depender do histórico). Se digitou, validar e seguir para o Bloco 2.
-
-### 6.2. Estrutura planejada do `money.go` (~8 blocos)
-
-| Bloco | Conteúdo | Estado |
-| --- | --- | --- |
-| **1** | Doc do pacote, `type Currency string`, `const BRL`, `type Error`, `Error()`, `Is()`, `asError()`, `ErrInvalidCurrency` | ⏳ entregue, aguardando o usuário digitar |
-| **2** | `ParseCurrency(s string) (Currency, error)` — valida ISO 4217 (exatamente 3 letras A–Z) | ⬜ |
-| **3** | `type Money struct { minor int64; currency Currency }` + `New(minor, currency)` (reidratação) + acessores `Minor()`, `Currency()` | ⬜ |
-| **4** | `Parse(amount, currency string) (Money, error)` — validação estrita de string decimal, com overflow | ⬜ |
-| **5** | `Zero(currency)`, `Add`, `Sub`, `Neg` — com guarda de overflow e moeda compatível | ⬜ |
-| **6** | `Cmp`, `Equal`, `IsZero`, `IsNegative`, `IsPositive`, `Sign` | ⬜ |
-| **7** | `String()` (`"975.00"`) e `MarshalJSON`/`UnmarshalJSON` (formato `{"amount":"25.00","currency":"BRL"}`) | ⬜ |
-| **8** | Testes do pacote (`money_test.go`) — tabela de casos: parsing feliz, limites, overflow, escala excedente, moedas incompatíveis, `NaN`/`Inf`, round-trip de serialização | ⬜ |
-
-### 6.3. CONTEÚDO DO BLOCO 1 (reproduzido — para reenviar se o usuário não tiver digitado)
-
-**Explicação a dar antes do código:**
-
-- `Money` precisa carregar a moeda; `Currency` é **tipo próprio** (não `string` solta) para o compilador impedir trocas acidentais.
-- Go não tem construtor obrigatório: validar **na fronteira** (parsing), não na "criação".
-- Erro tipado com `Code` estável atende ao item 6 do enunciado (`errors.Is`/`errors.As`).
-
-**Código do Bloco 1:**
+**O conteúdo esperado do arquivo agora é este** (alvo, após a correção):
 
 ```go
 // Package money define o value object monetário do domínio.
@@ -209,7 +186,10 @@ na seção 6.3, para não depender do histórico). Se digitou, validar e seguir 
 // Este pacote não importa nada que use float para dinheiro.
 package money
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // Currency é um código de moeda ISO 4217.
 //
@@ -242,26 +222,18 @@ func (e *Error) Error() string {
 
 // Is permite comparar erros por Code com errors.Is, mesmo quando o erro foi
 // envelopado com fmt.Errorf("...: %w", err) alguns níveis acima.
+//
+// Por que é necessário: os erros sentinela deste pacote são VALORES
+// (&Error{...}). Sem este método, errors.Is compararia ponteiros e dois &Error
+// com o mesmo Code seriam considerados diferentes. Comparamos o Code.
+//
+// Por que errors.As e não um loop próprio: errors.As já percorre a cadeia de
+// Unwrap, inclusive o formato de múltiplos filhos (Unwrap() []error) do Go
+// 1.20+. Reimplementar isso à mão seria reintroduzir bugs já resolvidos.
 func (e *Error) Is(target error) bool {
 	var other *Error
-	if ok := asError(target, &other); ok {
+	if errors.As(target, &other) {
 		return e.Code == other.Code
-	}
-	return false
-}
-
-// asError é um helper local que evita importar errors apenas para o Is.
-func asError(target error, into **Error) bool {
-	for target != nil {
-		if e, ok := target.(*Error); ok {
-			*into = e
-			return true
-		}
-		u, ok := target.(interface{ Unwrap() error })
-		if !ok {
-			return false
-		}
-		target = u.Unwrap()
 	}
 	return false
 }
@@ -272,43 +244,108 @@ var (
 )
 ```
 
-### 6.4. O que fazer quando o usuário disser "bloco 1 pronto"
+### 6.2. ⭐ PRIMEIRA AÇÃO: validar e commitar
 
-1. **Validar a compilação:**
-   ```powershell
-   $env:GOMODCACHE='E:\jungleg\.gocache\mod'; $env:GOCACHE='E:\jungleg\.gocache\build'; $env:GOPATH='E:\jungleg\.gocache\gopath'
-   cd E:\jungleg
-   go build ./internal/domain/money/
-   go vet ./internal/domain/money/
-   gofmt -l ./internal/domain/money/
-   ```
-   Se houver erro, explicar a causa **antes** de corrigir. Não corrigir silenciosamente.
+Antes de ensinar o Bloco 2, **validar** o que o usuário digitou:
 
-2. **Entregar o Bloco 2** (`ParseCurrency`), no mesmo formato do Bloco 1:
-   - O problema que resolve
-   - As decisões de design e o porquê
-   - O código para o usuário digitar
-   - Tabela explicando cada parte
-   - Pedir "bloco 2 pronto"
+```powershell
+$env:GOMODCACHE='E:\jungleg\.gocache\mod'; $env:GOCACHE='E:\jungleg\.gocache\build'; $env:GOPATH='E:\jungleg\.gocache\gopath'
+cd E:\jungleg
+go build ./internal/domain/money/
+go vet ./internal/domain/money/
+gofmt -l ./internal/domain/money/
+```
 
-3. **Ao chegar no Bloco 8 (testes)**, usar a **biblioteca padrão** (`testing`, table-driven tests,
-   `t.Run`, `t.Fatalf`) — o enunciado exige *"testes com `testing` e `go test`, incluindo
-   `-race`"*. Nunca introduzir testify ou outro framework de asserção.
+- **Se der erro:** explicar a causa **antes** de corrigir. Não corrigir em silêncio.
+- **Se compilar:** ler o arquivo do usuário (`read`), conferir se a correção do `errors.As`
+  foi aplicada corretamente (e se `asError` realmente sumiu), elogiar e seguir para o Bloco 2.
+- **Depois, commitar** (nada da Fase 1 foi commitado ainda):
+  ```
+  feat(money): adiciona o value object Currency com erro de dominio tipado
+  ```
 
-### 6.5. Casos de teste que a suíte do `Money` PRECISA cobrir
+### 6.3. Estrutura planejada do `money.go` (~8 blocos)
 
-Derivados diretamente do item 6.1 e do item 13 do enunciado:
+| Bloco | Conteúdo | Estado |
+| --- | --- | --- |
+| **1** | Doc do pacote, `Currency`, `BRL`, `type Error`, `Error()`, `Is()` (usando `errors.As`), `ErrInvalidCurrency` | ✅ **digitado e corrigido** |
+| **2** | `ParseCurrency(s string) (Currency, error)` + `Validate()` + `String()` — ISO 4217 (exatamente 3 letras A–Z) | ⬅ **PRÓXIMO** |
+| **3** | `type Money struct { minor int64; currency Currency }` + `New(minor, currency)` (reidratação) + `Minor()`, `Currency()` | ⬜ |
+| **4** | `Parse(amount, currency string) (Money, error)` — string decimal estrita, com overflow | ⬜ |
+| **5** | `Zero(currency)`, `Add`, `Sub`, `Neg` — com guarda de overflow e moeda compatível | ⬜ |
+| **6** | `Cmp`, `Equal`, `IsZero`, `IsNegative`, `IsPositive`, `Sign` | ⬜ |
+| **7** | `String()` (`"975.00"`) e `MarshalJSON`/`UnmarshalJSON` (`{"amount":"25.00","currency":"BRL"}`) | ⬜ |
+| **8** | Testes (`money_test.go`) — table-driven com a lib padrão | ⬜ |
+
+### 6.4. BLOCO 2 — o que ensinar (a IA deve COMPOR o código na hora, no formato do Bloco 1)
+
+**Formato obrigatório da entrega do bloco** (o usuário já validou este formato no Bloco 1):
+1. **Objetivo do bloco** em uma frase
+2. **O problema antes do código** — o que quebra se não existir
+3. **As decisões de design e o porquê** (tabela)
+4. **O código para o usuário digitar** (bloco Go completo)
+5. **Tabela explicando cada parte**
+6. **Checkpoint:** pedir "bloco 2 pronto" e oferecer explicação se algo não ficou claro
+
+**Conteúdo técnico obrigatório do Bloco 2:**
+
+| Item | Decisão a transmitir |
+| --- | --- |
+| Assinatura | `func ParseCurrency(s string) (Currency, error)` |
+| Validação | ISO 4217 **alfabético**: exatamente **3 letras ASCII maiúsculas** (`A`–`Z`). Isolar em `Validate()` |
+| Por que `Validate()` separado | Serve tanto para `ParseCurrency` quanto para reidratar do banco (Fase 5) |
+| Por que rejeitar minúsculas | Não normalizar silenciosamente. Aceitar `"brl"` e converter para `"BRL"` criaria dois códigos de hash de idempotência diferentes para a mesma entrada (o enunciado exige documentar normalizações) |
+| Por que rejeitar código numérico | ISO 4217 também tem código numérico (`986` = BRL), mas o contrato do desafio usa o **alfabético**. Aceitar os dois criaria ambiguidade |
+| Trim de espaços? | **Não** dentro de `ParseCurrency` — rejeitar. Normalização acontece na borda (Fase 7), explicitamente |
+| O que validar com `len` vs bytes | Usar iteração sobre bytes é suficiente (ASCII), mas **comentar** que o código é alfabético ASCII por definição da ISO 4217 — assim não há surpresa com UTF-8 |
+| Erro | `&Error{Code: CodeInvalidCurrency, Message: fmt.Sprintf("código de moeda inválido: %q (esperado 3 letras maiúsculas A-Z, ex.: \"BRL\")", s)}` |
+| `String()` | `func (c Currency) String() string { return string(c) }` — implementa `fmt.Stringer`, melhora logs e `%v` |
+
+**Doc comment sugerida para `ParseCurrency`** (explicar o contrato):
+```
+// ParseCurrency valida e converte uma string em Currency.
+//
+// Aceita exclusivamente o código ALFABÉTICO ISO 4217: exatamente três letras
+// maiúsculas ASCII (A-Z). Exemplos válidos: "BRL", "USD", "EUR".
+//
+// Rejeitados de propósito, com ErrInvalidCurrency:
+//   - string vazia ou só espaços
+//   - comprimento diferente de 3
+//   - letras minúsculas ("brl"), para não existirem duas representações do
+//     mesmo valor na chave de idempotência
+//   - código numérico ISO ("986"), porque o contrato externo usa o alfabético
+//   - dígitos, símbolos ou texto misturado ("R$", "BRL1", "B RL")
+//
+// Não há normalização aqui (trim, uppercase): a borda do sistema normaliza de
+// forma explícita e documentada. Este pacote rejeita em vez de adivinhar.
+```
+
+**Dica de implementação a indicar ao usuário** (sem escrever o código por ele):
+- Um laço `for i := 0; i < len(s); i++` com `s[i] < 'A' || s[i] > 'Z'` → erro
+- A comparação de bytes é correta **porque** o padrão é ASCII; o comentário deve dizer isso
+
+**Checkpoint do Bloco 2:** pedir para o usuário rodar
+```powershell
+go build ./internal/domain/money/ && go vet ./internal/domain/money/
+```
+E depois seguir para o Bloco 3 (`type Money struct`).
+
+### 6.5. Casos de teste que a suíte do `Money` PRECISA cobrir (Bloco 8)
+
+Derivados dos itens 5.1, 6.1 e 13 do enunciado:
 
 **Parsing válido:** `"0.00"`, `"25.00"`, `"1000.00"`, `"9999999999999999.99"` (limite)
-**Parsing inválido:** `""`, `" "`, `"25"` (sem casas?), `"25.0"`, `"25.000"` (**escala excedente**),
-`"25,00"`, `"NaN"`, `"Inf"`, `"-Inf"`, `"1e2"` (**notação científica**), `"+25.00"`, `" 25.00"`,
+**Parsing inválido:** `""`, `" "`, `"25.0"`, `"25.000"` (**escala excedente**), `"25,00"`,
+`"NaN"`, `"Inf"`, `"-Inf"`, `"1e2"` (**notação científica**), `"+25.00"`, `" 25.00"`,
 `"25.00 "`, `"abc"`, `"--25.00"`, valor acima do limite (**overflow no parse**)
+**Currency:** `"BRL"`, `"USD"` válidos; `""`, `"brl"`, `"BR"`, `"BRLL"`, `"B RL"`, `"986"`,
+`"R$"`, `"B1L"` inválidos; `errors.Is(err, ErrInvalidCurrency)` verdadeiro
 **Sinais:** negativos permitidos em `Money` interno, **rejeitados na entrada financeira externa**
 **Aritmética:** soma, subtração, negação, `Cmp`, `Equal`, `IsZero`, `Sign`
-**Overflow:** `Add` e `Sub` e `Neg` no limite → erro, nunca wrap silencioso
-**Moedas:** `BRL + USD` → `ErrCurrencyMismatch`; `Cmp` entre moedas diferentes → erro
+**Overflow:** `Add`, `Sub` e `Neg` no limite → erro, nunca wrap silencioso
+**Moedas:** `BRL + USD` → erro de moeda incompatível; `Cmp` entre moedas diferentes → erro
 **Serialização:** round-trip `MarshalJSON` → `UnmarshalJSON`; formato exato `{"amount":"25.00","currency":"BRL"}`
-**Auditoria anti-float (item 5.1, eliminatório):** nenhum `float32`/`float64` no pacote
+**Auditoria anti-float (item 5.1, ELIMINATÓRIO):** nenhum `float32`/`float64` no pacote
 
 ---
 
@@ -318,17 +355,17 @@ Do `CONTEXTO.md` §4: P1 (healthcheck do `api` no compose usa flag inexistente),
 `AccessLog` × `Recoverer`), P3 (`net.Listen` em vez de `select`+`time.After`), P4 (path
 `/internal/wallets` — o enunciado pede `POST /wallets`), P5 (registrar Postgres/SQS no grupo
 `health_checkers`), P6 (`cmd/migrate` não existe ainda — o compose o referencia),
-P7 (`StopTimeout` deve vir da config), P8 (testar SIGTERM real), P9/P10 (resolvidas: o clone
-vazio foi movido para `_backup_jungle_desafio_repo` e o `.git` residual removido).
+P7 (`StopTimeout` deve vir da config), P8 (testar SIGTERM real). P9/P10 **resolvidas**: o
+clone vazio do GitHub foi movido para `_backup_jungle_desafio_repo` e o `.git` residual removido.
 
 ---
 
 ## 8. CHECKLIST DE ARRANQUE PARA A NOVA CONVERSA
 
 - [ ] Ler `CONTEXTO.md`, `docs/INFRAESTRUTURA.md` e este arquivo
-- [ ] Confirmar com o usuário se o **Bloco 1** foi digitado em `internal/domain/money/money.go`
-- [ ] Se **não** digitou: reenviar o conteúdo da seção 6.3 e esperar
-- [ ] Se **digitou**: validar com `go build` / `go vet` / `gofmt` e reportar o resultado
-- [ ] Seguir para o **Bloco 2** (`ParseCurrency`) no formato: problema → decisões → código → explicação → checkpoint
-- [ ] Manter o cadence: **um bloco por vez**, explicar antes, perguntar se entendeu
-- [ ] Commitar ao fim da Fase 1 com mensagem no padrão do repositório (Conventional Commits em português, corpo explicando o porquê)
+- [ ] Rodar `go build` / `go vet` / `gofmt` em `./internal/domain/money/` e reportar o resultado
+- [ ] Ler o `money.go` do usuário e confirmar que a correção do `errors.As` foi aplicada (e que `asError` sumiu)
+- [ ] Commit do Bloco 1: `feat(money): adiciona o value object Currency com erro de dominio tipado`
+- [ ] Entregar o **Bloco 2** (`ParseCurrency`) no formato da seção 6.4: objetivo → problema → decisões → código → tabela → checkpoint
+- [ ] Manter o cadence: **um bloco por vez**, explicar antes, perguntar se entendeu, aceitar contestação
+- [ ] Commitar ao fim de cada bloco aprovado, com mensagem em Conventional Commits (português) e corpo explicando o porquê
