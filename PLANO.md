@@ -1,0 +1,499 @@
+# PLANO DE EXECUÇÃO — Desafio Backend Go (Processamento Distribuído de Apostas)
+
+> Documento vivo de trabalho. Fonte da verdade sobre **o que fazer, em que ordem, com quais decisões técnicas e o que já está pronto**.
+> O enunciado oficial (`README.md` da raiz) é o contrato. Este arquivo é o plano de ataque.
+> **Regra:** nada é considerado "pronto" sem código + teste que prove. Nada entra em `ARCHITECTURE.md` sem estar implementado.
+
+- **Prazo:** 2 dias
+- **Meta:** 100/100 (nenhum item eliminatório violado)
+- **Última atualização:** D0 — planejamento inicial
+
+---
+
+## 0. STATUS DO AMBIENTE (verificado em máquina)
+
+| Item | Status | Observação |
+| --- | --- | --- |
+| Go | ✅ `go1.26.5 windows/amd64` | `go.mod` vai declarar `go 1.25` (ver Decisão A1) |
+| git | ✅ `2.52.0.windows.1` | |
+| Docker / Compose | ❌ **NÃO INSTALADO** | **BLOQUEADOR CRÍTICO** — ver Bloqueador B1 |
+| openssl | ✅ msys64 | útil para gerar secrets locais |
+| winget | ✅ disponível | caminho para instalar Docker |
+| psql | ❌ | não é necessário (usaremos container + `make`) |
+
+### B1 — BLOQUEADOR CRÍTICO: Docker ausente
+Docker Compose é **obrigatório** no enunciado (PostgreSQL + Keycloak + LocalStack/MiniStack + app).
+Sem Docker **não existe**: teste de integração real (eliminatório se tudo virar mock), validação de constraints/migrations, concorrência com 3 instâncias, DLQ, outbox concorrente.
+
+**Ação imediata (usuário, hoje, em paralelo ao código):**
+```powershell
+winget install -e --id Docker.DockerDesktop
+```
+Depois: reiniciar a sessão/PC, abrir o Docker Desktop, `docker version`, `docker compose version`.
+Habilitar WSL2 se pedido (hoje o `wsl --status` deu `E_ACCESSDENIED`, provável falta de terminal elevado — testar em PowerShell **como administrador**).
+
+**Plano de contingência se Docker não subir a tempo:**
+1. Todo o código + testes unitários (`go test ./...`) não dependem de Docker → seguem 100% normais.
+2. Testes de integração com `//go:build integration` e `testcontainers-go`. Documentar no README como rodar.
+3. Se Docker só existir no fim: validar manualmente via `docker compose up` e rodar a suíte de integração uma vez.
+4. **Nunca** substituir PostgreSQL/SQS/IdP por mocks nos testes de integração (eliminatório).
+
+---
+
+## 1. DECISÕES DE ARQUITETURA (congeladas no D0)
+
+Estas decisões entram como texto no `ARCHITECTURE.md`. Congelar cedo evita refactor no dia 2.
+
+### A1. Versões e dependências
+| Uso | Escolha | Motivo |
+| --- | --- | --- |
+| Go | `go 1.25` no `go.mod` e `golang:1.25-alpine` no Dockerfile | toolchain local é 1.26.5, que compila 1.25; 1.25 é estável e sobe em CI/imagem |
+| HTTP router | `github.com/go-chi/chi/v5` | `net/http` puro, leve, middleware idiomático, `chi/httptest` |
+| Postgres driver | `github.com/jackc/pgx/v5` + `pgxpool` | exigido como preferencial ("SQL explícito") |
+| Migrations | `github.com/golang-migrate/migrate/v4` (embedded `iofs`) | up/down versionado, aplicável como comando e testável |
+| SQS | `github.com/aws/aws-sdk-go-v2/service/sqs` (+ `config`, `credentials`) | SDK oficial, funciona com LocalStack |
+| OIDC | `github.com/coreos/go-oidc/v3/oidc` + `github.com/golang-jwt/jwt/v5` | discovery + JWKS + verificação de assinatura/iss/aud/exp |
+| ULID/UUIDv7 | `github.com/google/uuid` (NewV7) | gera IDs no formato dos exemplos do enunciado |
+| Config | `github.com/caarlos0/env/v11` | struct tags, validação simples |
+| Métricas | `github.com/prometheus/client_golang` | `/metrics` Prometheus |
+| Testes | `testing` (padrão) + `go test -race` + `testcontainers-go` (só integração) | exigido: lib padrão |
+| Assertivas | stdlib puro (`t.Fatalf`, `errors.Is`) | sem testify → menos dependência, mais "Go way" |
+
+> Sem GORM, sem ORM. Sem `float64` em lugar nenhum (nem em JSON struct — dinheiro é **string**).
+
+### A2. Dinheiro (Money) — representação
+- Value object imutável: `type Money struct { minor int64; currency Currency }` (campos privados).
+- **Unidades mínimas `int64`** (centavos). Escala fixa **2**. Moeda ISO 4217 (`BRL`), `type Currency string`.
+- Persistência: `BIGINT` para `amount_minor` + `CHAR(3)` para `currency`. Nunca `NUMERIC`/`FLOAT`.
+- Limite: `|minor| <= 9_000_000_000_000_000` (~90 trilhões de unidades) — bem abaixo do `int64`, deixa folga para somas. Overflow tratado no parse, soma, subtração e negação → erro de domínio, nunca wrap.
+- `NaN`, `Infinity`, notação científica, `+`, espaços, mais de 2 casas, string vazia, negativo em entrada externa → **rejeitados com erro tipado** (sem arredondar).
+- `LOSS` = `"0.00"` exato; saldo de carteira nunca negativo; negativos só em diferenças internas.
+- JSON externo: `{"amount":"25.00","currency":"BRL"}` via tipo `MoneyDTO` com `MarshalJSON`/`UnmarshalJSON` em string.
+
+### A3. Transação SQL e delimitação
+- Uma **Unit of Work** (`internal/infra/postgres/uow.go`): abre `pgx.Tx` e injeta o `pgx.Tx` (via interface `DBTX`) nos repositórios.
+- **Toda** operação de negócio acontece em **uma única transação**: `wager_transactions` + `wallets` + `wallet_ledger_entries` + `inbox_messages` + `outbox_events`.
+- Interfaces de repositório definidas em `internal/domain` (ou `internal/app/ports`); implementação pgx em `internal/infra/postgres`. O serviço de aplicação é quem abre/fecha a transação — repositório **nunca** comita sozinho.
+- Advisory locks **não** serão usados. Locks globais proibidos (item 5.6).
+
+### A4. Concorrência por carteira — estratégia escolhida
+**Combinação justificável (e documentada):**
+1. **Row lock pessimista** na carteira: `SELECT ... FROM wallets WHERE id=$1 FOR UPDATE` (dentro da transação da operação). Serializa apenas escritores da **mesma** carteira.
+2. **Constraint de unicidade** `UNIQUE (wallet_id, transaction_id)` no ledger + `CHECK` de saldo/consistência como **rede de segurança final** (garantia no banco, item 5.3).
+3. `UPDATE wallets SET balance_minor=$1, version=version+1 WHERE id=$2` com guarda `AND version=$3` quando útil (detecção de lost update).
+- Ordem de aquisição sempre igual (`wallets` antes de `wager_transactions` de referência) → **sem deadlock**.
+- Carteiras diferentes não compartilham lock → paralelismo real (item 5.6).
+- Teste de prova (item 8): saldo 100.00 + duas BET de 80.00 simultâneas → 1 `PROCESSED`, 1 `REJECTED INSUFFICIENT_FUNDS`, saldo 20.00, **um** débito no ledger.
+
+### A5. Idempotência (persistente)
+- **Duas chaves de unicidade**, ambas no banco:
+  - `UNIQUE (provider_id, idempotency_key)` → chave enviada pelo cliente.
+  - `UNIQUE (provider_id, external_transaction_id)` → identidade financeira da operação (impede reaplicar com outra chave).
+- **Hash canônico** do payload de negócio: `sha256` sobre **JSON canônico** (chaves ordenadas, sem espaços, escala normalizada `"25.0"`→`"25.00"`, UTC RFC3339). **Exclui**: `Idempotency-Key`, `messageId`, `occurredAt`, headers, timestamps de transporte.
+  - Implementação: encoder próprio que ordena chaves (`internal/platform/canonicaljson`) — determinístico e testável.
+  - Mesmo algoritmo para HTTP e SQS (equivalência exigida no item 9). A chave no SQS é `data.idempotencyKey`.
+- Fluxo: se já existe registro com a chave →
+  - hash igual ⇒ **replay**: devolve resultado persistido (`status`, `balance` original, `failureCode`) com `idempotentReplay: true`;
+  - hash diferente ⇒ **409 conflito**;
+  - chave nova mas `(provider, externalTransactionId)` existente ⇒ **409** (não reaplica).
+- Persistência em `wager_transactions.result_balance_minor`/`result_currency` → replay devolve o saldo **do processamento original**, mesmo que a carteira tenha mudado depois.
+- Idempotência **nunca** só em memória (eliminatório).
+
+### A6. Máquina de estados (`WagerTransaction`)
+`PENDING → PROCESSED | REJECTED | FAILED | PENDING_REFERENCE` e `PENDING_REFERENCE → PROCESSED | REJECTED | FAILED`.
+- Terminal (`PROCESSED`, `REJECTED`, `FAILED`) nunca transiciona de novo → erro `ErrTerminalState`.
+- Transições validadas no **domínio** (métodos `MarkProcessed`, `MarkRejected`, `MarkFailed`, `WaitReference`), não no SQL.
+- Transitória x permanente: errno/classificação do driver + códigos `pgx` (ex.: `40001` serialization, `40P01` deadlock, `57P03` cannot_connect_now, `53300` too_many_connections, timeouts de contexto) ⇒ **retry**; violação de regra de negócio ⇒ **REJECTED**; esgotou tentativas de retry de infra ⇒ **FAILED** (auditável).
+- `PENDING` confirmado precisa de retomada durável por outra instância (item 6.3) → **não faremos aceite assíncrono por HTTP** (item 6.3 permite conclusão síncrona). O `PENDING` existe para: (a) referência ainda não resolvida (`PENDING_REFERENCE`), (b) registro criado na mesma transação e concluído logo em seguida (estado intermediário atômico, invisível fora da transação), (c) retomada pelo worker de pendências após crash se houver commit de aceite.
+  - **Decisão:** operações sem dependência são **síncronas** (sem commit intermediário de aceite), conforme permitido. `PENDING` durável fica restrito a `PENDING_REFERENCE` + um *reaper* que retoma `PENDING` antigos (defesa em profundidade, satisfaz literalmente a exigência).
+
+### A7. Referências e reversões
+- `REFUND`/`ROLLBACK` resolvem a referência por `(provider_id, external_transaction_id)`.
+- Precisa concordar em **provedor, jogador, carteira, moeda e rodada** e **valor igual** (sem reversão parcial).
+- `REFUND` só referencia `BET` processada. `ROLLBACK` só referencia `BET`/`WIN`/`REFUND` processada.
+- Sem referência ainda ⇒ grava `PENDING_REFERENCE`, emite `WagerTransactionPendingReference`, e o **worker de referências** reprocessa com **backoff exponencial** (base 5s, fator 2, jitter, teto 10min), persistido em `next_attempt_at` (sobrevive a restart). Máx. **24h/20 tentativas** → `REJECTED` com `REFERENCE_NOT_FOUND` + evento `WagerTransactionRejected`.
+  - Referência existe mas ainda `PENDING`/`PENDING_REFERENCE` ⇒ continua pendente (nova tentativa).
+  - Referência `REJECTED`/`FAILED` ⇒ `REJECTED` com `REFERENCE_NOT_PROCESSABLE` (definitivo).
+- **Dupla reversão bloqueada por constraint**: `UNIQUE (reference_transaction_id, kind) WHERE reference_transaction_id IS NOT NULL` → REFUND e ROLLBACK convivem, dois REFUND não.
+- Coerência REFUND+ROLLBACK sobre a mesma BET: aceito (um de cada), nunca devolvendo o mesmo débito duas vezes. Documentado em `ARCHITECTURE.md`.
+- `ROLLBACK` que exigiria débito > saldo ⇒ `REJECTED` com `ROLLBACK_INSUFFICIENT_FUNDS` (**código diferente** de `INSUFFICIENT_FUNDS` da aposta — exigido no item 7).
+
+### A8. Códigos de falha (`failureCode` estáveis)
+| Código | Situação | Corrigível? |
+| --- | --- | --- |
+| `INVALID_REQUEST` | schema/valor inválido (400) | sim |
+| `INVALID_MONEY` | formato/valor de dinheiro inválido | sim |
+| `CURRENCY_MISMATCH` | moeda ≠ moeda da carteira | sim |
+| `IDEMPOTENCY_KEY_REQUIRED` | header/`idempotencyKey` ausente | sim |
+| `IDEMPOTENCY_CONFLICT` | mesma chave, payload/hash diferente | não |
+| `REFERENCE_REQUIRED` | reversão sem `referenceExternalTransactionId` | sim |
+| `REFERENCE_NOT_FOUND` | referência não existe (TTL esgotado) | não |
+| `REFERENCE_NOT_PROCESSABLE` | referência existe mas rejeitada/falha | não |
+| `REFERENCE_MISMATCH` | referência diverge em provedor/jogador/carteira/moeda/rodada | não |
+| `INSUFFICIENT_FUNDS` | `BET` sem saldo | sim (com saldo) |
+| `ROLLBACK_INSUFFICIENT_FUNDS` | `ROLLBACK` sem saldo | não |
+| `OPERATION_NOT_ALLOWED` | `OPENING` via HTTP/SQS, tipo desconhecido | sim |
+| `ALREADY_REVERSED` | referência já revertida para o mesmo tipo | não |
+| `WALLET_NOT_FOUND` | carteira inexistente | sim |
+| `WALLET_CONFLICT` | abrir carteira duplicada `(playerId,currency)` | não |
+| `LOSS_AMOUNT_NOT_ZERO` | `LOSS` com valor ≠ 0.00 | sim |
+| `PROCESSING_FAILED` | falha permanente de infra | não |
+
+### A9. HTTP — contrato de respostas
+| Situação | Status | Corpo |
+| --- | --- | --- |
+| Nova operação processada | `201` | `{transactionId,status,balance,idempotentReplay:false}` |
+| Replay idempotente | `200` | idem com `idempotentReplay:true` (saldo original) |
+| `PENDING_REFERENCE` | `202` | `{transactionId,status:"PENDING_REFERENCE",failureCode:null}` |
+| `PENDING` em andamento | `202` | `{transactionId,status:"PENDING"}` |
+| Rejeição de negócio | `422` | `{transactionId,status:"REJECTED",failureCode}` |
+| Entrada inválida | `400` | `{error:{code,failureCode,message}}` |
+| Conflito (chave/hash/carteira) | `409` | `{error:{code,failureCode,message}}` |
+| Sem/inválido token | `401` | `{error:{code:"UNAUTHORIZED"}}` |
+| Provedor errado / operação interna | `403` | `{error:{code:"FORBIDDEN"}}` |
+| Indisponibilidade transitória | `503` + `Retry-After` | `{error:{code:"SERVICE_UNAVAILABLE"}}` |
+| Erro inesperado | `500` | `{error:{code:"INTERNAL"}}` |
+
+- `POST /wallets`: `201`; duplicado `409`; `initialBalance` zero ⇒ carteira sem `OPENING`/ledger/eventos.
+- Ledger paginado: cursor opaco `base64url(createdAt RFC3339Nano | entryId)` + `ORDER BY created_at, id` estável; `limit` default 50, máx 200; resposta com `nextCursor`.
+- `GET /providers/:providerId/...`: `:providerId` **tem** que bater com o claim do token, senão `403`.
+- `Idempotency-Key` obrigatório em `POST /wagering/transactions`; **nunca** substituída silenciosamente por uma calculada.
+
+### A10. Autenticação e autorização (Keycloak)
+- Realm `jungleg`, dois clients `client_credentials`:
+  - `provider-service`: role `provider`; token com claim `provider_id` (protocol mapper).
+  - `internal-service`: role `internal`; usado pelo worker SQS/app→app.
+- Middleware `auth`: discovery **OIDC** do realm, JWKS com cache e rotação, valida `iss`, `aud`, `exp`, `nbf`, assinatura `RS256`.
+- Regras:
+  - `POST /wagering/transactions`, `GET /providers/:providerId/...` → role `provider` **ou** `internal`; se `provider`, `providerId` do token = `providerId` do corpo/rota (**isolamento entre provedores**, inclusive em replay e leitura).
+  - `POST /wallets` (**abertura interna**), `GET /wallets*`, `POST /wallets/:id/reconciliation` → apenas role `internal` (provedor recebe `403` sem efeito financeiro).
+  - Auditoria de `providerId` do token vs. payload em **toda** consulta/replay.
+- `/health/live`, `/health/ready`, `/metrics` públicos.
+- Provisionamento automático: `deploy/keycloak/realm.json` importado com `--import-realm` (realm, clients, secrets de exemplo, roles, usuários de teste). Comando de obtenção de token documentado no README.
+- Falha do IdP indisponível ⇒ `503` (não `500`) e **nenhum efeito financeiro**.
+
+### A11. Inbox / Outbox
+**Inbox** (`inbox_messages`): `UNIQUE (consumer_name, message_id)`, `body_hash`, `received_at`, `completed_at`, `status`, `failure_code`.
+- Fluxo do consumidor **em uma transação**: `INSERT inbox` → (duplicado? compara `body_hash`: igual ⇒ pula; diferente ⇒ rejeita/audita) → processa domínio → grava outbox → `UPDATE inbox.completed_at` → **commit** → **só então** `DeleteMessage`.
+- Falha transitória ⇒ não deleta, visibility timeout devolve a mensagem (retry com backoff).
+- Rejeição de negócio ⇒ marca `inbox` concluída como rejeitada e **deleta** (terminal).
+- Mensagem inválida (JSON inválido, schema, `kind=OPENING`) ⇒ `inbox` reaproveitada + `fail` após N tentativas ⇒ **DLQ** (`wager-transactions-dlq.fifo`), sem efeito financeiro.
+- Referência pendente: a mensagem é concluída **após** persistir `PENDING_REFERENCE` (item 6.5) — o worker de referências assume.
+
+**Outbox** (`outbox_events`): `event_id` (estável, PK), `aggregate_id`, `event_type`, `event_version`, `payload` (snapshot imutável), `occurred_at`, `correlation_id`, `causation_id`, `attempts`, `next_attempt_at`, `published_at`, `locked_by`, `locked_until`.
+- Publisher: `SELECT ... WHERE published_at IS NULL AND next_attempt_at<=now() AND (locked_until IS NULL OR locked_until<now()) ORDER BY occurred_at FOR UPDATE SKIP LOCKED LIMIT n` → marca lease (`locked_by`,`locked_until`) → **commit** → publica → `UPDATE published_at=now()` (nova transação).
+- Recuperação de trabalho abandonado: lease expirado volta a ser elegível (crash entre commit e publicação, e entre publicação e confirmação).
+- Backoff exponencial + jitter em `next_attempt_at`; `attempts` incrementa; esgotou ⇒ alerta/métrica (mantém para intervenção, `attempts` alto).
+- Republicação preserva `eventId` (SQS FIFO dedup por `MessageDeduplicationId=eventId`, além de sink idempotente).
+- **Nunca** publicar antes do commit (eliminatório). Só o publisher toca no SQS de saída.
+
+### A12. Eventos
+Envelope: `eventId`, `eventType`, `aggregateId`, `correlationId`, `causationId?`, `occurredAt`, `version`, `data` tipado.
+| `eventType` | Gatilho | `MessageGroupId` | Payload `data` |
+| --- | --- | --- | --- |
+| `WagerTransactionProcessed` | sucesso (inclui `LOSS`) | `walletId` | ids, kind, provider, round, game, money, status, balanceAfter? |
+| `WagerTransactionRejected` | rejeição definitiva | `walletId` | ids, kind, failureCode, money |
+| `WalletBalanceChanged` | mudança efetiva de saldo | `walletId` | `walletId,transactionId,direction,money,balanceBefore,balanceAfter,walletVersion` |
+| `WagerTransactionPendingReference` | espera por referência | `walletId` | ids, kind, referenceExternalTransactionId, attempt, nextAttemptAt |
+- `LOSS` e rejeições: **sem** `WalletBalanceChanged`. Tipo/versão definidos pelo construtor do evento.
+- Fila de saída provisionada: `wallet-events.fifo` (+ DLQ `wallet-events-dlq.fifo`) — destino documentado no README.
+- Filas de entrada: `wager-transactions.fifo` (`MessageGroupId=walletId` para ordenar por carteira; `MessageDeduplicationId=idempotencyKey`), DLQ `wager-transactions-dlq.fifo` com redrive `maxReceiveCount=5`.
+- `content-based dedup` **não** é usado (dedup persistente é a nossa).
+
+### A13. Observabilidade
+- `log/slog` JSON handler; campos sempre que disponíveis: `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId`, `eventId`, `kind`, `failureCode`, `durationMs`.
+- **Nunca** logar token, secret, payload financeiro completo nem `Authorization`.
+- Métricas Prometheus: `wager_operations_total{kind,status}`, `wager_idempotent_replays_total`, `wager_inbox_duplicates_total`, `wager_retries_total{stage}`, `wager_dlq_messages_total`, `wager_tx_conflicts_total`, `outbox_pending_age_seconds` (histograma/gauge), `outbox_publish_total{result}`, `wager_processing_duration_seconds{kind,status}`, `wallet_reconciliation_divergences_total`.
+- `/health/live` (processo vivo) e `/health/ready` (ping PostgreSQL + `GetQueueAttributes`/`ListQueues` no SQS, com timeout de 2s).
+
+### A14. Fx / ciclo de vida
+- Módulos: `config`, `observability`, `postgres`, `sqs`, `auth`, `repository`, `usecase`, `http`, `worker`, `app`.
+- `fx.Provide` apenas construtores; `fx.Invoke` para: registrar rotas, subir `http.Server`, iniciar workers, rodar migrations (flag).
+- `fx.Lifecycle`:
+  - `OnStart`: validar config → pingar dependências → migrations (opcional) → provisionar/iniciar servidor e workers.
+  - `OnStop`: **parar de aceitar novas entradas** (`http.Server.Shutdown` com timeout) → cancelar contexto dos workers → aguardar conclusão dentro do prazo (ou liberar visibilidade das mensagens SQS para reentrega segura) → fechar pool SQS/pgx **depois** dos consumidores (`fx.StopTimeout` = 25s).
+- `SIGTERM`/`SIGINT` via `fx.Shutdowner` / `signal.NotifyContext`.
+- Domínio sem importar Fx, HTTP, SQS ou pgx (verificável por `go list -deps`).
+
+---
+
+## 2. ESTRUTURA DE PASTAS (alvo)
+
+```
+jungleg/
+├── README.md                     # da solução (substitui/envelopa o do desafio) — ver §6
+├── ARCHITECTURE.md               # decisões — ver §6
+├── PLANO.md                      # este arquivo
+├── .env.example
+├── .gitignore
+├── .golangci.yml                 # lint opcional (diferencial)
+├── Makefile                      # up/down/test/test-race/vet/migrate/lint
+├── Dockerfile                    # multi-stage, golang:1.25-alpine
+├── docker-compose.yml            # postgres, keycloak, localstack(+init), app, migrator
+├── go.mod / go.sum
+├── cmd/
+│   ├── api/main.go               # fx.New(app.Module) + Shutdowner
+│   ├── migrate/main.go           # up/down/version/force
+│   └── outbox-publisher/main.go  # (opcional) publisher isolado para provar 2 publishers
+├── deploy/
+│   ├── localstack/init-queues.sh # cria filas FIFO + DLQ + redrive
+│   └── keycloak/realm.json       # realm, clients, roles, usuários, mappers
+├── migrations/
+│   ├── 000001_init.up.sql / .down.sql
+│   └── ...                       # versionadas, com rollback documentado
+├── internal/
+│   ├── config/                   # env → Config + Validate()
+│   ├── domain/
+│   │   ├── money/                # money.go, currency.go, errors.go, money_test.go
+│   │   ├── wallet/               # wallet.go, ledger_entry.go, repository.go(port), errors.go
+│   │   └── wagering/             # transaction.go, kind.go, status.go, failure.go, errors.go
+│   ├── app/
+│   │   ├── ports/                # interfaces (uow, clock, idgen, publisher, inbox, outbox)
+│   │   └── wagering/             # service.go (BET/WIN/LOSS/REFUND/ROLLBACK), opening.go, reconcile.go
+│   ├── infra/
+│   │   ├── postgres/             # pool.go, uow.go, wallet_repo.go, txn_repo.go, ledger_repo.go,
+│   │   │                         # inbox_repo.go, outbox_repo.go, reconcile_repo.go, errors.go
+│   │   ├── sqsx/                 # client.go, producer.go, consumer.go, queue_provisioner.go
+│   │   └── auth/                 # oidc verifier, jwks cache, claims
+│   ├── httpapi/                  # server.go, router.go, middleware/(auth,correlation,logging,recover,
+│   │   │                         # metrics,timeout), handlers/(wallets,wagering,health,reconciliation),
+│   │   │                         # dto/, problem.go (erros → status)
+│   ├── worker/                   # outbox_publisher.go, reference_worker.go, pending_reaper.go,
+│   │   │                         # sqs_consumer.go, runner.go (supervisão/erros)
+│   ├── observability/            # logger.go, metrics.go, correlation.go
+│   └── platform/                 # canonicaljson/, clock/, idgen/, retry/, cursor/
+├── test/
+│   ├── integration/              # //go:build integration (testcontainers)
+│   └── e2e/                      # cenários de 3 instâncias, falhas, HTTP×SQS
+└── docs/
+    ├── ESTADO.md                 # log de progresso (o que fiz/andando/falta) — atualizado a cada passo
+    └── evidencias/               # saídas de go test -race, curls, métricas (prova para o avaliador)
+```
+
+---
+
+## 3. CHECKLIST MESTRE
+
+Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` feito e **validado por teste** · `[!]` bloqueado
+
+### FASE 0 — Fundação (D0, ~1h30)
+- [ ] `git init`, `.gitignore` (`bin/`, `.env`, `coverage.out`)
+- [ ] `go mod init github.com/<user>/jungleg` + dependências de A1 + `go mod tidy`
+- [ ] `internal/config`: `Config` via env com `Validate()` (falha no boot se inválida) — itens obrigatórios: `DATABASE_URL`, `SQS_ENDPOINT`, `SQS_REGION`, filas, `OIDC_ISSUER`, `OIDC_AUDIENCE`, `HTTP_ADDR`, timeouts
+- [ ] `.env.example` completo (sem segredos reais)
+- [ ] `internal/platform/clock` (interface `Clock` + `Real`/`Fake`) e `idgen` (UUIDv7)
+- [ ] `Makefile` (`up`, `down`, `logs`, `migrate-up`, `migrate-down`, `test`, `test-race`, `test-integration`, `vet`, `lint`, `fmt`)
+- [ ] `Dockerfile` multi-stage (build estático `CGO_ENABLED=0` → `distroless`/`alpine`, usuário non-root)
+- [ ] `docker-compose.yml` com `postgres:16`, `keycloak`, `localstack`, `localstack-init`, `migrate`, `api` (healthchecks + `depends_on: condition: service_healthy`)
+- [ ] `deploy/localstack/init-queues.sh`: 4 filas FIFO (2 entrada+DLQ, 2 saída+DLQ) + redrive policy (`maxReceiveCount=5`) + visibility timeout
+- [ ] `deploy/keycloak/realm.json`: realm `jungleg`, clients `provider-service`/`internal-service`, roles, `provider_id` mapper, usuários de teste
+- [ ] **Validar:** `docker compose up -d postgres keycloak localstack && docker compose run --rm localstack-init` e conferir filas com `aws sqs list-queues`
+
+### FASE 1 — Domínio `Money` (D0, ~2h) 💰 núcleo
+- [ ] `money.Currency`: validação ISO 4217 (3 letras maiúsculas), `BRL`
+- [ ] `money.New(minor int64, cur Currency)` (reidratação, permite qualquer sinal)
+- [ ] `money.Parse(amount, currency string) (Money, error)` — escala fixa 2, rejeita vazio/`NaN`/`Inf`/científica/`+`/espaços/>2 casas/overflow
+- [ ] `Zero(cur)`, `Add`, `Sub`, `Neg` (com tratamento de overflow), `Cmp`, `IsZero`, `IsNegative`, `IsPositive`, `Equal`, `Minor()`, `Currency()`, `String()` (`"975.00"`), `MarshalJSON`/`UnmarshalJSON`
+- [ ] `errors.go`: `ErrInvalidMoney`, `ErrCurrencyMismatch`, `ErrOverflow`, `ErrScaleExceeded` + `errors.Is`/`As` (`*MoneyError` com campo `Code`)
+- [ ] Testes de mesa (`money_test.go`): parsing feliz, limites (`±9_000_000_000_000_000`), overflow em add/sub/neg, escala, moedas incompatíveis, serialização round-trip, **nenhum `float` no pacote** (revisão manual + teste de grep no CI)
+- [ ] `go test -race ./internal/domain/money/...`
+
+### FASE 2 — Domínio `Wallet` + `LedgerEntry` (D0, ~2h)
+- [ ] `Wallet`: campos privados (`id, playerID, currency, balance, version, createdAt, updatedAt`)
+- [ ] `NewWallet(playerID, initial Money, now)` → version `1`; separado de `RehydrateWallet(...)` (**sem** reaplicar movimentações nem eventos)
+- [ ] `Debit(m)`, `Credit(m)` → validam moeda da carteira; débito nunca deixa saldo negativo (`ErrInsufficientFunds`); incrementam `version` **apenas** quando o saldo muda; atualizam `updatedAt`
+- [ ] `LedgerEntry`: `NewEntry(txnID, walletID, direction, money, balanceBefore)` valida `balanceAfter = before ± money`; imutável (`RehydrateEntry`)
+- [ ] Regras: `(playerID, currency)` único; `LOSS` e rejeições não geram lançamento
+- [ ] Testes: invariantes, débito sem saldo, moeda errada, versão, ledger (antes/depois), reidratação não reaplica
+
+### FASE 3 — Domínio `WagerTransaction` (D0, ~2h)
+- [ ] `Kind` (`OPENING/BET/WIN/LOSS/REFUND/ROLLBACK`) com `ParseKind`, `IsExternal()`
+- [ ] `Status` (`PENDING/PENDING_REFERENCE/PROCESSED/REJECTED/FAILED`) com `IsTerminal()`
+- [ ] Construtor `NewWagerTransaction(...)` validando obrigatórios por origem (interna `OPENING` x externa)
+- [ ] Transições validadas (`ErrInvalidTransition`, `ErrTerminalState`)
+- [ ] `referenceExternalTransactionId` obrigatório p/ `REFUND`/`ROLLBACK`; valor `>0` para BET/WIN/REFUND/ROLLBACK; `LOSS` exige `0.00`
+- [ ] `failureCode` (tabela A8) + `result_balance` persistido
+- [ ] Eventos de domínio (structs tipadas + envelope, A12) com `New...Event()` definindo `type`/`version`
+- [ ] Testes: todos os tipos, política de zero, transições válidas/inválidas, terminal, `OPENING` rejeitado de fora
+
+### FASE 4 — Schema, migrations e constraints (D1, ~2h30) 🗄️
+- [ ] `000001_init.up.sql`: `players`(se necessário), `wallets`, `wager_transactions`, `wallet_ledger_entries`, `inbox_messages`, `outbox_events`
+- [ ] `000001_init.down.sql` (drop na ordem inversa)
+- [ ] Constraints obrigatórias:
+  - [ ] `wallets`: `UNIQUE (player_id, currency)`, `CHECK (balance_minor >= 0)`, `CHECK (version >= 1)`
+  - [ ] `wallet_ledger_entries`: `CHECK (balance_after_minor = balance_before_minor + CASE direction WHEN 'CREDIT' THEN amount_minor ELSE -amount_minor END)`, `CHECK (amount_minor > 0)`, `UNIQUE (wallet_id, transaction_id)`, `UNIQUE (id)`, imutabilidade
+  - [ ] `wager_transactions`: `UNIQUE (provider_id, idempotency_key)`, `UNIQUE (provider_id, external_transaction_id)`, `UNIQUE (reference_transaction_id, kind) WHERE reference_transaction_id IS NOT NULL`, `UNIQUE (idempotency_key) WHERE kind='OPENING'` (impede crédito inicial duplicado), `CHECK (kind <> 'OPENING' OR provider_id IS NULL)`
+  - [ ] `inbox_messages`: `UNIQUE (consumer_name, message_id)`
+  - [ ] `outbox_events`: `UNIQUE (event_id)`, `CHECK (attempts >= 0)`
+- [ ] Imutabilidade do ledger **no banco**: trigger `BEFORE UPDATE OR DELETE ... RAISE EXCEPTION` (+ `GRANT` restrito, documentado)
+- [ ] Índices: `wallets(player_id)`, `wallet_ledger_entries(wallet_id, created_at DESC, id DESC)`, `wager_transactions(provider_id, external_transaction_id)`, `wager_transactions(status, next_attempt_at)`, `outbox_events(published_at, next_attempt_at, occurred_at)`
+- [ ] `wager_transactions` distingue origem interna/externa (`origin` gerada/`CHECK`)
+- [ ] `cmd/migrate` (up/down/version/force) com `iofs` embed + documentação de reversão
+- [ ] **Validar:** container Postgres + `migrate up`/`down`/`up` + testes de constraint que **esperam erro** (saldo negativo, ledger duplicado, update/delete no ledger, chave duplicada)
+
+### FASE 5 — Persistência (pgx) + Unit of Work (D1, ~4h)
+- [ ] `postgres.NewPool` (`pgxpool`) com timeouts e `MaxConns`; `Ping` para readiness
+- [ ] `uow.Run(ctx, fn func(ctx, Repos) error)` → `BeginTx` (`Serializable`? **Não**: `ReadCommitted` + `FOR UPDATE`, justificar), `Commit`/`Rollback` com `defer`, contexto com timeout
+- [ ] `WalletRepo`: `Insert`, `GetByID`, `GetByIDForUpdate` (**row lock**), `GetByPlayerAndCurrency`, `UpdateBalance(id, newBalance, newVersion, expectedVersion?)`
+- [ ] `TxnRepo`: `Insert`, `GetByID`, `GetByProviderAndExternalID`, `GetByIdempotencyKey`, `MarkProcessed/MarkRejected/MarkFailed/WaitReference`, `ListPendingReferencesDue(now)`, `ListStalePending`, `ListByWallet` (cursor)
+- [ ] `LedgerRepo`: `Insert` (append-only), `ListByWalletCursor`, `SumSignedByWallet` (reconciliação)
+- [ ] `InboxRepo`: `InsertIfAbsent`, `Get`, `MarkCompleted`, `MarkFailed`
+- [ ] `OutboxRepo`: `Insert`, `ClaimBatch` (`FOR UPDATE SKIP LOCKED` + lease), `MarkPublished`, `MarkRetry`, `PendingStats`
+- [ ] Classificação de erros: `errors.go` mapeando `pgx`/`pgconn.PgError` (`23505` unique, `23514` check, `40001`, `40P01`, `57P03`, `53300`) → `ErrConflict`, `ErrTransient`, `ErrPermanent`
+- [ ] Testes de integração (testcontainers): cada repo, `SKIP LOCKED` com 2 conexões, lost update, atomicidade (rollback não deixa resíduo)
+
+### FASE 6 — Caso de uso (aplicação) `wagering.Service` (D1, ~4h) 🧠 coração
+- [ ] `Process(ctx, Request) (Result, error)`: **1 transação** para idempotência + domínio + ledger + outbox + inbox
+  1. valida `Idempotency-Key`; calcula hash canônico; `SELECT` por chave/externalID
+  2. replay (hash igual) → resultado persistido; conflito (hash diferente / externalID com outra chave) → `409`
+  3. carrega carteira `FOR UPDATE` (valida player/moeda)
+  4. resolve referência (REFUND/ROLLBACK) → ausente: `PENDING_REFERENCE` + evento + `202`; presente: valida concordâncias/valor/dupla reversão
+  5. aplica movimentação no agregado (`Debit`/`Credit`), cria `LedgerEntry`, `UPDATE` saldo+versão
+  6. `INSERT` transação `PROCESSED`/`REJECTED` + resultado + `failureCode`
+  7. `INSERT` outbox (`Processed`/`Rejected`/`WalletBalanceChanged` / `PendingReference`)
+  8. commit → só então o chamador pode publicar (publisher lê a outbox; **nunca** publicamos inline)
+- [ ] `OpenWallet(ctx, req)` (interno): cria carteira + `OPENING PROCESSED` + crédito + 2 eventos **no mesmo commit**; zero ⇒ sem `OPENING`/ledger/eventos
+- [ ] `GetTransaction`, `GetByProviderExternalID` (com checagem de provedor), `GetWallet`, `ListLedger(cursor)`, `Reconcile(walletID)`
+- [ ] `Reconcile`: soma do ledger (incluindo `OPENING`) vs. saldo armazenado em **visão consistente** (`REPEATABLE READ`/snapshot único) → `difference = stored - calculated`, `checkedEntries`; divergência ⇒ log + métrica + resposta; **não altera saldo**
+- [ ] Política de retry para `ErrTransient` (máx 3 tentativas, backoff curto) → esgotou = `FAILED` auditável
+- [ ] Testes unitários com **fakes em memória** (ports): cada tipo de operação, replay, conflito, referência ausente, dupla reversão, rollback sem saldo (`ROLLBACK_INSUFFICIENT_FUNDS`), `LOSS` sem ledger, `OPENING`
+- [ ] Testes de integração: mesmo `Process` contra Postgres real; 100% dos caminhos de erro com `failureCode` correto
+
+### FASE 7 — HTTP + Auth (D1 noite → D2 manhã, ~4h)
+- [ ] `chi` router + middlewares: `Recoverer`, `correlationID`, `logging` (slog JSON), `metrics`, `timeout`, `auth`
+- [ ] `problem.go`: mapeamento erro→status conforme A9 (nunca vazar stack/erro de driver)
+- [ ] `POST /wallets` (role `internal`), `GET /wallets/:id`, `GET /wallets/:id/ledger?cursor&limit`, `POST /wallets/:id/reconciliation` (role `internal`)
+- [ ] `POST /wagering/transactions` (+ header `Idempotency-Key` obrigatório) e `GET /wagering/transactions/:id`
+- [ ] `GET /providers/:providerId/wagering/transactions/:externalTransactionId` com isolamento por token
+- [ ] `GET /health/live`, `GET /health/ready`, `GET /metrics`
+- [ ] DTOs com validação estrita (`DisallowUnknownFields`, limites de tamanho de corpo, `Content-Type` obrigatório)
+- [ ] Auth: OIDC discovery + JWKS cache/rotação; valida `iss/aud/exp/nbf/alg`; roles e `provider_id` do token; `401/403` conforme A9; **IdP fora ⇒ 503 sem efeito financeiro**
+- [ ] Testes: httptest com servidor OIDC de teste (assinatura real) — token ausente/inválido/expirado/role errada/provedor errado; isolamento em replay e leitura; nenhum efeito financeiro em acesso negado
+
+### FASE 8 — SQS: consumidor, inbox, retry, DLQ (D2, ~4h)
+- [ ] `sqsx.Producer`: `SendMessage` FIFO (`MessageGroupId`, `MessageDeduplicationId`, `MessageAttributes` com `eventType`/`eventId`)
+- [ ] `sqsx.QueueProvisioner`: cria filas/DLQ/redrive se ausentes (usado por `localstack-init` e por flag de boot); usado no readiness
+- [ ] `sqsx.Consumer`: long polling (`WaitTimeSeconds=20`), batch, prefetch **limitado** (semáforo = `MaxConcurrency`), `VisibilityTimeout` compatível com o processamento
+- [ ] Fluxo inbox (A11) compartilhando **o mesmo** `wagering.Service` do HTTP
+- [ ] Retry: transitório ⇒ não deleta (backoff por visibility timeout) + `ChangeMessageVisibility` para backoff explícito; `attempts` da inbox incrementa
+- [ ] DLQ: `ApproximateReceiveCount > 5` ou erro permanente ⇒ mensagem permanece/`DeleteMessage` conforme política + métrica `wager_dlq_messages_total`
+- [ ] `SIGTERM`: para de buscar (`ReceiveMessage` cancelado), conclui o lote em andamento dentro do prazo (`fx.StopTimeout`), senão **libera visibilidade** (`ChangeMessageVisibility 0`) para reentrega segura
+- [ ] Testes de integração: reentrega da mesma mensagem (`messageId` igual → inbox dedup), hash divergente em reentrega, rejeição terminal deleta, transitório reentrega, mensagem inválida → DLQ, concorrência HTTP×SQS para a mesma operação
+
+### FASE 9 — Outbox publisher + worker de referências (D2, ~3h)
+- [ ] `worker.OutboxPublisher`: loop com `ClaimBatch`/lease/publish/`MarkPublished`/`MarkRetry`; N publishers concorrentes; recuperação de lease expirado; republicação com mesmo `eventId`
+- [ ] `worker.ReferenceWorker`: busca `PENDING_REFERENCE` vencidas (`next_attempt_at <= now`, `FOR UPDATE SKIP LOCKED`), tenta resolver, backoff exponencial + jitter, TTL/máx. tentativas → `REJECTED REFERENCE_NOT_FOUND` + evento
+- [ ] `worker.PendingReaper`: retoma `PENDING` antigos (segurança extra item 6.3)
+- [ ] `worker.Runner`: supervisão com `errgroup`, backoff em falha de loop, logs e métricas; shutdown limpo
+- [ ] Testes: 2 publishers disputando a mesma outbox (nenhuma publicação duplicada perdida; disputa provada); crash entre commit e publish; crash entre publish e `MarkPublished` (republica com mesmo `eventId`); REFUND antes da referência ⇒ resolve depois; expiração ⇒ `REJECTED`
+
+### FASE 10 — Concorrência e recuperação (D2, ~3h) 🏁 nota pesada (20 + 15 + 15)
+- [ ] **T1** mesma aposta 50× em paralelo → **um** débito, saldo correto, replays devolvem mesmo resultado
+- [ ] **T2** saldo 100.00 + duas BET 80.00 simultâneas → 1 `PROCESSED`, 1 `REJECTED/INSUFFICIENT_FUNDS`, saldo 20.00, **1** lançamento; reenvios não alteram
+- [ ] **T3** carteiras distintas em paralelo (provar paralelismo: tempo/locks distintos + ausência de lock global)
+- [ ] **T4** cenários repetidos com **3 instâncias independentes** (3 containers `api` no compose com portas distintas, conexões/memória próprias)
+- [ ] **T5** interromper consumidor **depois do commit e antes do delete** → reentrega ⇒ nenhuma movimentação duplicada
+- [ ] **T6** dois publishers disputando a outbox ⇒ recuperação de publicação
+- [ ] **T7** `REFUND`/`ROLLBACK` antes da referência ⇒ resolução posterior **e** rejeição por expiração
+- [ ] **T8** reiniciar app ⇒ idempotência, pendências e consistência preservadas; interromper após `PENDING` confirmado (se houver) e outra instância retoma
+- [ ] Conferência final: saldo armazenado == soma de créditos − débitos do ledger; cenários cruzando HTTP e SQS
+- [ ] `go test -race ./...` verde nas suítes aplicáveis
+
+### FASE 11 — Observabilidade e polimento (D2, ~2h)
+- [ ] Logs JSON com todos os IDs; nenhum segredo/payload financeiro completo
+- [ ] Todas as métricas de A13 expostas e com teste mínimo
+- [ ] `go vet ./...`, `gofmt -l .` vazio, `go mod tidy` limpo
+- [ ] Teste da composição Fx: `fx.ValidateApp`, start/stop, `fx.StopTimeout`, liberação de recursos dos workers (sem goroutine leak: `goleak` opcional)
+- [ ] Revisão anti-eliminatórios (§4 abaixo) item por item, com evidência
+
+### FASE 12 — Documentação e entrega (D2, ~2h)
+- [ ] `README.md`: pré-requisitos, variáveis de ambiente, **inicialização das filas**, migrations (aplicar e reverter), execução, exemplos `curl` autenticados, comandos de teste, provisionamento do IdP + identidades de teste, execução de integração/múltiplas instâncias/simulações de falha, build tags
+- [ ] `.env.example`
+- [ ] `ARCHITECTURE.md`: dinheiro, transações, idempotência (hash/algoritmo/campos/normalizações), locks/concorrência, referências pendentes, reversões (matriz REFUND/ROLLBACK), inbox/outbox, autenticação/autorização, Fx/ciclo de vida/shutdown, máquina de estados + transitório×permanente, HTTP (status/corpos), SQS (MessageGroupId/DeduplicationId/visibility/limites/DLQ), **limitações, interpretações e trabalho não concluído**
+- [ ] `docs/evidencias/`: saídas de `go test -race`, curls, `/metrics` (prova para o avaliador)
+- [ ] `docker compose up --build` do zero em clone limpo funciona (teste real!)
+
+---
+
+## 4. CHECKLIST DOS ELIMINATÓRIOS (revisar antes de entregar)
+
+| # | Eliminatório | Como provamos |
+| --- | --- | --- |
+| E1 | Sem autenticação efetiva nos endpoints de negócio | testes com servidor OIDC real (401/403) + middleware cobrindo todos os endpoints de negócio |
+| E2 | Acesso não autorizado a operações/transações | teste de isolamento entre provedores (leitura, replay, `:providerId` divergente) |
+| E3 | Cálculo monetário em ponto flutuante | `int64` minor units; auditoria `grep -Rn "float32\|float64" internal/` vazia; teste de parse com `NaN`/`Inf` |
+| E4 | Saldo negativo por concorrência | `CHECK (balance_minor >= 0)` + `FOR UPDATE` + T2/T1 |
+| E5 | Movimentação duplicada | constraints únicas + replay persistido + T1/T2/T5/T7 |
+| E6 | Idempotência só em memória | tabelas/constraints + T8 (restart) |
+| E7 | Depender de uma única instância | T3/T4 (3 instâncias, workers com lease/SKIP LOCKED) |
+| E8 | Publicação antes do commit | outbox transacional + publisher externo; teste de crash entre commit e publish |
+| E9 | Ausência de ledger auditável | `wallet_ledger_entries` append-only + trigger + reconciliação |
+| E10 | Substituir PostgreSQL/SQS/IdP por mocks nos testes | integração com testcontainers (containers reais) ou compose real |
+
+---
+
+## 5. CRONOGRAMA DE 2 DIAS
+
+### DIA 1
+| Janela | Foco | Entregável verificável |
+| --- | --- | --- |
+| 0h–1h30 | Fase 0 | `go build ./...` OK, compose de infra sobe, filas criadas |
+| 1h30–3h30 | Fase 1 | `go test -race ./internal/domain/money/...` verde |
+| 3h30–5h30 | Fases 2 e 3 | domínio completo + testes verdes |
+| 5h30–8h | Fase 4 | migrations up/down + testes de constraint |
+| 8h–12h | Fase 5 | repositórios + UoW + integração (testcontainers) |
+
+### DIA 2
+| Janela | Foco | Entregável verificável |
+| --- | --- | --- |
+| 0h–4h | Fase 6 | `wagering.Service` completo + unit + integração |
+| 4h–8h | Fase 7 | API + auth com testes de isolamento |
+| 8h–12h | Fase 8 | consumidor SQS + inbox + DLQ |
+| 12h–15h | Fase 9 | outbox publisher + reference worker |
+| 15h–18h | Fase 10 | T1–T8, `-race` |
+| 18h–20h | Fases 11 e 12 | observabilidade + docs + evidências |
+
+> **Regra de ouro:** ao fim de cada janela, o commit tem que deixar `go build ./... && go test ./...` verde. Nunca acumular código quebrado.
+> **Corte de escopo se atrasar** (nesta ordem): `LOSS`+`reconciliation` simplificados → tracing/OTel (já é opcional) → load tests (opcional) → `PendingReaper`. **Nunca** cortar: auth, idempotência, ledger, constraints, outbox, T1/T2.
+
+---
+
+## 6. CONVENÇÕES DE CÓDIGO (padrão que vamos seguir)
+
+- `context.Context` como primeiro parâmetro em todo I/O; `defer rollback` idiomático; erros envolvidos com `%w`.
+- Erros de domínio: tipos + sentinelas, `errors.Is/As`, **nunca** `panic` para rejeição de negócio.
+- Construtores validam; campos privados; zero value inválido ⇒ erro (nunca silencioso).
+- Interfaces pequenas e definidas no **consumidor** (`ports`), não no fornecedor.
+- Nada de variável global mutável; dependências injetadas por construtor (Fx).
+- `Money` sempre por valor (é value object imutável); `*Wallet` quando há mutação.
+- Nomes de tabela/coluna em `snake_case`; colunas de dinheiro terminam em `_minor` + `_currency`.
+- Comentários de "porquê", não de "o quê". Documentar toda decisão não óbvia também no `ARCHITECTURE.md`.
+- Testes: `t.Run` com nomes descritivos em tabela, `t.Parallel()` onde seguro, `-race` na CI, helpers `testdata` para payloads.
+- Build tags: unit (padrão) e `//go:build integration` (containers reais) — comandos documentados.
+
+---
+
+## 7. LOG DE PROGRESSO (atualizar a cada passo)
+
+Formato: `[data] [fase] status — o que foi feito / decisão / bloqueio`.
+
+- **D0** — Fase 0 (parcial) — Workspace destravado (ACL do Windows). Toolchain verificada: Go 1.26.5 ✅, git ✅, **Docker ausente ❌ (B1)**. Plano, decisões A1–A14 e checklist criados neste arquivo.
+- _pendente_ — Fase 0 — scaffolding, compose, filas, realm.
+
+### Próximos 3 passos imediatos
+1. **Usuário:** instalar Docker Desktop (`winget install -e --id Docker.DockerDesktop`) e confirmar `docker compose version`.
+2. **Usuário:** decidir o nome do módulo Go (ex.: `github.com/<seu-usuario>/jungleg`) e criar o repositório no GitHub (entrega será por repo).
+3. **Nós:** Fase 0 (go.mod, config, Makefile, Dockerfile, compose, init-queues.sh, realm.json) e Fase 1 (Money + testes).
+
+---
+
+## 8. PONTOS DE ATENÇÃO / DÚVIDAS DE INTERPRETAÇÃO (resolver e documentar)
+
+1. **`OPENING` e saldo zero**: zero ⇒ sem `OPENING`, sem ledger, sem eventos financeiros (itens 9 e 7). Carteira ainda é criada.
+2. **`LOSS` processa sem ledger** mas produz `WagerTransactionProcessed`; **não** incrementa `version`.
+3. **`WIN` com referência de aposta da mesma rodada**: opcional ("pode informar"). Trataremos como referência **opcional** que, se enviada, é validada (mesma rodada/provedor/jogador/carteira/moeda) e persistida.
+4. **`REFUND`+`ROLLBACK` na mesma BET**: ambos permitidos (um de cada tipo), nunca dois do mesmo tipo (constraint). Documentar como não há dupla devolução do mesmo débito.
+5. **Aceite assíncrono**: **não** implementaremos para operações sem dependência (permitido pelo item 6.3: "podem ser concluídas de forma síncrona, sem commit intermediário de aceite").
+6. **Nível de isolamento**: `READ COMMITTED` + `SELECT ... FOR UPDATE` explícito (justificar em `ARCHITECTURE.md`); reconciliação em snapshot consistente.
+7. **Moeda**: apenas `BRL` nos cenários principais, mas o tipo carrega moeda e há testes de incompatibilidade (exigido).
+8. **Tracing OTel / partidas dobradas / load test**: diferenciais opcionais — só se sobrar tempo (nesta ordem de prioridade).

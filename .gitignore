@@ -1,0 +1,27 @@
+# --- Build artifacts ---
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+coverage.out
+coverage.html
+
+# --- Local environment / secrets ---
+.env
+.env.local
+*.pem
+*.key
+
+# --- Go workspace-local module cache (used because the global cache is not writable) ---
+/.gocache/
+
+# --- Editors / OS ---
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Local containers data (if ever bound to a folder instead of a volume) ---
+/.data/
