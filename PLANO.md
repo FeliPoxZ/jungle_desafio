@@ -6,7 +6,8 @@
 
 - **Prazo:** 2 dias
 - **Meta:** 100/100 (nenhum item eliminatório violado)
-- **Última atualização:** D0 — planejamento inicial
+- **Repositório:** `github.com/FeliPoxZ/jungle_desafio`
+- **Última atualização:** D0 — Fase 0 concluída (commit `1eef5b2`)
 
 ---
 
@@ -478,12 +479,17 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` feito e **validado por te
 Formato: `[data] [fase] status — o que foi feito / decisão / bloqueio`.
 
 - **D0** — Fase 0 (parcial) — Workspace destravado (ACL do Windows). Toolchain verificada: Go 1.26.5 ✅, git ✅, **Docker ausente ❌ (B1)**. Plano, decisões A1–A14 e checklist criados neste arquivo.
-- _pendente_ — Fase 0 — scaffolding, compose, filas, realm.
+- **D0** — **Fase 0 CONCLUÍDA** (commit `1eef5b2`) — módulo `github.com/FeliPoxZ/jungle_desafio`; 14 dependências fixadas; `Dockerfile` multi-stage com `TARGET` (api/migrate); `docker-compose.yml` com PostgreSQL 16 + Keycloak 26.4 + LocalStack + migrations + api; `deploy/localstack/init-queues.sh` (4 filas FIFO + DLQ + redrive idempotente); `deploy/keycloak/realm.json` (3 clients + `jungleg-api` como audience, roles `provider`/`internal`, claim `provider_id`, usuários de teste); `Makefile`; `.env.example`; `.gitignore`; `internal/config` com validação única; `internal/observability` (slog com correlação automática + métricas Prometheus); `internal/httpapi` (middlewares, erros tipados, health, /metrics); `internal/app` (composição Fx + ciclo de vida + shutdown gracioso).
+  - **Testes verdes:** `config` (11 casos inválidos + defaults), `httpapi` (health/ready/down, correlação, timeout, panic→500, 8 mapeamentos de erro, Retry-After), `observability` (correlação, redact, 13 métricas, nil-safe), `app` (grafo Fx + falha de config).
+  - **Smoke test real:** aplicação subiu em `:8099`, respondeu `/health/live` `{"status":"UP"}`, `/health/ready`, `/metrics` (métricas `jungleg_*` expostas) e `404` em rota inexistente; logs com `correlationId`/`requestId` automáticos.
+  - **Decisões de ambiente novas:** cache de módulos do Go movido para `.gocache/` DENTRO do workspace (o cache global `C:\Users\PoxZe\go` não é gravável nesta máquina) — o `Makefile` e o `.gitignore` já refletem isso.
+  - **Achado a resolver:** existe `E:\jungleg\jungle_desafio\` — um SEGUNDO repositório git (clone vazio do GitHub, só `.gitattributes`). Precisa ser removido ou o workspace precisa ser reorganizado; um repo dentro de outro impede o commit do conteúdo.
+- **B1 segue ABERTO** — Docker Desktop ainda não instalado; nada de compose/integração foi validado até agora (todo o código acima foi validado sem Docker).
 
 ### Próximos 3 passos imediatos
-1. **Usuário:** instalar Docker Desktop (`winget install -e --id Docker.DockerDesktop`) e confirmar `docker compose version`.
-2. **Usuário:** decidir o nome do módulo Go (ex.: `github.com/<seu-usuario>/jungleg`) e criar o repositório no GitHub (entrega será por repo).
-3. **Nós:** Fase 0 (go.mod, config, Makefile, Dockerfile, compose, init-queues.sh, realm.json) e Fase 1 (Money + testes).
+1. **Usuário:** confirmar a instalação do Docker (`docker version` e `docker compose version`).
+2. **Usuário:** decidir o que fazer com a pasta `jungle_desafio` (segundo repo git).
+3. **Nós:** Fase 1 — `Money` (núcleo, escrito pelo usuário com contrato e revisão) + Fase 2/3 (Wallet, Ledger, WagerTransaction).
 
 ---
 
