@@ -62,6 +62,7 @@ Evidências completas (saídas reais dos comandos): `docs/evidencias/FASE_0.md`
 
 ### Histórico de commits (mais recente primeiro)
 ```
+3a36aec feat(money): adiciona o value object Currency com erro de dominio tipado   ← BLOCO 1
 7e43206 docs: adiciona PROXIMO_PASSO.md (handoff para continuar na Fase 1)
 f1ec2da docs(plano): marca a Fase 0 como concluida e validada com infraestrutura real
 1aaaa27 fix(infra): localstack community fixado e script de filas corrigido
@@ -72,9 +73,9 @@ f1ec2da docs(plano): marca a Fase 0 como concluida e validada com infraestrutura
 1eef5b2 chore(setup): fundacao do projeto com Fx, config validada, HTTP e observabilidade
 ```
 
-> ⚠️ **O Bloco 1 corrigido AINDA NÃO FOI COMMITADO.** O usuário acabou de aplicar a correção
-> do `errors.As` e ainda não rodou build/vet. **Primeira ação da nova conversa: validar e
-> commitar.**
+> ✅ **O Bloco 1 ESTÁ COMMITADO E VALIDADO** (commit `3a36aec`), com working tree limpo:
+> `go build`, `go vet` e `gofmt -l` sem apontamentos em `./internal/domain/money/`.
+> **Não revalide nem recommite o Bloco 1.** Vá direto para o **Bloco 2** (seção 6.4).
 
 ---
 
@@ -156,14 +157,12 @@ Detalhamento completo em `PLANO.md` §1 (A1–A14). Resumo do que afeta a Fase 1
 
 ---
 
-## 6. 🎯 A TAREFA PONTUAL: FASE 1 (`Money`) — VALIDAR O BLOCO 1 E ENTREGAR O BLOCO 2
+## 6. 🎯 A TAREFA PONTUAL: FASE 1 (`Money`) — ENTREGAR O BLOCO 2
 
-### 6.1. Estado exato do Bloco 1
+### 6.1. Estado exato: Bloco 1 CONCLUÍDO
 
-**O usuário JÁ DIGITOU o Bloco 1** em `internal\domain\money\money.go` e **JÁ APLICOU uma
-correção** que a IA recomendou (remover a função `asError` e usar `errors.As`).
-
-**O conteúdo esperado do arquivo agora é este** (alvo, após a correção):
+**O usuário digitou o Bloco 1, aplicou uma correção sugerida pela IA e o código foi
+validado e commitado** (`3a36aec`). Conteúdo atual de `internal\domain\money\money.go`:
 
 ```go
 // Package money define o value object monetário do domínio.
@@ -181,9 +180,8 @@ correção** que a IA recomendou (remover a função `asError` e usar `errors.As
 //
 // float64 é binário e não representa decimais exatamente: 0.1 + 0.2 não é 0.3.
 // Em um ledger financeiro, esse resíduo se acumula e a soma dos lançamentos
-// deixa de fechar com o saldo. O enunciado (item 5.1) proíbe ponto flutuante
-// em parsing, cálculo, serialização e persistência — e é item ELIMINATÓRIO.
-// Este pacote não importa nada que use float para dinheiro.
+// deixa de fechar com o saldo.
+
 package money
 
 import (
@@ -197,42 +195,27 @@ import (
 // impede trocar a moeda por qualquer texto em uma chamada de função.
 type Currency string
 
-// BRL é o único código usado nos cenários principais do desafio.
 const BRL Currency = "BRL"
 
-// Códigos de erro estáveis. O Code é o que vira failureCode no contrato HTTP.
 const (
 	CodeInvalidCurrency = "INVALID_CURRENCY"
 )
 
 // Error é o erro de domínio do pacote money.
-//
-// Existe para atender ao item 6 do enunciado: erros de domínio precisam ser
-// classificáveis por tipo (errors.As) e por valor (errors.Is). O campo Code é
-// estável e documentado, enquanto Message é descritivo para humanos.
 type Error struct {
 	Code    string
 	Message string
 }
 
-// Error faz *Error satisfazer a interface error.
 func (e *Error) Error() string {
 	return fmt.Sprintf("money: %s: %s", e.Code, e.Message)
 }
 
 // Is permite comparar erros por Code com errors.Is, mesmo quando o erro foi
 // envelopado com fmt.Errorf("...: %w", err) alguns níveis acima.
-//
-// Por que é necessário: os erros sentinela deste pacote são VALORES
-// (&Error{...}). Sem este método, errors.Is compararia ponteiros e dois &Error
-// com o mesmo Code seriam considerados diferentes. Comparamos o Code.
-//
-// Por que errors.As e não um loop próprio: errors.As já percorre a cadeia de
-// Unwrap, inclusive o formato de múltiplos filhos (Unwrap() []error) do Go
-// 1.20+. Reimplementar isso à mão seria reintroduzir bugs já resolvidos.
 func (e *Error) Is(target error) bool {
 	var other *Error
-	if errors.As(target, &other) {
+	if ok := errors.As(target, &other); ok {
 		return e.Code == other.Code
 	}
 	return false
@@ -244,31 +227,27 @@ var (
 )
 ```
 
-### 6.2. ⭐ PRIMEIRA AÇÃO: validar e commitar
+**Decisão de estilo do usuário a respeitar:** ele **enxugou os comentários** do Bloco 1
+(removeu os comentários longos sobre `Is`/`errors.As` e o bloco de explicação do `asError`).
+Ou seja: **ele prefere comentários mais curtos**. Nos próximos blocos, manter apenas os
+comentários que explicam **decisões**, não os que repetem o código. Não encher de doc
+comment onde o nome da função já diz o que faz.
 
-Antes de ensinar o Bloco 2, **validar** o que o usuário digitou:
+### 6.2. ⭐ PRIMEIRA AÇÃO: nada a revalidar — vá para o Bloco 2
 
-```powershell
-$env:GOMODCACHE='E:\jungleg\.gocache\mod'; $env:GOCACHE='E:\jungleg\.gocache\build'; $env:GOPATH='E:\jungleg\.gocache\gopath'
-cd E:\jungleg
-go build ./internal/domain/money/
-go vet ./internal/domain/money/
-gofmt -l ./internal/domain/money/
+O Bloco 1 está validado e commitado. Opcionalmente, ler o arquivo para se familiarizar com
+o estilo do usuário (seção 6.1 acima já reproduz o conteúdo).
+
+**Depois de entregar o Bloco 2 e o usuário aprovar, commitar** no padrão do repositório:
 ```
-
-- **Se der erro:** explicar a causa **antes** de corrigir. Não corrigir em silêncio.
-- **Se compilar:** ler o arquivo do usuário (`read`), conferir se a correção do `errors.As`
-  foi aplicada corretamente (e se `asError` realmente sumiu), elogiar e seguir para o Bloco 2.
-- **Depois, commitar** (nada da Fase 1 foi commitado ainda):
-  ```
-  feat(money): adiciona o value object Currency com erro de dominio tipado
-  ```
+feat(money): adiciona ParseCurrency com validacao ISO 4217
+```
 
 ### 6.3. Estrutura planejada do `money.go` (~8 blocos)
 
 | Bloco | Conteúdo | Estado |
 | --- | --- | --- |
-| **1** | Doc do pacote, `Currency`, `BRL`, `type Error`, `Error()`, `Is()` (usando `errors.As`), `ErrInvalidCurrency` | ✅ **digitado e corrigido** |
+| **1** | Doc do pacote, `Currency`, `BRL`, `type Error`, `Error()`, `Is()` (com `errors.As`), `ErrInvalidCurrency` | ✅ **commitado (`3a36aec`)** |
 | **2** | `ParseCurrency(s string) (Currency, error)` + `Validate()` + `String()` — ISO 4217 (exatamente 3 letras A–Z) | ⬅ **PRÓXIMO** |
 | **3** | `type Money struct { minor int64; currency Currency }` + `New(minor, currency)` (reidratação) + `Minor()`, `Currency()` | ⬜ |
 | **4** | `Parse(amount, currency string) (Money, error)` — string decimal estrita, com overflow | ⬜ |
@@ -363,9 +342,13 @@ clone vazio do GitHub foi movido para `_backup_jungle_desafio_repo` e o `.git` r
 ## 8. CHECKLIST DE ARRANQUE PARA A NOVA CONVERSA
 
 - [ ] Ler `CONTEXTO.md`, `docs/INFRAESTRUTURA.md` e este arquivo
-- [ ] Rodar `go build` / `go vet` / `gofmt` em `./internal/domain/money/` e reportar o resultado
-- [ ] Ler o `money.go` do usuário e confirmar que a correção do `errors.As` foi aplicada (e que `asError` sumiu)
-- [ ] Commit do Bloco 1: `feat(money): adiciona o value object Currency com erro de dominio tipado`
-- [ ] Entregar o **Bloco 2** (`ParseCurrency`) no formato da seção 6.4: objetivo → problema → decisões → código → tabela → checkpoint
-- [ ] Manter o cadence: **um bloco por vez**, explicar antes, perguntar se entendeu, aceitar contestação
-- [ ] Commitar ao fim de cada bloco aprovado, com mensagem em Conventional Commits (português) e corpo explicando o porquê
+- [ ] Entregar o **Bloco 2** (`ParseCurrency`) no formato da seção 6.4:
+      objetivo → problema → decisões → código → tabela → checkpoint
+- [ ] Manter o cadence: **um bloco por vez**, explicar antes, perguntar se entendeu
+- [ ] Aceitar contestação do usuário: se ele questionar o código e estiver certo, **admitir e corrigir**
+- [ ] Preferir comentários **curtos** (o usuário enxugou os do Bloco 1): só o que explica decisão
+- [ ] Depois do Bloco 2 aprovado, commitar: `feat(money): adiciona ParseCurrency com validacao ISO 4217`
+- [ ] Seguir para o **Bloco 3** (`type Money struct` + `New` + acessores)
+
+**Não é necessário:** revalidar o Bloco 1, recommitar, nem rodar Docker (a Fase 1 é puro Go,
+sem banco).
