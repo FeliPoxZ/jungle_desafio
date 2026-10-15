@@ -1,0 +1,19 @@
+# Normaliza os finais de linha: scripts shell e Dockerfile são consumidos por
+# Linux (containers) e NÃO podem ter CRLF. Sem isso, o shell falha com
+# "syntax error: unexpected end of file" ao executar um script editado no Windows.
+*.sh          text eol=lf
+Dockerfile    text eol=lf
+Makefile      text eol=lf
+*.sql         text eol=lf
+*.yml         text eol=lf
+*.yaml        text eol=lf
+
+# Código Go e documentação: normaliza para LF no repositório.
+*.go          text eol=lf
+*.md          text eol=lf
+*.json        text eol=lf
+
+# Binários: nunca normalizar.
+*.png         binary
+*.jpg         binary
+*.pdf         binary

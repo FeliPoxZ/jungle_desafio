@@ -95,9 +95,18 @@ services:
 
   # ---------------------------------------------------------------------------
   # LocalStack: SQS local. As filas são criadas pelo serviço localstack-init.
+  #
+  # ⚠️ VERSÃO FIXADA DE PROPÓSITO (4.0.3). NÃO use "stable" nem "latest":
+  # a partir de 2026 a LocalStack encerrou a edição community e as tags novas
+  # exigem licença Pro (variável LOCALSTACK_AUTH_TOKEN). Sem o token o
+  # container morre no boot com:
+  #   "License activation failed! No credentials were found in the environment"
+  # A 4.0.3 é a última imagem community estável e cobre o que usamos de SQS
+  # (filas FIFO, DLQ, redrive, visibility timeout, long polling).
+  # Alternativa aceita pelo enunciado e documentada no README: MiniStack.
   # ---------------------------------------------------------------------------
   localstack:
-    image: localstack/localstack:stable
+    image: localstack/localstack:4.0.3
     container_name: jungleg-localstack
     environment:
       SERVICES: sqs

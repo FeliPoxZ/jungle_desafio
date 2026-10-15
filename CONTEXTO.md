@@ -22,11 +22,11 @@
 
 | Item | Valor |
 | --- | --- |
-| Fase atual | **Fase 0 concluída.** Fase 1 (`Money`) é o próximo passo |
-| Última fase concluída | Fase 0 — fundação (commits `1eef5b2`, `706d799`) |
+| Fase atual | **Fase 0 concluída e VALIDADA com infraestrutura real.** Próximo: Fase 1 (`Money`) |
+| Última fase concluída | Fase 0 — fundação + infraestrutura de pé |
 | Testes | `go test -race ./...` verde (4 pacotes) |
 | Build | `go build ./...` e `go vet ./...` limpos; `gofmt -l` vazio |
-| Revisão | `1eef5b2` (fundação) + `706d799` (plano) |
+| Infraestrutura | PostgreSQL, Keycloak e LocalStack **rodando e validados** (ver `docs/evidencias/FASE_0.md`) |
 
 **O que já existe e funciona:**
 - Estrutura de módulo, `go.mod`/`go.sum` com 20+ dependências fixadas
@@ -60,24 +60,30 @@ $env:GOPATH='E:\jungleg\.gocache\gopath'
 
 O `Makefile` já faz isso automaticamente. A pasta `.gocache/` está no `.gitignore`.
 
-### 2.2. Docker (instalado, mas com restrição de sandbox)
+### 2.2. Docker (instalado e FUNCIONANDO)
 
 | Item | Valor |
 | --- | --- |
-| Versão | Docker **29.8.2**, Compose **v5.6.0** |
-| Caminho | `C:\Users\PoxZe\AppData\Local\Programs\DockerDesktop\resources\bin` |
-| PATH | Registrado no PATH do **usuário**; sessões antigas não enxergam |
-| Status do daemon | Docker Desktop em execução |
+| Versão | Docker **29.8.2**, Compose **v5.6.0**, storage `overlayfs` |
+| Caminho do CLI | `C:\Users\PoxZe\AppData\Local\Programs\DockerDesktop\resources\bin` |
+| PATH | Registrado no PATH do **usuário**; sessões abertas antes não enxergam |
+| Estado | Containers `jungleg-postgres`, `jungleg-keycloak`, `jungleg-localstack` **healthy** |
 
-⭐ **Restrição importante:** o sandbox deste harness **não abre named pipes**:
+⭐ **Para trabalhar nesta sessão, prefixe o PATH:**
+```powershell
+$env:Path = "C:\Users\PoxZe\AppData\Local\Programs\DockerDesktop\resources\bin;$env:Path"
 ```
-permission denied while trying to connect to the docker API at
-npipe:////./pipe/dockerDesktopLinuxEngine
-```
-**Consequência:** comandos Docker precisam de aprovação (`danger-full-access`), **ou** o
-usuário roda no terminal dele, **ou** ativa em Docker Desktop → Settings → General →
-*"Expose daemon on tcp://localhost:2375 without TLS"* (aí `DOCKER_HOST=tcp://localhost:2375`
-funciona sem restrição).
+
+⚠️ **Duas armadilhas já resolvidas (não repita):**
+1. **LocalStack:** usar `localstack/localstack:4.0.3`. As tags `stable`/`latest` são **Pro** e exigem `LOCALSTACK_AUTH_TOKEN`; sem ele o container morre com *"License activation failed"*.
+2. **Sandbox × Docker:** o sandbox do harness não abre o *named pipe* do Docker. Comandos Docker precisam de acesso ampliado (`danger-full-access`), ou o usuário roda no terminal dele.
+3. **Docker Desktop não inicia sozinho** (`autoStart: False`). Se o pipe não existir, iniciar `Docker Desktop.exe` e aguardar ~5s.
+
+### 2.3. Line endings em scripts shell
+`deploy/localstack/init-queues.sh` é executado em container Linux. Ao editá-lo pelo
+Windows, **garanta LF** (não CRLF), senão o shell falha com
+`syntax error: unexpected end of file`. O `.gitattributes` do repositório resolve isso
+para quem clonar.
 
 ### 2.3. Ferramentas disponíveis
 

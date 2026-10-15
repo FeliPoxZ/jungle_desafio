@@ -16,22 +16,50 @@ export AWS_PAGER=""
 
 MAX_RECEIVE_COUNT="${SQS_MAX_RECEIVE_COUNT:-5}"
 
-log() { printf '[init-queues] %s\n' "$*"; }
+# ⚠️ O log vai para STDERR de propósito (o `>&2`).
+# Motivo: as funções deste script DEVOLVEM VALOR pelo stdout (veja ensure_queue,
+# que imprime a URL da fila). Se o log fosse para stdout, o $( ) do chamador
+# capturaria "log + valor" misturados e o valor viraria lixo — foi exatamente o
+# bug que fizemos na primeira versão, com a URL chegando assim:
+#     "[[init-queues] fila já existe: x.fifo\nhttp://.../x.fifo]"
+# Regra geral em shell: função que devolve valor → logs sempre em stderr.
+log() { printf '[init-queues] %s\n' "$*" >&2; }
 
+# Devolve a URL da fila, ou string VAZIA se ela não existir.
+#
+# ⚠️ DOIS CUIDADOS APRENDIDOS NA PRÁTICA:
+#   1) `|| true` no fim: com `set -e`, um comando que falha dentro de $( )
+#      aborta o script inteiro. Aqui a falha é ESPERADA (fila não existe ainda).
+#   2) Filtro de "None": o aws-cli devolve literalmente a string "None" quando o
+#      resultado é nulo, e "None" NÃO é vazio — um teste [ -z ] passaria e o
+#      script tentaria usar uma URL inválida depois. Por isso normalizamos para
+#      vazio aqui, num lugar só.
 queue_url() {
-  aws --endpoint-url "$ENDPOINT" sqs get-queue-url --queue-name "$1" --query 'QueueUrl' --output text 2>/dev/null
+  out="$(aws --endpoint-url "$ENDPOINT" sqs get-queue-url --queue-name "$1" \
+      --query 'QueueUrl' --output text 2>/dev/null || true)"
+  case "$out" in
+    ""|"None"|"null") printf '' ;;
+    *) printf '%s' "$out" ;;
+  esac
 }
 
+# Garante que a fila existe e ECOA a URL dela. Idempotente.
 ensure_queue() {
   name="$1"
   shift
-  if url="$(queue_url "$name")" && [ -n "$url" ] && [ "$url" != "None" ]; then
+  url="$(queue_url "$name")"
+  if [ -n "$url" ]; then
     log "fila já existe: $name"
   else
     log "criando fila: $name"
     aws --endpoint-url "$ENDPOINT" sqs create-queue --queue-name "$name" "$@" >/dev/null
+    url="$(queue_url "$name")"
   fi
-  queue_url "$name"
+  if [ -z "$url" ]; then
+    log "ERRO: não foi possível obter a URL da fila '$name'"
+    exit 1
+  fi
+  printf '%s' "$url"
 }
 
 # ---------------------------------------------------------------------------
