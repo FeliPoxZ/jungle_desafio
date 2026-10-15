@@ -58,3 +58,43 @@ func (e *Error) Is(target error) bool {
 var (
 	ErrInvalidCurrency = &Error{Code: CodeInvalidCurrency, Message: "código de moeda inválido"}
 )
+
+// ParseCurrency converte e valida uma string em Currency.
+//
+// Aceita apenas o código alfabético ISO 4217: exatamente três letras
+// maiúsculas ASCII (A-Z). Exemplos válidos: "BRL", "USD", "EUR".
+//
+// Rejeitados com ErrInvalidCurrency: vazio, comprimento diferente de 3,
+// minúsculas ("brl"), código numérico ("986"), dígitos, símbolos e
+// espaços.
+//
+// Não normaliza (trim, uppercase): a borda do sistema faz isso de forma
+// explícita. Aqui a política é rejeitar em vez de adivinhar.
+func ParseCurrency(s string) (Currency, error) {
+	c := Currency(s)
+	if err := c.Validate(); err != nil {
+		return "", fmt.Errorf("moeda %q: %w", s, err)
+	}
+	return c, nil
+}
+
+// Validate confere se o Currency é um código ISO 4217 alfabético válido.
+//
+// Existe separado de ParseCurrency para revalidar valores que chegam já
+// tipados, como os lidos do banco na reidratação.
+func (c Currency) Validate() error {
+	// O código ISO 4217 alfabético é ASCII por definição da norma:
+	// comparar byte a byte é correto e não há risco com UTF-8.
+	if len(c) != 3 {
+		return ErrInvalidCurrency
+	}
+	for i := 0; i < len(c); i++ {
+		if c[i] < 'A' || c[i] > 'Z' {
+			return ErrInvalidCurrency
+		}
+	}
+	return nil
+}
+
+// String devolve o código da moeda ("BRL").
+func (c Currency) String() string { return string(c) }
