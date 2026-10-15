@@ -8,9 +8,12 @@
 > | --- | --- |
 > | `README.md` (raiz) | Enunciado oficial do desafio — **não editar** |
 > | `PLANO.md` | Plano completo: decisões (A1–A14), checklist por fase, cronograma de 2 dias |
+> | `docs/INFRAESTRUTURA.md` | ⭐ **Comece por aqui.** O que são Postgres, Keycloak, SQS, LocalStack e Docker — conceito antes de configuração |
 > | `docs/GUIA_FASE_0.md` | Guia didático da Fase 0: pasta por pasta, arquivo por arquivo, linha a linha |
 > | `docs/QUESTOES.md` | Perguntas de fixação + gabarito (termômetro de aprendizado) |
 > | `CONTEXTO.md` | Este arquivo — estado atual e próximos passos |
+
+**Ordem de leitura recomendada:** `docs/INFRAESTRUTURA.md` (o quê) → `docs/GUIA_FASE_0.md` §1–4 (modelo mental) → §5–7 (configuração e código) → `docs/QUESTOES.md` (fixação).
 
 ---
 

@@ -487,9 +487,9 @@ Formato: `[data] [fase] status — o que foi feito / decisão / bloqueio`.
 - **B1 segue ABERTO** — Docker Desktop ainda não instalado; nada de compose/integração foi validado até agora (todo o código acima foi validado sem Docker).
 
 ### Próximos 3 passos imediatos
-1. **Usuário:** confirmar a instalação do Docker (`docker version` e `docker compose version`).
-2. **Usuário:** decidir o que fazer com a pasta `jungle_desafio` (segundo repo git).
-3. **Nós:** Fase 1 — `Money` (núcleo, escrito pelo usuário com contrato e revisão) + Fase 2/3 (Wallet, Ledger, WagerTransaction).
+1. **Usuário:** ler `docs/GUIA_FASE_0.md` e `docs/QUESTOES.md` — **checkpoint obrigatório** antes da Fase 1.
+2. **Usuário:** decidir o que fazer com a pasta `jungle_desafio` (segundo repo git) e confirmar como rodar Docker (ver `CONTEXTO.md` §2.2).
+3. **Nós:** Fase 1 — `Money`. Ritmo revisado: **um arquivo por vez**, contrato antes do código, checkpoint a cada arquivo. Detalhes em `CONTEXTO.md` §5 e §6.
 
 ---
 
