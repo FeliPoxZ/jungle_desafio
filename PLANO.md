@@ -277,18 +277,23 @@ jungleg/
 
 Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` feito e **validado por teste** · `[!]` bloqueado
 
-### FASE 0 — Fundação (D0, ~1h30)
-- [ ] `git init`, `.gitignore` (`bin/`, `.env`, `coverage.out`)
-- [ ] `go mod init github.com/<user>/jungleg` + dependências de A1 + `go mod tidy`
-- [ ] `internal/config`: `Config` via env com `Validate()` (falha no boot se inválida) — itens obrigatórios: `DATABASE_URL`, `SQS_ENDPOINT`, `SQS_REGION`, filas, `OIDC_ISSUER`, `OIDC_AUDIENCE`, `HTTP_ADDR`, timeouts
-- [ ] `.env.example` completo (sem segredos reais)
-- [ ] `internal/platform/clock` (interface `Clock` + `Real`/`Fake`) e `idgen` (UUIDv7)
-- [ ] `Makefile` (`up`, `down`, `logs`, `migrate-up`, `migrate-down`, `test`, `test-race`, `test-integration`, `vet`, `lint`, `fmt`)
-- [ ] `Dockerfile` multi-stage (build estático `CGO_ENABLED=0` → `distroless`/`alpine`, usuário non-root)
-- [ ] `docker-compose.yml` com `postgres:16`, `keycloak`, `localstack`, `localstack-init`, `migrate`, `api` (healthchecks + `depends_on: condition: service_healthy`)
-- [ ] `deploy/localstack/init-queues.sh`: 4 filas FIFO (2 entrada+DLQ, 2 saída+DLQ) + redrive policy (`maxReceiveCount=5`) + visibility timeout
-- [ ] `deploy/keycloak/realm.json`: realm `jungleg`, clients `provider-service`/`internal-service`, roles, `provider_id` mapper, usuários de teste
-- [ ] **Validar:** `docker compose up -d postgres keycloak localstack && docker compose run --rm localstack-init` e conferir filas com `aws sqs list-queues`
+### FASE 0 — Fundação ✅ CONCLUÍDA E VALIDADA COM INFRA REAL
+- [x] `git init`, `.gitignore`, `.gitattributes` (força LF em scripts/SQL — CRLF quebra o shell no container)
+- [x] `go mod init github.com/FeliPoxZ/jungle_desafio` + dependências + `go mod tidy`
+- [x] `internal/config`: `Config` via env com `Validate()` única (falha o boot se inválida)
+- [x] `.env.example` completo (sem segredos reais)
+- [x] `Makefile` (todos os alvos) — **sem `make` instalado no Windows**; serve de documentação executável e o usuário roda os equivalentes
+- [x] `Dockerfile` multi-stage (`CGO_ENABLED=0`, non-root, `TARGET` api/migrate)
+- [x] `docker-compose.yml` com `postgres:16`, `keycloak:26.4`, `localstack:4.0.3`, `localstack-init`, `migrate`, `api`
+- [x] `deploy/localstack/init-queues.sh`: 4 filas FIFO + 2 DLQs + redrive (`maxReceiveCount=5`) + visibility timeout
+- [x] `deploy/keycloak/realm.json`: realm, 4 clients, roles `provider`/`internal`, mapper `provider_id`, audience, usuários de teste
+- [x] `internal/observability`: slog JSON com correlação automática + 13 métricas Prometheus
+- [x] `internal/httpapi`: middlewares, erros tipados, health, `/metrics`
+- [x] `internal/app`: composição Fx + ciclo de vida + shutdown gracioso
+- [x] **VALIDADO:** 3 containers `healthy`; 4 filas com atributos corretos; realm importado e **token real emitido** (`iss`/`aud`/`provider_id: provider-a`/`roles: provider`); bancos `jungleg`/`jungle_test`/`keycloak` criados
+- [~] `internal/platform/clock` e `idgen` — **adiados para a Fase 2** (só serão usados lá)
+
+**Evidências:** `docs/evidencias/FASE_0.md`
 
 ### FASE 1 — Domínio `Money` (D0, ~2h) 💰 núcleo
 - [ ] `money.Currency`: validação ISO 4217 (3 letras maiúsculas), `BRL`
