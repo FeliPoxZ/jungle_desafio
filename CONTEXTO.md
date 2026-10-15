@@ -7,11 +7,13 @@
 > | Arquivo | Para que serve |
 > | --- | --- |
 > | `README.md` (raiz) | Enunciado oficial do desafio — **não editar** |
+> | **`PROXIMO_PASSO.md`** | ⭐ **HANDOFF**: onde paramos exatamente e como continuar. Ler ao abrir nova conversa |
 > | `PLANO.md` | Plano completo: decisões (A1–A14), checklist por fase, cronograma de 2 dias |
-> | `docs/INFRAESTRUTURA.md` | ⭐ **Comece por aqui.** O que são Postgres, Keycloak, SQS, LocalStack e Docker — conceito antes de configuração |
+> | `docs/INFRAESTRUTURA.md` | ⭐ O que são Postgres, Keycloak, SQS, LocalStack e Docker — conceito antes de configuração |
 > | `docs/FX_EXPLICADO.md` | ⭐ O Uber Fx do zero: as 3 palavras, o grafo desenhado, o passo a passo da execução e o ciclo de vida |
 > | `docs/GUIA_FASE_0.md` | Guia didático da Fase 0: pasta por pasta, arquivo por arquivo, linha a linha |
 > | `docs/QUESTOES.md` | Perguntas de fixação + gabarito (termômetro de aprendizado) |
+> | `docs/evidencias/FASE_0.md` | Saídas reais dos comandos que validaram a Fase 0 |
 > | `CONTEXTO.md` | Este arquivo — estado atual e próximos passos |
 
 **Ordem de leitura recomendada:** `docs/INFRAESTRUTURA.md` (o quê) → `docs/FX_EXPLICADO.md` (a composição) → `docs/GUIA_FASE_0.md` §1–7 (código) → `docs/QUESTOES.md` (fixação).
