@@ -40,8 +40,9 @@ solução + `ARCHITECTURE.md`.
 | --- | --- |
 | Fase 0 (fundação + infraestrutura) | ✅ **CONCLUÍDA E VALIDADA** com containers reais |
 | Fase 1 (`Money`) | ✅ **CONCLUÍDA E VALIDADA** — 384 casos, 97,9% de cobertura, 10/10 no README |
-| Fase 2 (`Wallet` + `LedgerEntry`) | ⬅ **PRÓXIMA** |
-| Fases 3–12 | ⬜ Não iniciadas (ver checklist no `PLANO.md` §3) |
+| Fase 2 (`Wallet` + `LedgerEntry`) | ✅ **CONCLUÍDA E VALIDADA** — 63 casos, 99,0% de cobertura |
+| Fase 3 (`WagerTransaction`) | ⬅ **PRÓXIMA** |
+| Fases 4–12 | ⬜ Não iniciadas (ver checklist no `PLANO.md` §3) |
 
 ### Já funciona e está provado
 
@@ -62,6 +63,8 @@ solução + `ARCHITECTURE.md`.
 ### Histórico de commits (mais recente primeiro)
 
 ```
+98fbee6 feat(wallet): adiciona carteira com debito/credito e ledger append-only   ← FASE 2
+442a025 docs: registra o hash do commit da Fase 1 no plano e no handoff
 b046e6a feat(money): completa o value object com aritmetica, comparacao e serializacao  ← FASE 1 (Blocos 3–7)
 3172772 bloco 2 monet incompleto                       ← Bloco 2 (mensagem a rever)
 b1bd10d docs(handoff): atualiza PROXIMO_PASSO para o Bloco 2 da Fase 1
@@ -71,8 +74,8 @@ f1ec2da docs(plano): marca a Fase 0 como concluida e validada com infraestrutura
 1eef5b2 chore(setup): fundacao do projeto com Fx, config validada, HTTP e observabilidade
 ```
 
-> ✅ **A Fase 1 está commitada e validada. Não revalide nem recommite.** Vá direto para a
-> **Fase 2** (seção 6).
+> ✅ **As Fases 1 e 2 estão commitadas e validadas. Não revalide nem recommite.** Vá direto
+> para a **Fase 3** (seção 6).
 
 ---
 
@@ -176,80 +179,86 @@ Detalhamento completo em `PLANO.md` §1 (A1–A14). Resumo do que afeta as Fases
 
 ---
 
-## 6. 🎯 A TAREFA PONTUAL: FASE 2 (`Wallet` + `LedgerEntry`)
+## 6. 🎯 A TAREFA PONTUAL: FASE 3 (`WagerTransaction`)
 
-### 6.1. O que a Fase 1 deixou pronto para reusar
+### 6.1. O que as Fases 1 e 2 deixaram pronto para reusar
 
-O pacote `internal/domain/money` já oferece tudo que a `Wallet` precisa — **use, não
-reimplemente**:
+O pacote `internal/domain/money` e o `internal/domain/wallet` já resolvem quase tudo —
+**use, não reimplemente**:
 
-| Necessidade da `Wallet` | O que usar do `money` |
+| Necessidade da `WagerTransaction` | O que usar |
 | --- | --- |
-| Somar/subtrair saldo | `Add(other)` / `Sub(other)` — já tratam overflow e moeda incompatível |
-| Comparar saldo com zero | `IsZero()`, `IsNegative()`, `IsPositive()`, `Sign()`, `Cmp()` |
-| Criar saldo zero na criação | `Zero(currency)` |
-| Moeda da movimentação diferente da carteira | `Add`/`Sub` já devolvem `ErrCurrencyMismatch`; ou comparar `Currency()` |
-| Reidratar saldo vindo do banco | `FromMinor(minor, currency)` |
-| Erro tipado com `failureCode` | Padrão `Error{Code, Message}` + sentinelas + `Is()` por `Code` |
+| Valor da operação | `money.Money` — validar sinal/zero conforme o tipo (ver 6.2) |
+| Conferir o `"0.00"` exato do `LOSS` | `money.IsZero()` |
+| Valor maior que zero em `BET`/`WIN`/`REFUND`/`ROLLBACK` | `money.IsPositive()` |
+| Erro tipado com `failureCode` | **Mesmo padrão** de `money` e `wallet`: `Error{Code, Message}` + sentinelas + `Is()` por `Code` |
+| ID da operação no ledger | `wallet.TransactionID` já é `string` e aceita o ID da transação |
+| Referência à carteira no lançamento | `wallet.WalletID` |
 
-### 6.2. Regras que o enunciado exige da `Wallet` e do ledger
+### 6.2. Regras que o enunciado exige (§6.3 e §7 do README)
 
 Transcrevendo o que é verificável, porque são **estas** linhas que os testes têm que travar:
 
 | Fonte | Regra |
 | --- | --- |
-| §6.2 | A carteira carrega identidade, jogador, moeda, saldo, **versão** e instantes de criação/atualização |
-| §6.2 | O par `(playerId, currency)` identifica uma única carteira |
-| §6.2 | **Débitos precisam preservar saldo maior ou igual a zero** |
-| §6.2 | A moeda de cada movimentação deve coincidir com a da carteira |
-| §6.2 | Cada mudança financeira exige o lançamento correspondente no ledger, confirmado junto com o saldo |
-| §6.2 | Versão inicial `1`; depois da criação, incrementar **apenas** quando houver mudança de saldo |
-| §6.2 | Disputas entre escritores não podem descartar uma atualização confirmada |
-| §Encaps. L89 | **Separe criação e reidratação.** A reidratação não pode reaplicar movimentações, transições nem emitir eventos |
-| §Ledger | Cada lançamento registra `id`, `walletId`, `transactionId`, direção (`DEBIT`/`CREDIT`), valor, **saldo anterior**, **saldo posterior** e instante de criação |
-| §Ledger | Unicidade, não negatividade e imutabilidade do ledger impostas pelo **schema e constraints** (Fase 4) |
-| §Tipos | `LOSS` = `"0.00"` exato: não cria ledger nem altera versão |
+| §6.3 | Tipos: `OPENING`, `BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK` |
+| §6.3 | Operação externa registra: identificadores interno e externo, provedor, chave de idempotência, hash do payload, carteira, jogador, rodada, jogo, tipo, `Money`, referência externa opcional, estado e timestamps |
+| §6.3 | Quando aplicável: referência interna resolvida, código de falha e resultado financeiro devolvido ao provedor |
+| §6.3 | A transação inicia em `PENDING`; transições para processamento, espera por referência, rejeição e falha permanente são validadas pelo domínio |
+| §7 | `BET`, `WIN`, `REFUND` e `ROLLBACK` exigem valor **maior que zero**; `LOSS` exige **exatamente** `"0.00"` |
+| §7 | Saldo inicial zero em `OPENING` ⇒ sem `OPENING`, sem ledger e sem eventos financeiros |
+| §7 | `OPENING` é operação **interna**: não pode ser aceita vinda do provedor |
+| §7 | `REFUND` e `ROLLBACK` exigem referência à transação original, e o valor da reversão tem que ser **igual** ao referenciado (sem reversão parcial) |
+| §7 | O valor da reversão precisa concordar em provedor, jogador, carteira, moeda e rodada com a operação referenciada |
 
-### 6.3. Blocos previstos (o usuário digita o núcleo)
+### 6.3. Pontos que o avaliador vai cobrar na entrevista
 
-| Bloco | Conteúdo | Observação |
-| --- | --- | --- |
-| **1** | Erros do pacote `wallet`: `Error`, `Code` estáveis, sentinelas `ErrInsufficientFunds`, `ErrWalletCurrencyMismatch`, `ErrInvalidWallet` + `Is()` por `Code` | **Segue o padrão já validado no `money`** — reaproveitar a estrutura, não inventar outra |
-| **2** | `type Wallet struct` (campos privados: `id`, `playerID`, `currency`, `balance`, `version`, `createdAt`, `updatedAt`) + `NewWallet(...)` (criação, versão `1`) + `RehydrateWallet(...)` (sem reaplicar nada) + acessores | Mesma separação `New` × `Rehydrate` que funcionou no `money` |
-| **3** | `Debit(m)`, `Credit(m)` — valida moeda, preserva saldo ≥ 0, incrementa versão **só** quando o saldo muda, atualiza `updatedAt` | `Debit` usa `Sub` + `IsNegative` — **não** fazer aritmética própria |
-| **4** | `Direction` (`DEBIT`/`CREDIT`) + `type LedgerEntry struct` + `NewEntry(...)` validando `balanceAfter == before ± money` + `RehydrateEntry(...)` | Ledger é **imutável**: sem setters |
-| **5** | Testes seguindo o padrão da Fase 1: table-driven + testes de **propriedade** | Ver §6.4 |
+1. **`LOSS` não movimenta dinheiro.** Registra a perda e produz evento, **sem** criar lançamento no ledger e **sem** incrementar versão da carteira. É o caso mais fácil de errar, e é a razão de o `wallet` ter a regra de valor zero.
+2. **`OPENING` interna × externa.** O construtor tem que exigir campos **diferentes** por origem: a externa exige provedor, chave de idempotência e hash do payload; a `OPENING` não tem esses metadados e não pode ser aceita de fora.
+3. **`failureCode` é separado do `Status`.** `REJECTED` diz o que aconteceu com a operação; `failureCode` diz **por quê**. Precisa ser estável e documentado, para o cliente distinguir entrada corrigível de resultado definitivo (README item 13).
+4. **Referência obrigatória na reversão.** Sem `referenceExternalTransactionId`, `REFUND`/`ROLLBACK` não têm como achar a operação original nem provar que o valor bate. E a reversão precisa ser de **valor igual**, não parcial.
+5. **Estado terminal não volta.** `PROCESSED`, `REJECTED` e `FAILED` são finais; qualquer transição a partir deles é `ErrTerminalState`.
+6. **Idempotência é chave, não comparação.** A chave é `(provider_id, idempotency_key)` e o hash do payload serve para detectar **conflito** (mesma chave, corpo diferente). Isso é Fase 4/6, mas o domínio precisa carregar os dois campos.
 
-### 6.4. Casos de teste que a suíte da `Wallet` PRECISA cobrir
+### 6.4. Blocos previstos (mesmo ritmo: um bloco por vez)
 
-**Criação:** saldo zero (permitido — README L182); saldo inicial positivo; rejeitar moeda inválida; rejeitar `playerID` vazio; versão inicial exatamente `1`; `createdAt`/`updatedAt` iguais na criação
-**Reidratação:** `RehydrateWallet` **não** incrementa versão, **não** altera `updatedAt` e **não** emite evento — exigência explícita do L89, travar com teste
-**Débito:** débito normal decrementa; débito que zera o saldo é permitido; débito que deixaria negativo é rejeitado com `ErrInsufficientFunds`; débito com saldo exatamente igual ao valor deixa saldo `0` e versão incrementada
-**Crédito:** crédito incrementa saldo e versão; crédito de zero **não** muda versão nem `updatedAt`
-**Moeda:** débito/crédito com moeda diferente → `ErrWalletCurrencyMismatch` (e **não** `ErrInsufficientFunds`)
-**Versão:** incrementa a cada mudança de saldo; **não** incrementa em operação rejeitada nem em operação de valor zero; nunca regride
-**Ledger:** `NewEntry` valida `balanceAfter`; direção fora de `DEBIT`/`CREDIT` → erro; `amount` zero → erro; débito no ledger sempre com `balanceBefore > balanceAfter`, crédito o contrário
-**Imutabilidade:** `LedgerEntry` sem setter (garantido por ausência de API)
-**Propriedade:** `Credit(x)` seguido de `Debit(x)` volta ao saldo original com versão +2; qualquer sequência de operações aceitas termina com saldo ≥ 0; a soma dos lançamentos do ledger bate com a diferença de saldo (invariante que a Fase 11 vai conferir)
+| Bloco | Conteúdo |
+| --- | --- |
+| **1** | `errors.go`: `Error`, `Code` estáveis, sentinelas `ErrInvalidTransaction`, `ErrInvalidTransition`, `ErrTerminalState`, `ErrMissingReference`, `ErrInternalKind` + `Is()` por `Code` |
+| **2** | `Kind` (`OPENING/BET/WIN/LOSS/REFUND/ROLLBACK`) com `ParseKind`, `Validate`, `String`, `IsExternal()`, `RequiresReference()`, `AllowsZeroAmount()` |
+| **3** | `Status` (`PENDING/PENDING_REFERENCE/PROCESSED/REJECTED/FAILED`) com `ParseStatus`, `IsTerminal()` e a **tabela de transições permitidas** |
+| **4** | `type WagerTransaction` (campos privados) + `New(...)` validando obrigatórios por origem + `Rehydrate(...)` + acessores |
+| **5** | Métodos de transição (`MarkProcessed`, `MarkRejected`, `AwaitReference`, `MarkFailed`) — **únicos** que mudam estado, cada um validando a transição |
+| **6** | Eventos de domínio (A12): structs tipadas + envelope com `type` e `version` |
+| **7** | Testes: todos os tipos, política de zero por tipo, transições válidas/inválidas, terminal, `OPENING` rejeitado de fora, referência obrigatória |
 
-### 6.5. Checkpoint esperado de cada bloco
+### 6.5. Casos de teste que a suíte PRECISA cobrir
+
+**Kind:** os 6 tipos aceitos; string vazia/minúscula/desconhecida rejeitada; `IsExternal()` verdadeiro só para os 5 externos; `OPENING` com `IsExternal()` falso
+**Política de zero por tipo:** `LOSS` exige `0.00` e rejeita `0.01`; `BET`/`WIN`/`REFUND`/`ROLLBACK` rejeitam `0.00` e aceitam `0.01`
+**Origem:** `OPENING` sem provedor/chave/hash é válida; `OPENING` **com** provedor é rejeitada; operação externa sem provedor, sem chave de idempotência ou sem hash é rejeitada
+**Referência:** `REFUND` e `ROLLBACK` sem `referenceExternalTransactionId` → `ErrMissingReference`; `BET`/`WIN`/`LOSS` sem referência são válidas
+**Estado:** nasce `PENDING`; transições válidas por tipo; transição inválida → `ErrInvalidTransition`; transição a partir de terminal → `ErrTerminalState`
+**Reidratação:** `Rehydrate` reconstrói estado e timestamps **sem** reaplicar transição e **sem** emitir evento (README §Encaps. L89)
+**Erros:** `errors.Is` por `Code`, erro atravessa `errors.Join`, sentinelas não se confundem, `Error()` com o `Code` na frente
+
+### 6.6. Checkpoint esperado de cada bloco
 
 ```powershell
 $env:GOMODCACHE='E:\jungleg\.gocache\mod'; $env:GOCACHE='E:\jungleg\.gocache\build'; $env:GOPATH='E:\jungleg\.gocache\gopath'
 gofmt -l ./internal/domain/
 go build ./...
 go vet ./...
-go test -race ./internal/domain/wallet/
+go test -race ./internal/domain/wagering/
 ```
 
 Depois do último bloco aprovado, commitar:
 ```
-feat(wallet): adiciona carteira com debito/credito e ledger append-only
+feat(wagering): adiciona transacao de aposta com tipos, estados e eventos de dominio
 ```
-
 ---
 
-## 7. PENDÊNCIAS CONHECIDAS (não são da Fase 2, mas estão anotadas)
+## 7. PENDÊNCIAS CONHECIDAS (não são da Fase 3, mas estão anotadas)
 
 Do `CONTEXTO.md` §4: P1 (healthcheck do `api` no compose usa flag inexistente), P2 (ordem
 `AccessLog` × `Recoverer`), P3 (`net.Listen` em vez de `select`+`time.After`), P4 (path
@@ -257,21 +266,26 @@ Do `CONTEXTO.md` §4: P1 (healthcheck do `api` no compose usa flag inexistente),
 `health_checkers`), P6 (`cmd/migrate` não existe ainda — o compose o referencia),
 P7 (`StopTimeout` deve vir da config), P8 (testar SIGTERM real). P9/P10 **resolvidas**.
 
-Da Fase 1: o helper `CodeOf` está em `money_test.go` e **precisa se mudar para o pacote
-`money`** quando a Fase 7 montar o handler HTTP — é ele que traduz `Code` em `failureCode`.
-Está comentado no próprio arquivo.
+Das Fases 1 e 2: o helper `CodeOf` existe **duplicado** em `money_test.go` e
+`wallet_test.go`. Quando a Fase 7 montar o handler HTTP, ele precisa virar função de
+produção no pacote de erros (é ele que traduz `Code` em `failureCode`). Está comentado nos
+dois arquivos.
+
+Da Fase 2: a unicidade de `(playerID, currency)` ainda **não** é imposta — é decisão de
+schema, e vai para a `constraint UNIQUE` da Fase 4.
 
 ---
 
 ## 8. CHECKLIST DE ARRANQUE PARA A NOVA CONVERSA
 
-- [ ] Ler `CONTEXTO.md`, `PLANO.md` §3 (Fase 2) e `docs/evidencias/FASE_1.md`
-- [ ] Entregar o **Bloco 1 da Fase 2** no formato da seção 3: objetivo → problema → decisões → código → tabela → checkpoint
+- [ ] Ler `CONTEXTO.md`, `PLANO.md` §3 (Fase 3) e `docs/evidencias/FASE_2.md`
+- [ ] Entregar o **Bloco 1 da Fase 3** no formato da seção 3: objetivo → problema → decisões → código → tabela → checkpoint
 - [ ] Manter o cadence: **um bloco por vez**, explicar antes, perguntar se entendeu
-- [ ] Reusar o que o `money` já resolve (`Add`/`Sub`/`IsNegative`/`Zero`/`FromMinor`) em vez de reimplementar
+- [ ] Reusar o padrão de erro já validado (`Error{Code, Message}` + sentinelas + `Is()` por `Code`) em vez de inventar outro
+- [ ] Reusar o `money` para validar valor por tipo (`IsZero`, `IsPositive`) em vez de comparar `Minor()` à mão
 - [ ] Aceitar contestação do usuário: se ele questionar e estiver certo, **admitir e corrigir**
 - [ ] Comentários **curtos**: só o que explica decisão
 - [ ] Provar com teste antes de afirmar que uma guarda basta (lição da Fase 1)
-- [ ] Depois do último bloco aprovado, commitar: `feat(wallet): adiciona carteira com debito/credito e ledger append-only`
+- [ ] Depois do último bloco aprovado, commitar: `feat(wagering): adiciona transacao de aposta com tipos, estados e eventos de dominio`
 
-**Não é necessário:** revalidar as Fases 0 e 1, nem rodar Docker (a Fase 2 continua puro Go).
+**Não é necessário:** revalidar as Fases 0, 1 e 2, nem rodar Docker (a Fase 3 continua puro Go).
