@@ -503,7 +503,7 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` feito e **validado por te
 | --- | --- | --- |
 | E1 | Sem autenticação efetiva nos endpoints de negócio | testes com servidor OIDC real (401/403) + middleware cobrindo todos os endpoints de negócio |
 | E2 | Acesso não autorizado a operações/transações | teste de isolamento entre provedores (leitura, replay, `:providerId` divergente) |
-| E3 | Cálculo monetário em ponto flutuante | `int64` minor units; auditoria `grep -Rn "float32\|float64" internal/` vazia; teste de parse com `NaN`/`Inf` |
+| E3 | Cálculo monetário em ponto flutuante | `int64` minor units; **teste automatizado** que varre a AST do pacote `money` (literais `FLOAT`, `float64`/`float32`, `ParseFloat`, `NaN`/`Inf`) + auditoria de import; teste de parse com `NaN`/`Inf`. ⚠️ `grep "float32\|float64" internal/` **não** é vazio: `internal/observability` usa `float64` para duração de log e buckets do Prometheus — não é caminho monetário. O critério é "vazio nos caminhos monetários (`money`, `wallet`, `ledger`, `wagering`, `canonicaljson`)" |
 | E4 | Saldo negativo por concorrência | `CHECK (balance_minor >= 0)` + `FOR UPDATE` + T2/T1 |
 | E5 | Movimentação duplicada | constraints únicas + replay persistido + T1/T2/T5/T7 |
 | E6 | Idempotência só em memória | tabelas/constraints + T8 (restart) |

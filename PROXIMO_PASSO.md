@@ -7,10 +7,11 @@
 > Antes de responder qualquer coisa, leia também, nesta ordem:
 > 1. `README.md` (raiz) — **o enunciado é a fonte de verdade**; em caso de dúvida, ele decide
 > 2. `ARCHITECTURE.md` (raiz) — arquitetura, decisões e problemas resolvidos
-> 3. `CONTEXTO.md` (raiz) — estado geral, ambiente, decisões congeladas, pendências
-> 4. `PLANO.md` §3 — checklist por fase
-> 5. `docs/evidencias/FASE_1.md` a `FASE_6.md` — provas do que já funciona
-> 6. `docs/LEDGER_VS_WALLET.md` — a distinção central do domínio financeiro
+> 3. `docs/CONFORMIDADE_README.md` — o que do enunciado já está atendido, o que falta e em que fase
+> 4. `CONTEXTO.md` (raiz) — estado geral, ambiente, decisões congeladas, pendências
+> 5. `PLANO.md` §3 — checklist por fase
+> 6. `docs/evidencias/FASE_1.md` a `FASE_6.md` — provas do que já funciona
+> 7. `docs/LEDGER_VS_WALLET.md` — a distinção central do domínio financeiro
 >
 > **Não comece a codar sem ler as seções 3 e 3.5.**
 
