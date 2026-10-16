@@ -402,21 +402,24 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` feito e **validado por te
 **Dependência nova:** `github.com/jackc/pgx/v5 v5.11.0`. O `testcontainers-go` foi baixado mas **não é usado**: os testes de integração apontam para o Postgres do compose via `TEST_DATABASE_URL` (mais simples e sem Docker-in-Docker). Remover a dependência não usada fica para o `go mod tidy` final.
 
 ### FASE 6 — Caso de uso (aplicação) `wagering.Service` (D1, ~4h) 🧠 coração
-- [ ] `Process(ctx, Request) (Result, error)`: **1 transação** para idempotência + domínio + ledger + outbox + inbox
-  1. valida `Idempotency-Key`; calcula hash canônico; `SELECT` por chave/externalID
-  2. replay (hash igual) → resultado persistido; conflito (hash diferente / externalID com outra chave) → `409`
-  3. carrega carteira `FOR UPDATE` (valida player/moeda)
-  4. resolve referência (REFUND/ROLLBACK) → ausente: `PENDING_REFERENCE` + evento + `202`; presente: valida concordâncias/valor/dupla reversão
-  5. aplica movimentação no agregado (`Debit`/`Credit`), cria `LedgerEntry`, `UPDATE` saldo+versão
-  6. `INSERT` transação `PROCESSED`/`REJECTED` + resultado + `failureCode`
-  7. `INSERT` outbox (`Processed`/`Rejected`/`WalletBalanceChanged` / `PendingReference`)
-  8. commit → só então o chamador pode publicar (publisher lê a outbox; **nunca** publicamos inline)
+> **Em andamento — bloco 6a CONCLUÍDO** (commit da Fase 6a): `Process` completo,
+> com unitários em memória e integração contra o Postgres real. Próximo bloco: 6b
+> (`OpenWallet`), depois 6c (leituras + `Reconcile`).
+- [x] `Process(ctx, Request) (Result, error)`: **1 transação** para idempotência + domínio + ledger + outbox (+ inbox, quando o consumo existir)
+  1. [x] normaliza, valida `Idempotency-Key`; calcula o hash canônico dos campos de negócio (exclui chave e metadados de transporte)
+  2. [x] replay (hash igual) → resultado persistido; conflito (hash diferente / externalID com outra chave) → `409`
+  3. [x] carrega carteira `FOR UPDATE` (valida player/moeda) — **o lock antes de qualquer cálculo**
+  4. [x] resolve referência → ausente: `PENDING_REFERENCE` + evento + `202`; presente: valida concordâncias/tipo/valor/dupla reversão
+  5. [x] aplica movimentação no agregado (`Debit`/`Credit`), cria `LedgerEntry`, `UPDATE` saldo+versão com `mov.VersionBefore()`
+  6. [x] `INSERT` transação + `Save` com `PROCESSED`/`REJECTED`/`PENDING_REFERENCE` + resultado + `failureCode`
+  7. [x] `INSERT` outbox (`Processed`/`Rejected`/`BalanceChanged`/`PendingReference`)
+  8. [x] commit → só então o chamador pode publicar (publisher lê a outbox; **nunca** publicamos inline)
 - [ ] `OpenWallet(ctx, req)` (interno): cria carteira + `OPENING PROCESSED` + crédito + 2 eventos **no mesmo commit**; zero ⇒ sem `OPENING`/ledger/eventos
 - [ ] `GetTransaction`, `GetByProviderExternalID` (com checagem de provedor), `GetWallet`, `ListLedger(cursor)`, `Reconcile(walletID)`
 - [ ] `Reconcile`: soma do ledger (incluindo `OPENING`) vs. saldo armazenado em **visão consistente** (`REPEATABLE READ`/snapshot único) → `difference = stored - calculated`, `checkedEntries`; divergência ⇒ log + métrica + resposta; **não altera saldo**
-- [ ] Política de retry para `ErrTransient` (máx 3 tentativas, backoff curto) → esgotou = `FAILED` auditável
-- [ ] Testes unitários com **fakes em memória** (ports): cada tipo de operação, replay, conflito, referência ausente, dupla reversão, rollback sem saldo (`ROLLBACK_INSUFFICIENT_FUNDS`), `LOSS` sem ledger, `OPENING`
-- [ ] Testes de integração: mesmo `Process` contra Postgres real; 100% dos caminhos de erro com `failureCode` correto
+- [x] Política de retry para transitório **e conflito** (máx 3 tentativas, backoff curto, envolvendo a transação inteira) → **esgotou = erro transitório (503), sem linha `FAILED`** (decisão revista: sem commit não existe linha para marcar; `MarkFailed` fica para onde a linha já existe — worker de referências)
+- [x] Testes unitários com **fakes em memória** (ports) com semântica real de transação: cada tipo de operação, replay (com o saldo original), conflito, referência ausente/rejeitada/divergente, dupla reversão, `ROLLBACK_INSUFFICIENT_FUNDS`, `LOSS` sem ledger, atomicidade e retentativa
+- [x] Testes de integração: mesmo `Process` contra Postgres real — cenário do README, 12 disparos da mesma aposta, rollback real com a outbox quebrada, idempotência sobrevivendo a serviço novo
 
 ### FASE 7 — HTTP + Auth (D1 noite → D2 manhã, ~4h)
 - [ ] `chi` router + middlewares: `Recoverer`, `correlationID`, `logging` (slog JSON), `metrics`, `timeout`, `auth`
@@ -604,10 +607,22 @@ Formato: `[data] [fase] status — o que foi feito / decisão / bloqueio`.
   - **Contrapartida obrigatória:** explicar faz parte da entrega. Código sem explicação das decisões é entrega incompleta.
   - **⭐ Compromisso final assumido:** ao fechar o sistema, gerar **dois documentos** — `docs/SISTEMA_EXPLICADO.md` (o sistema inteiro, as lógicas seguidas e os problemas resolvidos) e `docs/ENTREVISTA.md` (perguntas e respostas para a entrevista, com arquitetura e lógica visíveis). Registrado na Fase 12 do checklist.
 
+- **D1** — **FASE 6a CONCLUÍDA** — caso de uso `Process` em `internal/app/wagering` (7 arquivos) + `ports.Clock` + `platform/clock` + `GetByReferenceAndKind` no contrato de transações.
+  - **Ordem implementada:** idempotência (2 leituras) → **lock da carteira** → `INSERT` da transação → valida jogador/moeda → resolve referência → movimenta → grava saldo+versão → ledger → `Save` do estado → outbox → commit. Duas diferenças em relação ao desenho original, ambas justificadas em `ARCHITECTURE.md` §9: o `INSERT` vem antes da resolução da referência (todo desfecho é um estado da linha) e o instante é lido **depois** do lock (senão a ordem publicada na outbox seria a de início das transações, não a dos efeitos).
+  - **Decisão revista:** retry esgotado **não** grava `FAILED` — sem commit não existe linha para marcar. Esgotou ⇒ erro transitório (503). `MarkFailed` fica para onde a linha já existe (worker de referências, Fase 9).
+  - **Códigos novos além da tabela A8:** `WALLET_PLAYER_MISMATCH` (carteira de outro jogador) e o uso de `WALLET_CURRENCY_MISMATCH` do domínio da carteira para moeda divergente — os dois como rejeição **gravada** (422).
+  - **Quatro defeitos reais encontrados e corrigidos** (dois de código, dois do harness):
+    1. `wagering.Error` era tipo próprio, não alias → `domainerrors.CodeOf` devolvia vazio e o `failureCode` sairia **em branco** para todo erro de `wagering`;
+    2. corrida entre as duas leituras de idempotência → pedido legítimo recebia `IDEMPOTENCY_CONFLICT` em vez de replay (aparecia em 3 de 4 execuções do teste de 12 disparos simultâneos);
+    3. os dois pacotes de integração truncavam o mesmo banco em processos paralelos → serialização por lock consultivo (`pg_advisory_lock`);
+    4. o `lock_timeout` de 3s do pool abortava a **espera** pelo lock consultivo (`55P03`).
+  - **Números:** 32 casos unitários no caso de uso e 15 de integração; `go test -race` verde em 13 pacotes de unidade e nos 2 de integração. Cenário do README provado contra o banco: saldo final **20.00** e **um** débito no ledger.
+  - **Evidências:** `docs/evidencias/FASE_6.md`.
+
 ### Próximos 3 passos imediatos
-1. **Nós:** Fase 6 — caso de uso `wagering.Service`: `Process(ctx, Request)` com a ordem exata das 12 etapas (o lock da carteira **antes** de qualquer cálculo de saldo), idempotência com hash canônico, resolução de referência e outbox na mesma transação.
-2. **Nós:** decidir onde ficam as interfaces de repositório (`internal/app/ports` é a recomendação) para a aplicação não importar infraestrutura.
-3. **Nós (prioridade alta):** escrever o `ARCHITECTURE.md` — é entrega obrigatória do enunciado e ainda não existe. É o maior risco de reprovação hoje.
+1. **Nós:** Fase 6b — `OpenWallet`: carteira + `OPENING` em `PROCESSED` + **lançamento de abertura com `balanceBefore` zero** (não chamar `Credit`, que dobraria o saldo e subiria a versão para 2 — o README fixa a versão da abertura em **1**) + dois eventos no mesmo commit; saldo zero ⇒ sem `OPENING`/ledger/eventos; carteira duplicada ⇒ conflito.
+2. **Nós:** Fase 6c — leituras (`GetTransaction`, `GetByProviderExternalID` com checagem de provedor, `GetWallet`, `ListLedger` com cursor) e `Reconcile` em visão consistente, sem alterar saldo.
+3. **Nós:** Fase 7 — HTTP + `Idempotency-Key` obrigatório + Keycloak; mapear `Result`/erros para os status do A9 e ligar o caso de uso no grafo do Fx.
 
 ---
 
@@ -615,8 +630,8 @@ Formato: `[data] [fase] status — o que foi feito / decisão / bloqueio`.
 
 1. **`OPENING` e saldo zero**: zero ⇒ sem `OPENING`, sem ledger, sem eventos financeiros (itens 9 e 7). Carteira ainda é criada.
 2. **`LOSS` processa sem ledger** mas produz `WagerTransactionProcessed`; **não** incrementa `version`.
-3. **`WIN` com referência de aposta da mesma rodada**: opcional ("pode informar"). Trataremos como referência **opcional** que, se enviada, é validada (mesma rodada/provedor/jogador/carteira/moeda) e persistida.
-4. **`REFUND`+`ROLLBACK` na mesma BET**: ambos permitidos (um de cada tipo), nunca dois do mesmo tipo (constraint). Documentar como não há dupla devolução do mesmo débito.
+3. **`WIN` com referência de aposta da mesma rodada**: opcional ("pode informar"). **Resolvido na 6a:** em `BET`/`WIN`/`LOSS` a referência é **informativa** — conferida quando resolve (provedor/jogador/carteira/moeda/rodada), e **não bloqueia** a operação quando não resolve (um `WIN` cujo referente ainda não chegou não pode atrasar o pagamento). Referente que existe e terminou rejeitado/falha ⇒ `REFERENCE_NOT_PROCESSABLE`. A referência informativa **não** é gravada em `reference_transaction_id`, senão o índice parcial passaria a tratar a operação como reversão.
+4. **`REFUND`+`ROLLBACK` na mesma BET**: ambos permitidos (um de cada tipo), nunca dois do mesmo tipo (constraint). **Resolvido na 6a:** `ROLLBACK` de uma `BET` **já estornada** é recusado com `ALREADY_REVERSED` (creditar de novo o mesmo débito criaria dinheiro); desfazer o estorno é `ROLLBACK` apontando para o `REFUND`, que **debita** e é aceito. A leitura prévia dá o código certo; o índice único continua sendo a barreira final.
 5. **Aceite assíncrono**: **não** implementaremos para operações sem dependência (permitido pelo item 6.3: "podem ser concluídas de forma síncrona, sem commit intermediário de aceite").
 6. **Nível de isolamento**: `READ COMMITTED` + `SELECT ... FOR UPDATE` explícito (justificar em `ARCHITECTURE.md`); reconciliação em snapshot consistente.
 7. **Moeda**: apenas `BRL` nos cenários principais, mas o tipo carrega moeda e há testes de incompatibilidade (exigido).

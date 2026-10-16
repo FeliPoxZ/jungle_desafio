@@ -21,8 +21,9 @@
 package wagering
 
 import (
-	"errors"
 	"fmt"
+
+	domainerrors "github.com/FeliPoxZ/jungle_desafio/internal/domain/errors"
 )
 
 // Códigos estáveis de falha. Viram failureCode no contrato HTTP.
@@ -36,11 +37,15 @@ const (
 	CodeProcessingFailed   = "PROCESSING_FAILED"
 )
 
-// Error é o erro de domínio do pacote wagering.
-type Error struct {
-	Code    string
-	Message string
-}
+// Error é o erro de domínio, compartilhado com os outros pacotes de domínio.
+//
+// É ALIAS, e não redefinição, como já era em `money`, `wallet` e `ledger`. Com
+// um tipo próprio, `errors.As` não atravessava daqui até o tipo compartilhado:
+// `domainerrors.CodeOf(erroDoWagering)` devolvia string VAZIA, e o `failureCode`
+// da resposta sairia em branco para toda recusa deste pacote — sem erro de
+// compilação e sem teste vermelho. O defeito estava escondido porque cada pacote
+// testava com a sua própria cópia do extrator de Code.
+type Error = domainerrors.Error
 
 // Erros sentinela. Classifique com errors.Is, nunca comparando a mensagem.
 var (
@@ -52,22 +57,6 @@ var (
 	ErrAlreadyReversed    = &Error{Code: CodeReversed, Message: "referência já revertida para este tipo"}
 	ErrProcessingFailed   = &Error{Code: CodeProcessingFailed, Message: "falha permanente de processamento"}
 )
-
-// Error devolve a representação textual, com o Code na frente para que logs
-// possam ser filtrados sem parsear a mensagem.
-func (e *Error) Error() string {
-	return fmt.Sprintf("wagering: %s: %s", e.Code, e.Message)
-}
-
-// Is permite comparar erros por Code com errors.Is, mesmo quando o erro foi
-// envelopado com fmt.Errorf("...: %w", err) alguns níveis acima.
-func (e *Error) Is(target error) bool {
-	var other *Error
-	if ok := errors.As(target, &other); ok {
-		return e.Code == other.Code
-	}
-	return false
-}
 
 // invalid monta um erro de transação inválida com mensagem formatada.
 func invalid(format string, args ...any) error {

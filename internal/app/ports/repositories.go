@@ -70,6 +70,20 @@ type TransactionRepository interface {
 	// não por (provedor, chave): é o que impede creditar a carteira duas vezes.
 	GetOpeningByIdempotencyKey(ctx context.Context, key string) (*wagering.WagerTransaction, error)
 
+	// GetByReferenceAndKind acha a transação de um tipo que já aponta para uma
+	// referência (por exemplo, o REFUND de uma BET).
+	//
+	// Existe para a recusa de dupla reversão ter mensagem boa. Quem IMPEDE a
+	// dupla reversão é o índice parcial `UNIQUE (reference_transaction_id, kind)`,
+	// mas ele fala pelo `23505`, que aborta a transação e não diz qual das
+	// unicidades foi violada. Consultando antes, o serviço sabe que o que houve
+	// foi "esta referência já foi revertida desse jeito" e responde com o código
+	// estável `ALREADY_REVERSED`.
+	//
+	// A consulta não substitui o índice: entre ela e o INSERT existe uma janela,
+	// e quem decide a corrida continua sendo o banco.
+	GetByReferenceAndKind(ctx context.Context, referenceID wagering.TransactionID, kind wagering.Kind) (*wagering.WagerTransaction, error)
+
 	// Save grava o estado atual da transação (status, saldo resultante,
 	// referência resolvida, tentativas).
 	Save(ctx context.Context, t *wagering.WagerTransaction) error

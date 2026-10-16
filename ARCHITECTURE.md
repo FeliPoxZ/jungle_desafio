@@ -35,8 +35,8 @@ caminho de escrita ponta a ponta (HTTP/SQS) entra nas Fases 6–9.
 | Transação de aposta (máquina de estados) | `[PRONTO]` |
 | Schema, constraints e imutabilidade | `[PRONTO]` |
 | Transações e concorrência (Unit of Work) | `[PRONTO]` |
-| Idempotência | `[PARCIAL]` — persistência `[PRONTO]`, decisão de replay na Fase 6 |
-| Caso de uso da aplicação | `[PLANEJADO]` — Fase 6 |
+| Idempotência | `[PRONTO]` — persistência + decisão de replay no caso de uso |
+| Caso de uso da aplicação | `[PARCIAL]` — `Process` pronto (Fase 6a); abertura de carteira, leituras e reconciliação na 6b/6c |
 | HTTP + autenticação | `[PLANEJADO]` — Fase 7 |
 | Consumo do SQS (inbox) | `[PLANEJADO]` — Fase 8 |
 | Outbox publisher e worker de referências | `[PLANEJADO]` — Fase 9 |
@@ -58,15 +58,18 @@ internal/
     wallet/        carteira: saldo, versão, movimentação
     wagering/      transação de aposta: tipo, estado, eventos
   app/             APLICAÇÃO
-    ports/         contratos (interfaces + sentinelas de erro + Cursor)
+    ports/         contratos (interfaces + sentinelas de erro + Cursor + Clock)
+    wagering/      caso de uso: domínio + repositórios + outbox na MESMA transação
   infra/           ADAPTADORES
     postgres/      pgx: pool, unit of work, repositórios
   httpapi/         adaptador HTTP: roteador, middlewares, respostas
   platform/        utilitários sem regra de negócio
     canonicaljson/ JSON determinístico (hash de payload)
+    clock/         relógio do processo, em UTC
     idgen/         geração de identificador (UUID v7)
   config/          configuração validada na inicialização
   observability/   log estruturado com correlação, métricas Prometheus
+test/integration/  testes do caminho completo (camadas reais, banco do compose)
 deploy/            compose auxiliares: init do Postgres, filas, realm do Keycloak
 docs/              documentação e evidências
 ```
@@ -116,6 +119,15 @@ de outra fase.
 tipos distintos para o mesmo conceito, o serviço passaria o dia convertendo — e
 uma conversão esquecida viraria string vazia, que é exatamente o bug silencioso
 que `ledger.NewEntry` recusa.
+
+### O erro de domínio é um tipo só, e isso vale para `wagering` também
+
+`money.Error`, `wallet.Error`, `ledger.Error` e `wagering.Error` são **alias** de
+`domainerrors.Error`. Não é economia de código: `domainerrors.CodeOf` atravessa a
+cadeia de erros com `errors.As`, e um pacote que redefinisse o struct ficaria
+**fora** dessa travessia — o `failureCode` da resposta sairia em branco para todo
+erro daquele pacote, sem erro de compilação e sem teste vermelho. Aconteceu com
+`wagering` (defeito 13 da §15).
 
 ---
 
@@ -406,7 +418,7 @@ exemplo). **O retry envolve o `Run` inteiro.**
 
 ---
 
-## 7. Idempotência `[PARCIAL]`
+## 7. Idempotência `[PRONTO]`
 
 ### [PRONTO] Persistência
 
@@ -437,7 +449,7 @@ a mensagem já existia. Reentrega é o caminho esperado (o SQS garante *at least
 once*), não uma falha. O `body_hash` guarda o conteúdo: hash igual é replay, hash
 diferente é conflito real.
 
-### [PLANEJADO] Fase 6 — a decisão de replay
+### [PRONTO] A decisão de replay (Fase 6a)
 
 Ao reenviar o mesmo pedido:
 
@@ -448,7 +460,37 @@ external_transaction_id com outra chave → CONFLITO (409)
 ```
 
 **O replay devolve o saldo ORIGINAL**, não o saldo de agora — a carteira pode ter
-mudado desde então, e o cliente pediu o resultado daquela operação.
+mudado desde então, e o cliente pediu o resultado daquela operação. Zero é saldo
+legítimo, então a distinção entre "não calculado" (rejeição, pendência) e "zero"
+vem de `HasResultBalance`, e não do valor.
+
+### [DECISÃO] São duas leituras, e a segunda compara a chave
+
+A primeira consulta é pela chave de idempotência; a segunda, pela identidade
+financeira `(providerId, externalTransactionId)`. As duas são comandos separados,
+e **entre elas outra instância pode comitar a mesma operação**.
+
+Comparar a chave da linha encontrada na segunda consulta não é zelo: sem isso,
+esse instante é lido como "registrada sob outra chave" e um pedido **legítimo**
+recebe 409. Foi um teste de 12 disparos simultâneos da mesma operação que pegou —
+a linha aparecia entre a primeira e a segunda consulta (`docs/evidencias/FASE_6.md`
+§6.2). O texto do README sustenta a regra: a operação não pode ser reaplicada
+usando **outra** chave.
+
+### [DECISÃO] O conflito de unicidade é retentado, não é erro
+
+Quando o `INSERT` devolve `23505`, quem chegou segundo **repete a transação
+inteira**. A segunda passada encontra a linha gravada pela primeira e responde
+replay (mesma chave) ou conflito (chave diferente, payload diferente, referência
+já revertida). No nosso schema, unicidade violada quer dizer "alguém chegou
+primeiro" — não é falha de banco.
+
+### [DECISÃO] Retry esgotado não grava `FAILED`
+
+A transação não commitou, então **não existe linha** para marcar. Esgotadas as
+tentativas, o erro transitório sobe (503 na borda) e o cliente pode repetir. O
+`FAILED` fica reservado aos caminhos em que a linha já está persistida — o worker
+de referências, que retoma uma linha `PENDING_REFERENCE` existente.
 
 ---
 
@@ -512,51 +554,111 @@ da mesma carteira precisam ser processados em ordem.
 
 ---
 
-## 9. Caso de uso da aplicação `[PLANEJADO]` — Fase 6
+## 9. Caso de uso da aplicação `[PARCIAL]` — Fase 6a (`Process`)
 
-### A ordem exata dentro da transação
+### O que existe hoje
+
+`internal/app/wagering`: `Process(ctx, Request) (Result, error)` — a operação
+externa ponta a ponta, em UMA transação. `OpenWallet`, as consultas e o
+`Reconcile` entram nos blocos 6b/6c.
+
+**Rejeição de negócio é desfecho, não erro.** `Result` carrega `Status`,
+`FailureCode` e o saldo (quando existe); `error` fica para o que impede a
+operação de existir: entrada inválida, conflito de idempotência,
+indisponibilidade. A borda decide o status HTTP a partir disso — o caso de uso não
+conhece HTTP.
+
+### A ordem implementada dentro da transação
 
 ```
-1.  valida Idempotency-Key e calcula o hash canônico
-2.  SELECT por (provider_id, idempotency_key)
-      ├─ existe + hash igual   → REPLAY, sem movimentar
-      └─ existe + hash diferente → CONFLITO (409)
+1.  normaliza, valida e calcula o hash canônico dos campos de negócio
+2.  SELECT por (provider_id, idempotency_key)          ← replay x conflito
+    SELECT por (provider_id, external_transaction_id)  ← outra chave x mesma chave
 3.  SELECT carteira FOR UPDATE        ← o lock ANTES de qualquer cálculo
-4.  valida moeda da carteira × moeda da operação
-5.  resolve a referência (REFUND/ROLLBACK)
-      ├─ ausente  → PENDING_REFERENCE + evento + 202
-      └─ presente → valida provedor/jogador/carteira/moeda/rodada e o valor
-6.  cria a transação e grava (INSERT)
+4.  cria a transação e grava (INSERT) ← todo desfecho é um estado DA LINHA
+5.  valida jogador e moeda da carteira × operação
+6.  resolve a referência
+      ├─ ausente (reversão) → PENDING_REFERENCE + evento + 202, sem movimentar
+      ├─ não processável/divergente → REJECTED + evento
+      └─ compatível → valida tipo, valor e reversão anterior
 7.  aplica a movimentação (Debit/Credit → Movement)
 8.  grava saldo + versão (Update com mov.VersionBefore())
 9.  grava o lançamento no ledger
-10. transiciona e grava o estado
+10. transiciona, vincula a referência interna e grava o estado (Save)
 11. grava os eventos na outbox
 12. COMMIT  ← só depois disso a resposta sai
 ```
 
+**Duas diferenças em relação ao desenho original do PLANO, ambas deliberadas:**
+
+| Ajuste | Motivo |
+| --- | --- |
+| O `INSERT` (4) vem antes da resolução da referência (6) | Todo desfecho — rejeição, espera por referência, conclusão — é um **estado da linha**; sem a linha não há onde gravá-lo. O `INSERT` grava `PENDING` e o `Save` grava o definitivo, no mesmo commit: nenhuma outra transação chega a ver o `PENDING` |
+| O instante (`now`) é lido **depois** do lock | Ele vai para o `occurredAt` dos eventos, e o publisher publica por `occurred_at` com `MessageGroupId` = carteira. Lido antes do lock, a ordem publicada seria a de **início** das transações, não a dos efeitos confirmados — e o `balanceAfter` de duas operações da mesma carteira poderia chegar invertido. Depois do lock, os instantes da mesma carteira são monotônicos, porque o lock os serializa |
+
+### A referência interna de uma reversão resolvida na hora
+
+O agregado só aceita `ResolveReference` em `PENDING_REFERENCE`. Então a reversão
+cuja referência **já está disponível** passa por `MarkPendingReference` +
+`ResolveReference` antes de concluir: é a transição que representa "esta operação
+depende de uma referência", verdade mesmo quando ela já chegou. O estado
+intermediário não é observável (`INSERT` grava `PENDING`, `UPDATE` grava
+`PROCESSED`), e o `next_resolution_attempt_at` que sobra na linha concluída é
+inerte — a coluna só é lida para linhas `PENDING_REFERENCE`.
+
+`reference_transaction_id` só é gravado quando a operação **depende** da
+referência. Em `BET`, `WIN` e `LOSS` a referência é informativa: gravada ali, o
+índice parcial `UNIQUE (reference_transaction_id, kind)` passaria a tratar a
+operação como reversão daquele fato, e dois `WIN` apontando para a mesma `BET`
+colidiriam.
+
 ### Códigos de falha estáveis
 
-| Situação | `failureCode` | HTTP |
+| Situação | `failureCode` | Desfecho |
 | --- | --- | --- |
-| `BET` sem saldo | `INSUFFICIENT_FUNDS` | 422 |
-| `ROLLBACK` que exigiria saldo | `ROLLBACK_INSUFFICIENT_FUNDS` | 422 |
-| reversão já aplicada | `ALREADY_REVERSED` | 422 |
-| referência não encontrada | `REFERENCE_NOT_FOUND` | 202 (pendente) |
-| referência rejeitada | `REFERENCE_NOT_PROCESSABLE` | 422 |
-| referência divergente | `REFERENCE_MISMATCH` | 422 |
-| moeda incompatível | `WALLET_CURRENCY_MISMATCH` | 422 |
-| mesma chave, hash diferente | — | 409 |
+| `BET` sem saldo | `INSUFFICIENT_FUNDS` | rejeição gravada (422) |
+| `ROLLBACK` que exigiria saldo | `ROLLBACK_INSUFFICIENT_FUNDS` | rejeição gravada (422) |
+| reversão já aplicada (mesmo tipo, ou `ROLLBACK` de `BET` já estornada) | `ALREADY_REVERSED` | rejeição gravada (422) |
+| referência que existe e terminou rejeitada/falha | `REFERENCE_NOT_PROCESSABLE` | rejeição gravada (422) |
+| referência divergente, tipo não reversível ou valor diferente | `REFERENCE_MISMATCH` | rejeição gravada (422) |
+| moeda da operação ≠ moeda da carteira | `WALLET_CURRENCY_MISMATCH` | rejeição gravada (422) |
+| carteira de outro jogador | `WALLET_PLAYER_MISMATCH` | rejeição gravada (422) |
+| reversão sem referência ainda | — | `PENDING_REFERENCE` + evento (202) |
+| referência nunca chegou (TTL esgotado, worker da Fase 9) | `REFERENCE_NOT_FOUND` | rejeição gravada (422) |
+| mesma chave, hash diferente / identidade externa com outra chave | `IDEMPOTENCY_CONFLICT` | erro (409) |
+| carteira inexistente | `WALLET_NOT_FOUND` | erro — a FK impede gravar a linha |
+| sem chave, `OPENING` de fora, `LOSS` ≠ 0.00, reversão sem referência, tipo desconhecido | `IDEMPOTENCY_KEY_REQUIRED`, `OPERATION_NOT_ALLOWED`, `INVALID_AMOUNT`, `REFERENCE_REQUIRED`, `INVALID_TRANSACTION` | erro de entrada, **nada gravado** (400) |
 
 `INSUFFICIENT_FUNDS` e `ROLLBACK_INSUFFICIENT_FUNDS` são **códigos diferentes de
 propósito**: um é "o jogador não tem saldo para apostar", o outro é "não dá para
-desfazer". Se fossem o mesmo, a operação de suporte perderia a informação de que
-precisa.
+desfazer". Quem separa os dois é o **tipo da operação**, porque o domínio devolve
+o mesmo sentinela nos dois casos.
 
-### Decisão de arquitetura pendente
+A distinção entre erro de entrada (nada gravado, a mesma chave pode ser reenviada
+depois de corrigida) e rejeição gravada (definitiva, com `failureCode` no
+histórico) é o que o README chama de "distinguir entradas corrigíveis de
+resultados definitivos".
 
-Onde ficam as interfaces que o serviço consome — **resolvido:** `internal/app/ports`.
-O serviço recebe `ports.UnitOfWork` e `ports.Repos`, sem conhecer `infra/postgres`.
+### Política de retry
+
+Três tentativas, 20 ms × tentativa, envolvendo **a transação inteira**. Dois
+motivos: falha transitória (`55P03`, deadlock, conexão) e conflito de unicidade
+(alguém chegou primeiro). Rejeição de negócio nunca é repetida — ela é desfecho.
+
+### As interfaces ficam em `app/ports`
+
+O serviço recebe `ports.UnitOfWork`, `ports.Clock` e `idgen.Generator`, e trabalha
+sobre `ports.Repos`. Ele não conhece `infra/postgres`, e o teste de unidade roda
+com um Unit of Work em memória — com semântica real de transação (cópia do estado
+e troca só no fim sem erro), porque senão "falha no meio não deixa resíduo" seria
+uma afirmação vazia.
+
+### O que falta na Fase 6
+
+`OpenWallet` (6b: carteira + `OPENING` + crédito + dois eventos no mesmo commit;
+saldo zero não cria `OPENING`), e as leituras + `Reconcile` (6c: `GetTransaction`,
+`GetByProviderExternalID`, `GetWallet`, `ListLedger` com cursor, reconciliação em
+visão consistente, sem alterar saldo).
 
 ---
 
@@ -600,6 +702,9 @@ tamanho da outbox, idade do pendente mais antigo, DLQ) e alertas.
 | Falha | O que acontece | Estado |
 | --- | --- | --- |
 | Queda no meio da transação | rollback; nada gravado | `[PRONTO]` |
+| Falha em qualquer passo (inclusive no último, o evento) | o commit não acontece: saldo, ledger, transação e evento voltam juntos | `[PRONTO]` |
+| Reenvio simultâneo da mesma operação | um insere; o outro recebe `23505`, repete a transação inteira e devolve o resultado persistido | `[PRONTO]` |
+| Disputa de lock na mesma carteira (`55P03`) | classificado como transitório e repetido (3 tentativas); esgotado, sobe como indisponibilidade | `[PRONTO]` |
 | Queda depois do commit, antes de publicar | evento fica na outbox e o lease expira → republica | `[PRONTO]` (mecanismo) / `[PLANEJADO]` (worker) |
 | Queda depois de publicar, antes de marcar | republica com o **mesmo `eventId`** → consumidor deduplica | `[PLANEJADO]` |
 | Mensagem reentregue pelo SQS | inbox recusa a segunda | `[PRONTO]` (mecanismo) |
@@ -639,6 +744,10 @@ introduzido de propósito, e todos foram corrigidos com teste que os trava.
 | 10 | 5 | `RETURNING` com coluna ambígua no `ClaimBatch` | `42702 column reference is ambiguous` | colunas qualificadas pelo alias |
 | 11 | refactor | Sentinelas de erro duplicados em `ports` e `postgres` | `ports.IsConflict` devolveria `false` para erro do repositório, **silenciosamente** | alias: um jogo só, com teste de regressão |
 | 12 | refactor | `wagering.TransactionID` e `ledger.TransactionID` eram tipos distintos | conversão obrigatória em todo o serviço; conversão esquecida viraria string vazia | tipo único em `ids`, com alias |
+| 13 | 6a | **`wagering.Error` era um tipo próprio**, e não alias de `domainerrors.Error` | `domainerrors.CodeOf` devolvia `""` para TODO erro de `wagering`: `failureCode` em branco na resposta para `REFERENCE_REQUIRED`, `OPERATION_NOT_ALLOWED`, `ALREADY_REVERSED`... Sem erro de compilação e sem teste vermelho, porque cada pacote testava com a sua própria cópia do extrator de Code | alias, como em `money`/`wallet`/`ledger`; o texto do erro passou a `"CODE: mensagem"` |
+| 14 | 6a | **Corrida entre as duas leituras de idempotência** virava conflito falso | 12 disparos simultâneos da MESMA operação: entre 1 e 4 pedidos legítimos recebiam `IDEMPOTENCY_CONFLICT` em vez de replay (3 de 4 execuções) | a segunda leitura só é conflito se a chave da linha encontrada for DIFERENTE da pedida; chave igual decide pelo hash |
+| 15 | 6a | **Dois pacotes de integração truncando o mesmo banco em paralelo** | `go test -tags=integration ./...` falhava com "registro não encontrado", FK violada e `40P01` no `TRUNCATE`, enquanto cada pacote passava sozinho | lock consultivo (`pg_advisory_lock`) no `TestMain` dos dois pacotes |
+| 16 | 6a | O `lock_timeout` de 3s do pool abortava a **espera pelo lock consultivo** | o segundo pacote de integração morria com `55P03` antes de a outra suíte terminar | a sessão do harness espera sem prazo (`SET lock_timeout = 0`) |
 
 ---
 
@@ -653,7 +762,11 @@ que funciona não ajuda quem vai manter.
 | `Kind` é `string`, então um valor inválido responde `true` a `MovesMoney` | Mitigado por `Validate` rodar antes em todo caminho. Um tipo fechado exigiria enumeração em Go, que não existe |
 | Sem foreign key de `outbox_events` para o agregado | A outbox precisa sobreviver à remoção do agregado; ela é a fila, não um detalhe dele |
 | `testcontainers-go` baixado e **não usado** | Os testes apontam para o Postgres do compose. Remover com `go mod tidy` na Fase 12 |
-| `LOSS` com referência: o domínio não valida | O README permite referência opcional. Decidir na Fase 6 se valida quando enviada |
+| `LOSS` com referência: o serviço confere quando ela resolve | O README permite referência opcional. A régua adotada está registrada em `docs/evidencias/FASE_6.md` §8: referência informativa não bloqueia a operação |
+| A ordem entre os DOIS eventos da MESMA transação não é garantida | `WagerTransactionProcessed` e `WalletBalanceChanged` compartilham o `occurred_at`, e a outbox não tem coluna de sequência. Os dois carregam `transactionId`, e o consumidor precisa ser idempotente de qualquer forma |
+| A ordenação da outbox por `occurred_at` depende do relógio do processo | Um salto para trás do relógio poderia inverter a ordem de duas operações da mesma carteira. Ordem forte exigiria sequência por carteira (coluna/sequence) — fora do escopo |
+| O dublê em memória não prova lock nem concorrência | Ele tem semântica de transação (cópia do estado, troca só no fim sem erro), mas não tem `FOR UPDATE`. Lock, lost update e disputa entre processos são provados contra o PostgreSQL real |
+| `next_resolution_attempt_at` fica preenchido em reversão já `PROCESSED` | Efeito de usar `MarkPendingReference` + `ResolveReference`, que é o único caminho que o agregado oferece para vincular a referência interna. A coluna só é lida para linhas `PENDING_REFERENCE`, então o valor é inerte |
 | Sem `ARCHITECTURE.md` de HTTP/SQS/workers | As seções 10 e 11 estão `[PLANEJADO]`; entram nas Fases 7–9 |
 
 ---
@@ -675,14 +788,20 @@ go test -race ./...
 # integração (banco SEPARADO: os testes truncam tabelas)
 $env:TEST_DATABASE_URL='postgres://jungleg:jungleg@localhost:5432/jungle_test?sslmode=disable'
 go test -count=1 -race -tags=integration -timeout 300s ./...
-
 # as 30 operações inválidas que o banco precisa recusar
 docker exec -i jungleg-postgres psql -U jungleg -d jungleg < deploy/postgres/verify_constraints.sql
 ```
 
-**Números atuais:** 574 casos no domínio (Fases 1–3) + 40 testes de persistência
-(Fase 5: 15 de unidade, incluindo os 2 de contrato, e 25 de integração) + 3 de
-`idgen`. `go test -race` verde nos 12 pacotes. Cobertura: `money` 97,9%,
-`wallet` 99,0%, `wagering` 100,0%.
+**Números atuais:** 574 casos no domínio (Fases 1–3) + **38** testes de
+persistência (Fase 5: 13 de unidade, incluindo os 3 de contrato e classificação, e
+25 de integração) + 3 de `idgen` + **32 casos** do caso de uso (Fase 6a) + **15
+casos** de integração do caminho completo. `go test -race` verde nos **13 pacotes**
+de unidade e nos 2 de integração. Cobertura: `money` 97,9%, `wallet` 99,0%,
+`wagering` 100,0%.
 
-**Evidências por fase:** `docs/evidencias/FASE_1.md` a `FASE_5.md`.
+Os dois pacotes de integração usam o MESMO banco de teste e truncam tabelas.
+Como `go test ./...` roda pacotes em processos paralelos, cada `TestMain` toma um
+lock consultivo do PostgreSQL (`pg_advisory_lock`) e espera a vez — **não é
+preciso `-p 1`**.
+
+**Evidências por fase:** `docs/evidencias/FASE_1.md` a `FASE_6.md`.

@@ -93,6 +93,14 @@ func (r *txnRepo) GetOpeningByIdempotencyKey(ctx context.Context, key string) (*
 	return r.um(ctx, sql, key)
 }
 
+func (r *txnRepo) GetByReferenceAndKind(ctx context.Context, referenceID wagering.TransactionID, kind wagering.Kind) (*wagering.WagerTransaction, error) {
+	const sql = `SELECT ` + txnColumns + `
+		FROM wager_transactions
+		WHERE reference_transaction_id = $1 AND kind = $2`
+
+	return r.um(ctx, sql, string(referenceID), kind.String())
+}
+
 func (r *txnRepo) Save(ctx context.Context, t *wagering.WagerTransaction) error {
 	const sql = `
 		UPDATE wager_transactions

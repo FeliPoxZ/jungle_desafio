@@ -1159,17 +1159,22 @@ func TestAcessoresComReferenciaPreenchida(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestErrorTextoECodigos(t *testing.T) {
+	// O texto é "CODE: mensagem", o mesmo formato de `money`, `wallet` e
+	// `ledger`, porque `Error` é o MESMO tipo nos quatro. O prefixo com o nome do
+	// pacote saiu junto com o tipo próprio: quem precisa do contexto de origem
+	// envelopa com fmt.Errorf("wagering: ...: %w", err), como o caso de uso faz.
+	// O contrato é o Code; a mensagem é para humano.
 	casos := []struct {
 		err  error
 		want string
 	}{
-		{ErrInvalidTransaction, "wagering: INVALID_TRANSACTION: transação inválida"},
-		{ErrInvalidTransition, "wagering: INVALID_TRANSITION: transição de estado inválida"},
-		{ErrTerminalState, "wagering: TERMINAL_STATE: estado terminal não aceita transição"},
-		{ErrMissingReference, "wagering: REFERENCE_REQUIRED: referência à transação original é obrigatória"},
-		{ErrInternalKind, "wagering: OPERATION_NOT_ALLOWED: tipo de operação interna não é aceito de fora"},
-		{ErrAlreadyReversed, "wagering: ALREADY_REVERSED: referência já revertida para este tipo"},
-		{ErrProcessingFailed, "wagering: PROCESSING_FAILED: falha permanente de processamento"},
+		{ErrInvalidTransaction, "INVALID_TRANSACTION: transação inválida"},
+		{ErrInvalidTransition, "INVALID_TRANSITION: transição de estado inválida"},
+		{ErrTerminalState, "TERMINAL_STATE: estado terminal não aceita transição"},
+		{ErrMissingReference, "REFERENCE_REQUIRED: referência à transação original é obrigatória"},
+		{ErrInternalKind, "OPERATION_NOT_ALLOWED: tipo de operação interna não é aceito de fora"},
+		{ErrAlreadyReversed, "ALREADY_REVERSED: referência já revertida para este tipo"},
+		{ErrProcessingFailed, "PROCESSING_FAILED: falha permanente de processamento"},
 	}
 
 	for _, c := range casos {

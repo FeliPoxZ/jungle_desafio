@@ -42,7 +42,8 @@ import (
 
 var poolTeste *Pool
 
-// TestMain sobe o pool, aplica as migrations e limpa ao final.
+// TestMain sobe o pool, toma o banco de teste só para esta suíte, aplica as
+// migrations e limpa ao final.
 func TestMain(m *testing.M) {
 	dsn := strings.TrimSpace(os.Getenv("TEST_DATABASE_URL"))
 	if dsn == "" {
@@ -51,11 +52,6 @@ func TestMain(m *testing.M) {
 	}
 
 	ctx := context.Background()
-
-	if err := migrar(dsn); err != nil {
-		fmt.Printf("falha ao aplicar migrations no banco de teste: %v\n", err)
-		os.Exit(1)
-	}
 
 	cfg := &config.Config{
 		Database: config.DatabaseConfig{
@@ -78,7 +74,54 @@ func TestMain(m *testing.M) {
 	}
 	defer poolTeste.Close()
 
+	// O banco de teste é UM só, e mais de um pacote de integração trunca as
+	// tabelas. Com `go test ./...` os pacotes rodam em PROCESSOS paralelos, então
+	// sem serializar um apaga os dados do outro no meio de um teste — o sintoma é
+	// "registro não encontrado" e deadlock no TRUNCATE.
+	segurar, err := segurarBancoDeTeste(ctx, poolTeste)
+	if err != nil {
+		fmt.Printf("falha ao segurar o banco de teste: %v\n", err)
+		os.Exit(1)
+	}
+	// A conexão NÃO é devolvida ao pool: lock consultivo pertence à sessão, e
+	// devolvê-la poderia liberá-lo. O fim do processo libera de qualquer forma.
+
+	if err := migrar(dsn); err != nil {
+		fmt.Printf("falha ao aplicar migrations no banco de teste: %v\n", err)
+		os.Exit(1)
+	}
+
+	_ = segurar
 	os.Exit(m.Run())
+}
+
+// chaveLockIntegracao identifica "a suíte de integração do jungle" no espaço de
+// locks consultivos. O valor é arbitrário; só precisa ser o MESMO nos pacotes.
+const chaveLockIntegracao = int64(0x6a756e676c65) // "jungle" em hexadecimal
+
+// segurarBancoDeTeste bloqueia até este processo ser o dono do banco de teste.
+//
+// O lock consultivo do PostgreSQL resolve a disputa sem depender de flag de
+// linha de comando (`-p 1`): quem chega segundo espera o primeiro terminar.
+//
+// A espera é sem prazo (`lock_timeout = 0`) de propósito: o pool configura
+// `lock_timeout` de 3s para toda query da conexão, e isso vale também para a
+// espera por lock consultivo — com o prazo ligado, o segundo processo morre com
+// 55P03 antes de a outra suíte terminar.
+func segurarBancoDeTeste(ctx context.Context, pool *Pool) (*pgxpool.Conn, error) {
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := conn.Exec(ctx, `SET lock_timeout = 0`); err != nil {
+		conn.Release()
+		return nil, err
+	}
+	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, chaveLockIntegracao); err != nil {
+		conn.Release()
+		return nil, err
+	}
+	return conn, nil
 }
 
 // migrar aplica as migrations embutidas no banco de teste.
