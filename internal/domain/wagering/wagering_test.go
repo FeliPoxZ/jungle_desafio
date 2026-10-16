@@ -513,11 +513,50 @@ func TestMarkProcessedComMoedaInvalida(t *testing.T) {
 	if err := tx.MarkProcessed(invalido, opNow.Add(time.Minute)); err == nil {
 		t.Fatal("moeda inválida deveria falhar")
 	}
-	// A transição roda antes da validação do saldo, então o estado já mudou.
-	// Este teste documenta a ordem: se a validação for movida para antes, ele
-	// quebra de propósito.
+	// A validação roda ANTES da transição: erro não pode deixar a transação em
+	// estado terminal sem o saldo que a justifica.
+	if tx.Status() != StatusPending {
+		t.Errorf("status = %q, esperado PENDING (validação antes da transição)", tx.Status())
+	}
+	if !tx.UpdatedAt().Equal(opNow) {
+		t.Errorf("updatedAt mudou apesar do erro: %v", tx.UpdatedAt())
+	}
+	if !tx.ResultBalance().IsZero() {
+		t.Errorf("resultBalance preenchido apesar do erro: %s", tx.ResultBalance())
+	}
+}
+
+func TestMarkProcessedComMoedaDiferente(t *testing.T) {
+	// O saldo devolvido ao provedor é o da carteira da operação. Resultado em
+	// outra moeda é resposta incoerente, mesmo sendo uma moeda válida.
+	tx := novaTransacao(t)
+
+	err := tx.MarkProcessed(dinheiro(t, "975.00", "USD"), opNow.Add(time.Minute))
+	if err == nil {
+		t.Fatal("saldo resultante em outra moeda deveria falhar")
+	}
+	// Reusa o sentinela do dinheiro: uma moeda incompatível é sempre a mesma
+	// falha, e o mapeamento da Fase 7 traduz um sentinela para um failureCode.
+	if !errors.Is(err, money.ErrCurrencyMismatch) {
+		t.Errorf("err = %v, esperado money.ErrCurrencyMismatch", err)
+	}
+	if tx.Status() != StatusPending {
+		t.Errorf("status = %q, esperado PENDING", tx.Status())
+	}
+	if !tx.ResultBalance().IsZero() {
+		t.Errorf("resultBalance preenchido: %s", tx.ResultBalance())
+	}
+}
+
+func TestMarkProcessedComSaldoGrande(t *testing.T) {
+	tx := novaTransacao(t)
+
+	// O teto do domínio é aceito: a validação aqui é de moeda, não de faixa.
+	if err := tx.MarkProcessed(dinheiro(t, "90000000000000.00", "BRL"), opNow.Add(time.Minute)); err != nil {
+		t.Fatalf("saldo no teto deveria ser aceito: %v", err)
+	}
 	if tx.Status() != StatusProcessed {
-		t.Errorf("status = %q (a validação do saldo ocorre depois da transição)", tx.Status())
+		t.Errorf("status = %q", tx.Status())
 	}
 }
 
@@ -525,7 +564,7 @@ func TestMarkRejected(t *testing.T) {
 	tx := novaTransacao(t)
 	depois := opNow.Add(time.Minute)
 
-	if err := tx.MarkRejected("INSUFFICIENT_FUNDS", "saldo insuficiente", depois); err != nil {
+	if err := tx.MarkRejected("INSUFFICIENT_FUNDS", depois); err != nil {
 		t.Fatalf("MarkRejected falhou: %v", err)
 	}
 	if tx.Status() != StatusRejected {
@@ -542,7 +581,7 @@ func TestMarkRejected(t *testing.T) {
 func TestMarkRejectedSemFailureCode(t *testing.T) {
 	tx := novaTransacao(t)
 
-	if err := tx.MarkRejected("", "motivo", opNow.Add(time.Minute)); err == nil {
+	if err := tx.MarkRejected("", opNow.Add(time.Minute)); err == nil {
 		t.Fatal("failureCode vazio deveria falhar")
 	}
 	if tx.Status() != StatusPending {
@@ -663,7 +702,7 @@ func TestEstadoTerminalRecusaQualquerTransicao(t *testing.T) {
 			return tx.MarkProcessed(dinheiro(t, "1.00", "BRL"), now)
 		},
 		"REJECTED": func(tx *WagerTransaction, now time.Time) error {
-			return tx.MarkRejected("INSUFFICIENT_FUNDS", "motivo", now)
+			return tx.MarkRejected("INSUFFICIENT_FUNDS", now)
 		},
 		"FAILED": func(tx *WagerTransaction, now time.Time) error {
 			return tx.MarkFailed(CodeProcessingFailed, now)
@@ -683,7 +722,7 @@ func TestEstadoTerminalRecusaQualquerTransicao(t *testing.T) {
 
 			tentativas := map[string]func() error{
 				"MarkProcessed":        func() error { return tx.MarkProcessed(dinheiro(t, "1.00", "BRL"), depois) },
-				"MarkRejected":         func() error { return tx.MarkRejected("X", "y", depois) },
+				"MarkRejected":         func() error { return tx.MarkRejected("X", depois) },
 				"MarkFailed":           func() error { return tx.MarkFailed("X", depois) },
 				"MarkPendingReference": func() error { return tx.MarkPendingReference(1, depois, depois) },
 			}
@@ -856,7 +895,7 @@ func TestNewEventValidacoes(t *testing.T) {
 func TestRejectedEvent(t *testing.T) {
 	tx := novaTransacao(t)
 	depois := opNow.Add(time.Minute)
-	if err := tx.MarkRejected("INSUFFICIENT_FUNDS", "saldo insuficiente", depois); err != nil {
+	if err := tx.MarkRejected("INSUFFICIENT_FUNDS", depois); err != nil {
 		t.Fatal(err)
 	}
 
@@ -957,7 +996,7 @@ func TestNewBalanceChangedEventValidacoes(t *testing.T) {
 func TestEventoSerializaNoFormatoDoContrato(t *testing.T) {
 	tx := novaTransacao(t)
 	depois := opNow.Add(time.Minute)
-	if err := tx.MarkRejected("INSUFFICIENT_FUNDS", "saldo insuficiente", depois); err != nil {
+	if err := tx.MarkRejected("INSUFFICIENT_FUNDS", depois); err != nil {
 		t.Fatal(err)
 	}
 	ev, err := tx.RejectedEvent("evt-1", "corr-1", "", depois)
@@ -1164,7 +1203,7 @@ func TestIsNaoCasaComErroDeOutroTipo(t *testing.T) {
 
 func TestErroAtravessaEnvelopamento(t *testing.T) {
 	tx := novaTransacao(t)
-	if err := tx.MarkRejected("X", "y", opNow.Add(time.Minute)); err != nil {
+	if err := tx.MarkRejected("X", opNow.Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
 	err := tx.MarkFailed("Y", opNow.Add(2*time.Minute))

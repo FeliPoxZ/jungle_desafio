@@ -325,12 +325,21 @@ func (t *WagerTransaction) MatchesPayload(hash Hash) bool { return t.payloadHash
 // ---------------------------------------------------------------------------
 
 // MarkProcessed conclui a operação com sucesso.
+//
+// Valida o saldo resultante ANTES de transicionar: erro de validação não pode
+// deixar a transação em estado terminal sem o saldo que a justifica.
 func (t *WagerTransaction) MarkProcessed(resultBalance money.Money, now time.Time) error {
-	if err := t.transicionar(StatusProcessed, now); err != nil {
-		return err
-	}
 	if err := resultBalance.Currency().Validate(); err != nil {
 		return invalid("moeda do saldo resultante inválida: %v", err)
+	}
+	// O saldo devolvido ao provedor é o da carteira da operação: resultado em
+	// outra moeda seria uma resposta incoerente para o cliente. Reusa o
+	// sentinela do dinheiro para moeda incompatível ser sempre a mesma falha.
+	if resultBalance.Currency() != t.amount.Currency() {
+		return money.ErrCurrencyMismatch
+	}
+	if err := t.transicionar(StatusProcessed, now); err != nil {
+		return err
 	}
 	t.resultBalance = resultBalance
 	return nil
@@ -338,7 +347,10 @@ func (t *WagerTransaction) MarkProcessed(resultBalance money.Money, now time.Tim
 
 // MarkRejected registra a recusa por regra de negócio, com o código estável que
 // o cliente vai receber.
-func (t *WagerTransaction) MarkRejected(failureCode, message string, now time.Time) error {
+//
+// O código é o que carrega o significado para o cliente: a mensagem humana é
+// derivada dele na borda, então o domínio não guarda texto de erro.
+func (t *WagerTransaction) MarkRejected(failureCode string, now time.Time) error {
 	if strings.TrimSpace(failureCode) == "" {
 		return invalid("failureCode é obrigatório na rejeição")
 	}
