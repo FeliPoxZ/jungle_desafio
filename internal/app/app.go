@@ -7,8 +7,9 @@
 // Organização em fx.Module (cada módulo é adicionado conforme a fase avança):
 //
 //	config     -> configuração validada + logger + métricas
-//	infra      -> pool do Postgres, client SQS, verificador OIDC
+//	infra      -> pool do Postgres, Unit of Work, verificador OIDC
 //	usecase    -> serviços de aplicação (regras financeiras)
+//	auth       -> autenticador OIDC (middleware, roles, providerId do token)
 //	httpapi    -> servidor HTTP, rotas e ciclo de vida
 //	worker     -> consumidor SQS, publisher da outbox, worker de referências
 package app
@@ -28,17 +29,12 @@ import (
 	"go.uber.org/fx/fxevent"
 
 	"github.com/FeliPoxZ/jungle_desafio/internal/config"
-	"github.com/FeliPoxZ/jungle_desafio/internal/httpapi"
 	"github.com/FeliPoxZ/jungle_desafio/internal/observability"
 )
 
 const (
 	// startTimeout limita quanto tempo o boot pode levar.
 	startTimeout = 30 * time.Second
-	// stopTimeout é o prazo total do shutdown. Precisa caber no prazo que o
-	// orquestrador dá antes de matar o processo com SIGKILL (docker stop = 10s
-	// por padrão, ajustável; usamos 25s no compose).
-	stopTimeout = 25 * time.Second
 )
 
 // ModuleOptions devolve as opções do Fx que compõem a aplicação.
@@ -47,6 +43,9 @@ const (
 func ModuleOptions() fx.Option {
 	return fx.Options(
 		configModule(),
+		infraModule(),
+		usecaseModule(),
+		authModule(),
 		httpapiModule(),
 	)
 }
@@ -64,38 +63,15 @@ func configModule() fx.Option {
 	)
 }
 
-// --- Módulo: HTTP ------------------------------------------------------------
-
-// healthCheckers agrega todos os HealthChecker registrados no grafo.
-// O grupo do Fx permite que cada camada (Postgres, SQS) se registre como
-// verificável sem que o httpapi precise conhecê-las por nome.
-type healthCheckers struct {
-	fx.In
-	Checkers []httpapi.HealthChecker `group:"health_checkers"`
-}
-
-func httpapiModule() fx.Option {
-	return fx.Module("httpapi",
-		fx.Provide(func(
-			cfg *config.Config,
-			logger *slog.Logger,
-			metrics *observability.Metrics,
-			checkers healthCheckers,
-		) *httpapi.Routes {
-			return httpapi.NewRouter(cfg, logger, metrics, checkers.Checkers)
-		}),
-		fx.Provide(httpapi.NewServer),
-		fx.Invoke(runHTTPServer),
-	)
-}
+// --- Runner ------------------------------------------------------------------
 
 // runHTTPServer registra o servidor no ciclo de vida do Fx.
 //
 // Ordem de encerramento (importa!): novas entradas param PRIMEIRO (o servidor
 // para de aceitar conexões), depois os workers são cancelados pelo Fx e só
 // então as dependências (pool, client SQS) são fechadas. Essa ordem é garantida
-// porque o hook de parada do servidor é registrado ANTES dos hooks dos workers,
-// e o Fx executa OnStop na ordem inversa do registro.
+// porque o hook de parada do servidor é registrado ANTES dos hooks das
+// dependências, e o Fx executa OnStop na ordem inversa do registro.
 func runHTTPServer(lc fx.Lifecycle, server *http.Server, cfg *config.Config, logger *slog.Logger) {
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
@@ -152,12 +128,25 @@ func Run(version, commit string) error {
 			slog.String("commit", commit),
 		)
 
+	// A configuração é carregada AQUI, antes do grafo, e não só por dentro dele
+	// (P7). Motivo: o prazo de shutdown é uma OPÇÃO do Fx (`fx.StopTimeout`),
+	// avaliada na construção do app — não há como um provider do grafo
+	// influenciá-la. Lendo a config antes, o prazo vem de `HTTP_STOP_TIMEOUT`
+	// (validado em `config.Validate`) em vez de uma constante no código.
+	//
+	// O `config.Load` continua no grafo: aqui é só a leitura antecipada do mesmo
+	// valor, e ele é validado nos dois lugares.
+	cfg, err := config.Load()
+	if err != nil {
+		return fmt.Errorf("app: %w", err)
+	}
+
 	fxApp := fx.New(
 		ModuleOptions(),
 		// Os eventos internos do Fx (boot/shutdown) saem no mesmo formato JSON
 		// do resto da aplicação, em vez do logger de texto padrão.
 		fx.WithLogger(func() fxevent.Logger { return &fxSlogLogger{logger: logger} }),
-		fx.StopTimeout(stopTimeout),
+		fx.StopTimeout(cfg.HTTP.StopTimeout),
 	)
 
 	// Sinal de cancelamento: SIGINT (Ctrl+C) e SIGTERM (docker stop / k8s).
@@ -170,13 +159,17 @@ func Run(version, commit string) error {
 	if err := fxApp.Start(startCtx); err != nil {
 		return fmt.Errorf("app: falha no start: %w", err)
 	}
-	logger.Info("application_started")
+	logger.Info("application_started",
+		slog.String("addr", cfg.HTTP.Addr),
+		slog.String("issuer", cfg.OIDC.Issuer),
+		slog.Duration("stopTimeout", cfg.HTTP.StopTimeout),
+	)
 
 	// Espera o sinal (ou o Fx pedir para parar).
 	<-ctx.Done()
 	logger.Info("shutdown_signal_received")
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), stopTimeout)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.HTTP.StopTimeout)
 	defer cancel()
 
 	if err := fxApp.Stop(shutdownCtx); err != nil {

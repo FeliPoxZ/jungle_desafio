@@ -53,6 +53,11 @@ type HTTPConfig struct {
 	ShutdownTimeout time.Duration `env:"SHUTDOWN_TIMEOUT" envDefault:"20s"`
 	RequestTimeout  time.Duration `env:"REQUEST_TIMEOUT" envDefault:"10s"`
 	MaxBodyBytes    int64         `env:"MAX_BODY_BYTES" envDefault:"1048576"` // 1 MiB
+	// StopTimeout é o prazo TOTAL do shutdown do processo (o `fx.StopTimeout`):
+	// quanto tempo o Fx espera os hooks de parada antes de desistir. Precisa ser
+	// MAIOR que ShutdownTimeout, senão o Fx mataria o servidor HTTP antes de ele
+	// terminar de drenar as requisições em andamento.
+	StopTimeout time.Duration `env:"STOP_TIMEOUT" envDefault:"25s"`
 }
 
 // DatabaseConfig controla o pool do PostgreSQL.
@@ -85,6 +90,14 @@ type OIDCConfig struct {
 	JWKSCacheTTL time.Duration `env:"JWKS_CACHE_TTL" envDefault:"15m"`
 	// ClockSkew é a tolerância de relógio ao validar exp/nbf/iat.
 	ClockSkew time.Duration `env:"CLOCK_SKEW" envDefault:"30s"`
+	// HTTPTimeout limita cada chamada ao IdP (discovery e JWKS). É separado do
+	// HTTP_REQUEST_TIMEOUT porque o segundo é o prazo da REQUISIÇÃO do cliente:
+	// o do IdP precisa ser curto (já estamos esperando por ele) e o do cliente
+	// precisa acomodar o processamento inteiro.
+	HTTPTimeout time.Duration `env:"HTTP_TIMEOUT" envDefault:"5s"`
+	// TokenURL é o endpoint de tokens do IdP, usado APENAS por ferramentas e
+	// testes (o serviço em si nunca emite token — README §2).
+	TokenURL string `env:"TOKEN_URL" envDefault:""`
 }
 
 // SQSConfig descreve o broker e as filas usadas pela aplicação.
@@ -179,12 +192,27 @@ func (c *Config) Validate() error {
 	if c.OIDC.ClockSkew < 0 {
 		problems = append(problems, "OIDC_CLOCK_SKEW não pode ser negativo")
 	}
+	if c.OIDC.JWKSCacheTTL <= 0 {
+		problems = append(problems, "OIDC_JWKS_CACHE_TTL deve ser maior que zero")
+	}
+	if c.OIDC.HTTPTimeout <= 0 {
+		problems = append(problems, "OIDC_HTTP_TIMEOUT deve ser maior que zero")
+	}
 
 	if c.HTTP.RequestTimeout <= 0 {
 		problems = append(problems, "HTTP_REQUEST_TIMEOUT deve ser maior que zero")
 	}
 	if c.HTTP.MaxBodyBytes <= 0 {
 		problems = append(problems, "HTTP_MAX_BODY_BYTES deve ser maior que zero")
+	}
+	if c.HTTP.StopTimeout <= 0 {
+		problems = append(problems, "HTTP_STOP_TIMEOUT deve ser maior que zero")
+	}
+	// O shutdown do processo tem de caber o shutdown do servidor: o Fx espera os
+	// hooks de parada até StopTimeout, e o hook do HTTP usa ShutdownTimeout. Com
+	// a ordem invertida, o servidor seria interrompido no meio da drenagem.
+	if c.HTTP.StopTimeout < c.HTTP.ShutdownTimeout {
+		problems = append(problems, "HTTP_STOP_TIMEOUT deve ser maior ou igual a HTTP_SHUTDOWN_TIMEOUT")
 	}
 
 	if c.SQS.BatchSize < 1 || c.SQS.BatchSize > 10 {

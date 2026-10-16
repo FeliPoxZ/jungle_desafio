@@ -62,6 +62,13 @@ func (p *Pool) Ping(ctx context.Context) error {
 	return nil
 }
 
+// Close encerra o pool.
+//
+// Existe como método de `*Pool` (e não como chamada direta a `p.Pool.Close()` na
+// composição) para o `fx.Lifecycle` registrar o fechamento no tipo que ele
+// conhece, e para ficar claro no grafo que ESTE recurso tem ciclo de vida.
+func (p *Pool) Close() { p.Pool.Close() }
+
 // Stats devolve as estatísticas do pool, para métricas.
 func (p *Pool) Stats() *pgxpool.Stat { return p.Pool.Stat() }
 
