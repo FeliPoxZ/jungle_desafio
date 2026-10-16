@@ -374,16 +374,32 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` feito e **validado por te
 
 **Pendência resolvida:** P6 do `CONTEXTO.md` (`cmd/migrate` inexistente, referenciado pelo compose).
 
-### FASE 5 — Persistência (pgx) + Unit of Work (D1, ~4h)
-- [ ] `postgres.NewPool` (`pgxpool`) com timeouts e `MaxConns`; `Ping` para readiness
-- [ ] `uow.Run(ctx, fn func(ctx, Repos) error)` → `BeginTx` (`Serializable`? **Não**: `ReadCommitted` + `FOR UPDATE`, justificar), `Commit`/`Rollback` com `defer`, contexto com timeout
-- [ ] `WalletRepo`: `Insert`, `GetByID`, `GetByIDForUpdate` (**row lock**), `GetByPlayerAndCurrency`, `UpdateBalance(id, newBalance, newVersion, expectedVersion?)`
-- [ ] `TxnRepo`: `Insert`, `GetByID`, `GetByProviderAndExternalID`, `GetByIdempotencyKey`, `MarkProcessed/MarkRejected/MarkFailed/WaitReference`, `ListPendingReferencesDue(now)`, `ListStalePending`, `ListByWallet` (cursor)
-- [ ] `LedgerRepo`: `Insert` (append-only), `ListByWalletCursor`, `SumSignedByWallet` (reconciliação)
-- [ ] `InboxRepo`: `InsertIfAbsent`, `Get`, `MarkCompleted`, `MarkFailed`
-- [ ] `OutboxRepo`: `Insert`, `ClaimBatch` (`FOR UPDATE SKIP LOCKED` + lease), `MarkPublished`, `MarkRetry`, `PendingStats`
-- [ ] Classificação de erros: `errors.go` mapeando `pgx`/`pgconn.PgError` (`23505` unique, `23514` check, `40001`, `40P01`, `57P03`, `53300`) → `ErrConflict`, `ErrTransient`, `ErrPermanent`
-- [ ] Testes de integração (testcontainers): cada repo, `SKIP LOCKED` com 2 conexões, lost update, atomicidade (rollback não deixa resíduo)
+### FASE 5 — Persistência (pgx) + Unit of Work (D1, ~4h) — ✅ CONCLUÍDA E VALIDADA
+
+- [x] `postgres.NewPool` (`pgxpool`) com `MaxConns`/timeouts da config, `Ping` para readiness, `statement_timeout`/`lock_timeout`/`timezone=UTC`/`application_name` definidos na conexão
+- [x] `uow.Run(ctx, fn)`: **`ReadCommitted` + `FOR UPDATE`** (justificativa registrada abaixo), commit/rollback com `defer`, rollback com `context.WithoutCancel` para não ficar preso em lock se o contexto morrer. Existe também `RunReadOnly` (`RepeatableRead` + read-only) para a reconciliação
+- [x] `WalletRepo`: `Insert`, `GetByID`, `GetByPlayerAndCurrency`, `GetByIDForUpdate` (**row lock**), `Update(id, expectedVersion, balance)` com controle otimista
+- [x] `TxnRepo`: `Insert`, `GetByID`, `GetByIDForUpdate`, `GetByProviderAndExternalID`, `GetByIdempotencyKey`, `GetOpeningByIdempotencyKey`, `Save`, `ListPendingReferencesDue`, `ListByWallet` (cursor)
+- [x] `LedgerRepo`: `Insert` (append-only, sem método de alteração), `GetByTransaction`, `ListByWallet` (cursor), `SumSignedByWallet`
+- [x] `InboxRepo`: `InsertIfAbsent` (com `ON CONFLICT DO NOTHING`), `Get`, `MarkProcessed`, `MarkFailed`
+- [x] `OutboxRepo`: `Insert`, `ClaimBatch` (**`FOR UPDATE SKIP LOCKED`** + lease), `MarkPublished`, `MarkRetry` (incrementa `attempts` no banco), `PendingStats`
+- [x] `errors.go`: `pgconn.PgError` → `ErrConflict` (`23505`), `ErrCheck` (`23514`, `23001`), `ErrForeignKey` (`23503`), `ErrTransient` (9 códigos, incluindo **`55P03` lock timeout**), `ErrPermanent`; `IsRetryable`/`IsConflict`/`IsNotFound`
+- [x] `internal/platform/canonicaljson`: JSON determinístico + `Hash` (pendência da Fase 3) — chaves ordenadas em todos os níveis, sem escape de HTML, precisão preservada com `UseNumber`
+- [x] Cursor de paginação opaco: `base64url(createdAt RFC3339Nano | entryId)` com `EncodeCursor`/`DecodeCursor`
+- [x] Testes: **38** (13 de unidade + 25 de integração), `-race` verde nos dois modos
+- [x] **Validado no banco real:** lost update não acontece (saldo 700 e versão 3 após dois débitos concorrentes), lock bloqueia de verdade (B esperou 1,59s por A), rollback não deixa resíduo, `SKIP LOCKED` distribui 4 eventos entre 2 publishers sem repetir nenhum
+
+**Quatro defeitos reais encontrados e corrigidos** (nenhum era conhecido; dois deles impediam a fase de funcionar):
+1. **`55P03` (lock timeout) estava classificado como `ErrPermanent`** → uma disputa momentânea de lock faria o serviço **rejeitar uma operação legítima** em vez de repetir
+2. **`wallet.Debit` não recebia o `transactionID`** → o lançamento do ledger ficava **órfão**, sem saber qual operação o causou
+3. **`wallet.Debit` devolvia só o `Entry`, mas incrementa a versão em memória** → quem persistia usava a versão já incrementada, o `UPDATE ... WHERE version = $` casava com zero linhas e a operação falhava. **Corrigido com o tipo `Movement`**, que carrega o `Entry` e a `versionBefore`: o erro deixou de ser possível
+4. **`newEntryID` gerava string composta, mas a coluna é `UUID`** → **nenhum lançamento conseguiria ser gravado** (`22P02`)
+
+**Decisão de isolamento justificada:** `ReadCommitted` + lock explícito de linha, não `Serializable`. O conflito real do domínio é "duas operações na mesma carteira", e o `FOR UPDATE` serializa exatamente esse caso sem serializar o banco inteiro. `Serializable` exigiria retry em praticamente todo caminho de escrita e abortaria transações que não conflitam de verdade.
+
+**Evidências:** `docs/evidencias/FASE_5.md`
+
+**Dependência nova:** `github.com/jackc/pgx/v5 v5.11.0`. O `testcontainers-go` foi baixado mas **não é usado**: os testes de integração apontam para o Postgres do compose via `TEST_DATABASE_URL` (mais simples e sem Docker-in-Docker). Remover a dependência não usada fica para o `go mod tidy` final.
 
 ### FASE 6 — Caso de uso (aplicação) `wagering.Service` (D1, ~4h) 🧠 coração
 - [ ] `Process(ctx, Request) (Result, error)`: **1 transação** para idempotência + domínio + ledger + outbox + inbox

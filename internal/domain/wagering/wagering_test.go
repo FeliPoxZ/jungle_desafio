@@ -66,6 +66,15 @@ func mesmoDinheiro(a, b money.Money) bool {
 	return eq
 }
 
+// dinheiroPtr devolve ponteiro para o saldo resultante na reidratação: a
+// coluna é anulável, então NULL (não calculado) e zero (carteira zerada) são
+// casos diferentes.
+func dinheiroPtr(t *testing.T, amount, moeda string) *money.Money {
+	t.Helper()
+	m := dinheiro(t, amount, moeda)
+	return &m
+}
+
 // CodeOf devolve o Code de um erro de domínio do pacote.
 func CodeOf(err error) string {
 	var e *Error
@@ -949,7 +958,7 @@ func TestPendingReferenceEvent(t *testing.T) {
 }
 
 func TestNewBalanceChangedEvent(t *testing.T) {
-	entry, err := wallet.NewEntry("w-1", wallet.DirectionDebit,
+	entry, err := wallet.NewEntry("w-1", "txn-1", wallet.DirectionDebit,
 		dinheiro(t, "25.00", "BRL"), dinheiro(t, "1000.00", "BRL"), opNow)
 	if err != nil {
 		t.Fatal(err)
@@ -976,7 +985,7 @@ func TestNewBalanceChangedEvent(t *testing.T) {
 }
 
 func TestNewBalanceChangedEventValidacoes(t *testing.T) {
-	entry, err := wallet.NewEntry("w-1", wallet.DirectionDebit,
+	entry, err := wallet.NewEntry("w-1", "txn-1", wallet.DirectionDebit,
 		dinheiro(t, "25.00", "BRL"), dinheiro(t, "1000.00", "BRL"), opNow)
 	if err != nil {
 		t.Fatal(err)
@@ -1043,7 +1052,7 @@ func TestRehydrateNaoReaplicaNada(t *testing.T) {
 	tx := Rehydrate(
 		"txn-1", "w-1", "p-1", KindRefund, StatusRejected, dinheiro(t, "25.00", "BRL"),
 		opGameID, opRoundID, opKey, "hash-abc", opProviderID, opExternalID, "ext-bet", "txn-original",
-		"REFERENCE_NOT_FOUND", dinheiro(t, "975.00", "BRL"), 7, proxima, criacao, atualizacao,
+		"REFERENCE_NOT_FOUND", dinheiroPtr(t, "975.00", "BRL"), 7, proxima, criacao, atualizacao,
 	)
 
 	if tx.Status() != StatusRejected {
@@ -1127,7 +1136,7 @@ func TestAcessoresComReferenciaPreenchida(t *testing.T) {
 	tx := Rehydrate(
 		"txn-1", "w-1", "p-1", KindRefund, StatusPendingReference, dinheiro(t, "25.00", "BRL"),
 		opGameID, opRoundID, opKey, "hash-abc", opProviderID, opExternalID, "ext-bet", "txn-original",
-		"", dinheiro(t, "0.00", "BRL"), 2, opNow.Add(time.Second), opNow, opNow,
+		"", dinheiroPtr(t, "0.00", "BRL"), 2, opNow.Add(time.Second), opNow, opNow,
 	)
 
 	if tx.ReferenceExternalTransactionID() != "ext-bet" {

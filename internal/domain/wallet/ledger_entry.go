@@ -2,6 +2,7 @@ package wallet
 
 import (
 	"fmt"
+	"github.com/google/uuid"
 	"strings"
 	"time"
 
@@ -63,8 +64,13 @@ type Entry struct {
 // Essa checagem aqui é redundante com o CHECK do banco na Fase 4, e é de
 // propósito: o erro nasce no domínio, com Code estável, antes de virar falha
 // de constraint.
+//
+// O transactionID é obrigatório: o ledger precisa saber QUAL operação causou
+// cada movimentação. Sem ele, o lançamento fica órfão e não há como responder
+// "por que o saldo mudou?" — que é a pergunta central da auditoria.
 func NewEntry(
 	walletID WalletID,
+	transactionID TransactionID,
 	direction Direction,
 	amount money.Money,
 	balanceBefore money.Money,
@@ -72,6 +78,9 @@ func NewEntry(
 ) (Entry, error) {
 	if err := direction.Validate(); err != nil {
 		return Entry{}, err
+	}
+	if strings.TrimSpace(string(transactionID)) == "" {
+		return Entry{}, invalidEntry("transactionID é obrigatório no lançamento")
 	}
 	if err := amount.Currency().Validate(); err != nil {
 		return Entry{}, invalidEntry("moeda do lançamento inválida: %v", err)
@@ -107,8 +116,9 @@ func NewEntry(
 	}
 
 	return Entry{
-		id:            newEntryID(walletID, direction, amount, balanceBefore, now),
+		id:            newEntryID(),
 		walletID:      walletID,
+		transactionID: transactionID,
 		direction:     direction,
 		amount:        amount,
 		balanceBefore: balanceBefore,
@@ -166,27 +176,24 @@ func (e Entry) BalanceAfter() money.Money { return e.balanceAfter }
 // CreatedAt devolve o instante da movimentação.
 func (e Entry) CreatedAt() time.Time { return e.createdAt }
 
-// newEntryID deriva um identificador determinístico do conteúdo do lançamento.
+// IsZero informa se o Entry é o valor zero (não construído).
 //
-// Serve para o domínio produzir um objeto completo antes de existir banco. Na
-// Fase 4 a coluna id passa a ser gerada pelo banco (uuid v7) e este valor deixa
-// de ser usado como chave primária.
-func newEntryID(
-	walletID WalletID,
-	direction Direction,
-	amount money.Money,
-	balanceBefore money.Money,
-	now time.Time,
-) string {
-	var b strings.Builder
-	b.WriteString(string(walletID))
-	b.WriteByte('|')
-	b.WriteString(direction.String())
-	b.WriteByte('|')
-	b.WriteString(amount.String())
-	b.WriteByte('|')
-	b.WriteString(balanceBefore.String())
-	b.WriteByte('|')
-	b.WriteString(now.UTC().Format(time.RFC3339Nano))
-	return b.String()
+// Existe porque comparar com Entry{} de fora do pacote para de compilar no dia
+// em que o struct ganhar um campo não comparável (slice, mapa, função). O
+// método isola quem chama dessa mudança.
+func (e Entry) IsZero() bool {
+	return e.id == "" && e.walletID == "" && e.createdAt.IsZero()
+}
+
+// newEntryID gera o identificador do lançamento.
+//
+// É um UUID porque a coluna `wallet_ledger_entries.id` é UUID (Fase 4). Gerar
+// um identificador derivado do conteúdo (uuid v5, ou uma string composta)
+// parecia elegante, mas quebrava ao gravar: o banco recusa qualquer coisa que
+// não seja UUID válido.
+//
+// O identificador é aleatório, não derivado: a proteção contra lançamento
+// duplicado é o UNIQUE (wallet_id, transaction_id), não a chave primária.
+func newEntryID() string {
+	return uuid.NewString()
 }

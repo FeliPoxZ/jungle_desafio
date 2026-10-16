@@ -187,7 +187,7 @@ func TestDebit(t *testing.T) {
 		t.Run(c.nome, func(t *testing.T) {
 			w := novaCarteira(t, c.saldo)
 
-			entry, err := w.Debit(brl(t, c.debito), t0.Add(time.Minute))
+			entry, err := w.Debit("txn-teste", brl(t, c.debito), t0.Add(time.Minute))
 			if c.queroEr {
 				if err == nil {
 					t.Fatalf("Debit deveria falhar")
@@ -205,7 +205,7 @@ func TestDebit(t *testing.T) {
 				if w.Version() != 1 {
 					t.Errorf("versão mudou mesmo com erro: %d", w.Version())
 				}
-				if entry != (Entry{}) {
+				if !entry.Entry().IsZero() {
 					t.Error("entry deveria ser zero value em caso de erro")
 				}
 				return
@@ -223,10 +223,10 @@ func TestDebit(t *testing.T) {
 			if w.Balance().IsNegative() {
 				t.Errorf("saldo ficou negativo: %s", w.Balance())
 			}
-			if c.debito == "0.00" && entry != (Entry{}) {
+			if c.debito == "0.00" && !entry.Entry().IsZero() {
 				t.Errorf("débito de zero não deveria gerar lançamento: %+v", entry)
 			}
-			if c.debito != "0.00" && entry == (Entry{}) {
+			if c.debito != "0.00" && entry.Entry().IsZero() {
 				t.Error("débito com valor deveria gerar lançamento")
 			}
 		})
@@ -256,7 +256,7 @@ func TestCredit(t *testing.T) {
 		t.Run(c.nome, func(t *testing.T) {
 			w := novaCarteira(t, c.saldo)
 
-			entry, err := w.Credit(brl(t, c.credito), t0.Add(time.Minute))
+			entry, err := w.Credit("txn-teste", brl(t, c.credito), t0.Add(time.Minute))
 			if err != nil {
 				t.Fatalf("Credit falhou: %v", err)
 			}
@@ -269,16 +269,16 @@ func TestCredit(t *testing.T) {
 
 			if c.credito == "0.00" {
 				// Valor zero não gera lançamento no ledger.
-				if entry != (Entry{}) {
+				if !entry.Entry().IsZero() {
 					t.Errorf("crédito de zero gerou entry: %+v", entry)
 				}
 				return
 			}
-			if entry.Direction() != DirectionCredit {
-				t.Errorf("direção = %q", entry.Direction())
+			if entry.Entry().Direction() != DirectionCredit {
+				t.Errorf("direção = %q", entry.Entry().Direction())
 			}
-			if !mesmoMoney(entry.Amount(), brl(t, c.credito)) {
-				t.Errorf("valor do entry = %s", entry.Amount())
+			if !mesmoMoney(entry.Entry().Amount(), brl(t, c.credito)) {
+				t.Errorf("valor do entry = %s", entry.Entry().Amount())
 			}
 		})
 	}
@@ -290,7 +290,7 @@ func TestCreditEstouraOLimiteSemAlterarEstado(t *testing.T) {
 	w := novaCarteira(t, "90000000000000.00")
 	antes := w.Balance().String()
 
-	if _, err := w.Credit(brl(t, "0.01"), t0); err == nil {
+	if _, err := w.Credit("txn-teste", brl(t, "0.01"), t0); err == nil {
 		t.Fatal("crédito acima do limite deveria falhar")
 	}
 	if w.Balance().String() != antes {
@@ -311,7 +311,7 @@ func TestMovimentacaoEmMoedaDiferenteNaoEhSaldoInsuficiente(t *testing.T) {
 	// insuficiente. A ordem importa para o failureCode que o cliente recebe.
 	w := novaCarteira(t, "100.00")
 
-	_, errDebit := w.Debit(usd(t, "150.00"), t0)
+	_, errDebit := w.Debit("txn-teste", usd(t, "150.00"), t0)
 	if !errors.Is(errDebit, ErrWalletCurrencyMismatch) {
 		t.Errorf("Debit em USD: err = %v, esperado ErrWalletCurrencyMismatch", errDebit)
 	}
@@ -319,7 +319,7 @@ func TestMovimentacaoEmMoedaDiferenteNaoEhSaldoInsuficiente(t *testing.T) {
 		t.Error("não pode ser classificado como saldo insuficiente")
 	}
 
-	_, errCredit := w.Credit(usd(t, "1.00"), t0)
+	_, errCredit := w.Credit("txn-teste", usd(t, "1.00"), t0)
 	if !errors.Is(errCredit, ErrWalletCurrencyMismatch) {
 		t.Errorf("Credit em USD: err = %v", errCredit)
 	}
@@ -335,10 +335,10 @@ func TestMovimentacaoNegativaEhRejeitada(t *testing.T) {
 	w := novaCarteira(t, "100.00")
 	negativo := money.FromMinor(-2500, money.BRL)
 
-	if _, err := w.Debit(negativo, t0); err == nil {
+	if _, err := w.Debit("txn-teste", negativo, t0); err == nil {
 		t.Error("debito negativo deveria falhar")
 	}
-	if _, err := w.Credit(negativo, t0); err == nil {
+	if _, err := w.Credit("txn-teste", negativo, t0); err == nil {
 		t.Error("credito negativo deveria falhar")
 	}
 	if w.Balance().String() != "100.00" || w.Version() != 1 {
@@ -356,10 +356,10 @@ func TestVersaoSoAvancaQuandoOSaldoMuda(t *testing.T) {
 
 	// Operações de valor zero não mudam saldo, versão nem updatedAt.
 	for i := 0; i < 3; i++ {
-		if _, err := w.Credit(brl(t, "0.00"), depois); err != nil {
+		if _, err := w.Credit("txn-teste", brl(t, "0.00"), depois); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := w.Debit(brl(t, "0.00"), depois); err != nil {
+		if _, err := w.Debit("txn-teste", brl(t, "0.00"), depois); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -371,7 +371,7 @@ func TestVersaoSoAvancaQuandoOSaldoMuda(t *testing.T) {
 	}
 
 	// Uma operação com valor muda.
-	if _, err := w.Debit(brl(t, "1.00"), depois); err != nil {
+	if _, err := w.Debit("txn-teste", brl(t, "1.00"), depois); err != nil {
 		t.Fatal(err)
 	}
 	if w.Version() != 2 {
@@ -391,7 +391,7 @@ func TestVersaoNuncaRegride(t *testing.T) {
 
 	for i := 0; i < 10; i++ {
 		agora := t0.Add(time.Duration(i) * time.Minute)
-		if _, err := w.Credit(brl(t, "1.00"), agora); err != nil {
+		if _, err := w.Credit("txn-teste", brl(t, "1.00"), agora); err != nil {
 			t.Fatal(err)
 		}
 		if w.Version() <= anterior {
@@ -414,10 +414,10 @@ func TestCreditoSeguidoDeDebitoVoltaAoSaldoOriginal(t *testing.T) {
 		versaoAntes := w.Version()
 		agora := t0.Add(time.Duration(i+1) * time.Minute)
 
-		if _, err := w.Credit(brl(t, v), agora); err != nil {
+		if _, err := w.Credit("txn-teste", brl(t, v), agora); err != nil {
 			t.Fatalf("Credit(%s): %v", v, err)
 		}
-		if _, err := w.Debit(brl(t, v), agora); err != nil {
+		if _, err := w.Debit("txn-teste", brl(t, v), agora); err != nil {
 			t.Fatalf("Debit(%s): %v", v, err)
 		}
 
@@ -448,11 +448,11 @@ func TestSaldoNuncaFicaNegativoEmSequenciaDeOperacoes(t *testing.T) {
 	for i, op := range operacoes {
 		agora := t0.Add(time.Duration(i) * time.Second)
 		if op.credito {
-			if _, err := w.Credit(brl(t, op.valor), agora); err != nil {
+			if _, err := w.Credit("txn-teste", brl(t, op.valor), agora); err != nil {
 				t.Fatalf("Credit(%s) falhou: %v", op.valor, err)
 			}
 		} else {
-			_, err := w.Debit(brl(t, op.valor), agora)
+			_, err := w.Debit("txn-teste", brl(t, op.valor), agora)
 			if err != nil && !errors.Is(err, ErrInsufficientFunds) {
 				t.Fatalf("Debit(%s) falhou com erro inesperado: %v", op.valor, err)
 			}
@@ -474,57 +474,57 @@ func TestDebitGeraLancamentoCoerente(t *testing.T) {
 	w := novaCarteira(t, "1000.00")
 	agora := t0.Add(time.Minute)
 
-	entry, err := w.Debit(brl(t, "25.00"), agora)
+	entry, err := w.Debit("txn-teste", brl(t, "25.00"), agora)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if entry.Direction() != DirectionDebit {
-		t.Errorf("direção = %q", entry.Direction())
+	if entry.Entry().Direction() != DirectionDebit {
+		t.Errorf("direção = %q", entry.Entry().Direction())
 	}
-	if !mesmoMoney(entry.Amount(), brl(t, "25.00")) {
-		t.Errorf("valor = %s", entry.Amount())
+	if !mesmoMoney(entry.Entry().Amount(), brl(t, "25.00")) {
+		t.Errorf("valor = %s", entry.Entry().Amount())
 	}
-	if entry.BalanceBefore().String() != "1000.00" {
-		t.Errorf("balanceBefore = %s, esperado 1000.00", entry.BalanceBefore())
+	if entry.Entry().BalanceBefore().String() != "1000.00" {
+		t.Errorf("balanceBefore = %s, esperado 1000.00", entry.Entry().BalanceBefore())
 	}
-	if entry.BalanceAfter().String() != "975.00" {
-		t.Errorf("balanceAfter = %s, esperado 975.00", entry.BalanceAfter())
+	if entry.Entry().BalanceAfter().String() != "975.00" {
+		t.Errorf("balanceAfter = %s, esperado 975.00", entry.Entry().BalanceAfter())
 	}
-	if entry.WalletID() != w.ID() {
-		t.Errorf("walletID = %q", entry.WalletID())
+	if entry.Entry().WalletID() != w.ID() {
+		t.Errorf("walletID = %q", entry.Entry().WalletID())
 	}
-	if !entry.CreatedAt().Equal(agora) {
-		t.Errorf("createdAt = %v", entry.CreatedAt())
+	if !entry.Entry().CreatedAt().Equal(agora) {
+		t.Errorf("createdAt = %v", entry.Entry().CreatedAt())
 	}
 
 	// A aritmética do ledger tem que fechar sozinha.
-	dif, err := entry.BalanceBefore().Sub(entry.BalanceAfter())
+	dif, err := entry.Entry().BalanceBefore().Sub(entry.Entry().BalanceAfter())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !mesmoMoney(dif, entry.Amount()) {
-		t.Errorf("before-after = %s, esperado %s", dif, entry.Amount())
+	if !mesmoMoney(dif, entry.Entry().Amount()) {
+		t.Errorf("before-after = %s, esperado %s", dif, entry.Entry().Amount())
 	}
 }
 
 func TestCreditGeraLancamentoCoerente(t *testing.T) {
 	w := novaCarteira(t, "100.00")
 
-	entry, err := w.Credit(brl(t, "50.00"), t0.Add(time.Minute))
+	entry, err := w.Credit("txn-teste", brl(t, "50.00"), t0.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if entry.BalanceBefore().String() != "100.00" || entry.BalanceAfter().String() != "150.00" {
-		t.Errorf("saldos = %s -> %s", entry.BalanceBefore(), entry.BalanceAfter())
+	if entry.Entry().BalanceBefore().String() != "100.00" || entry.Entry().BalanceAfter().String() != "150.00" {
+		t.Errorf("saldos = %s -> %s", entry.Entry().BalanceBefore(), entry.Entry().BalanceAfter())
 	}
-	dif, err := entry.BalanceAfter().Sub(entry.BalanceBefore())
+	dif, err := entry.Entry().BalanceAfter().Sub(entry.Entry().BalanceBefore())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !mesmoMoney(dif, entry.Amount()) {
-		t.Errorf("after-before = %s, esperado %s", dif, entry.Amount())
+	if !mesmoMoney(dif, entry.Entry().Amount()) {
+		t.Errorf("after-before = %s, esperado %s", dif, entry.Entry().Amount())
 	}
 }
 
@@ -547,15 +547,15 @@ func TestLedgerAcumulaESaldoBate(t *testing.T) {
 	for i, op := range operacoes {
 		agora = agora.Add(time.Duration(i) * time.Second)
 		var (
-			entry Entry
-			err   error
+			mov Movement
+			err error
 		)
 		if op.credito {
-			entry, err = w.Credit(brl(t, op.valor), agora)
-			creditos += entry.Amount().Minor()
+			mov, err = w.Credit("txn-teste", brl(t, op.valor), agora)
+			creditos += mov.Entry().Amount().Minor()
 		} else {
-			entry, err = w.Debit(brl(t, op.valor), agora)
-			debitos += entry.Amount().Minor()
+			mov, err = w.Debit("txn-teste", brl(t, op.valor), agora)
+			debitos += mov.Entry().Amount().Minor()
 		}
 		if err != nil {
 			t.Fatalf("operação %d falhou: %v", i, err)
@@ -598,7 +598,7 @@ func TestNewEntry(t *testing.T) {
 
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {
-			entry, err := NewEntry("w-1", c.direcao, c.valor, saldo, agora)
+			entry, err := NewEntry("w-1", "txn-teste", c.direcao, c.valor, saldo, agora)
 			if c.queroEr {
 				if err == nil {
 					t.Fatalf("NewEntry deveria falhar, devolveu %+v", entry)
@@ -606,7 +606,7 @@ func TestNewEntry(t *testing.T) {
 				if CodeOf(err) != c.code {
 					t.Errorf("Code = %q, esperado %q", CodeOf(err), c.code)
 				}
-				if entry != (Entry{}) {
+				if !entry.IsZero() {
 					t.Error("entry deveria ser zero value em caso de erro")
 				}
 				return
@@ -632,14 +632,14 @@ func TestNewEntry(t *testing.T) {
 }
 
 func TestNewEntryComInstanteZero(t *testing.T) {
-	if _, err := NewEntry("w-1", DirectionDebit, brl(t, "1.00"), brl(t, "10.00"), time.Time{}); err == nil {
+	if _, err := NewEntry("w-1", "txn-teste", DirectionDebit, brl(t, "1.00"), brl(t, "10.00"), time.Time{}); err == nil {
 		t.Error("instante zero deveria falhar")
 	}
 }
 
 func TestNewEntryDeMoedaInvalida(t *testing.T) {
 	invalido := money.FromMinor(100, money.Currency("xx"))
-	if _, err := NewEntry("w-1", DirectionDebit, invalido, invalido, t0); err == nil {
+	if _, err := NewEntry("w-1", "txn-teste", DirectionDebit, invalido, invalido, t0); err == nil {
 		t.Error("moeda inválida deveria falhar")
 	}
 }
@@ -724,7 +724,7 @@ func TestErrosNaoSeConfundem(t *testing.T) {
 
 func TestErroAtravessaEnvelopamento(t *testing.T) {
 	w := novaCarteira(t, "1.00")
-	_, err := w.Debit(brl(t, "2.00"), t0)
+	_, err := w.Debit("txn-teste", brl(t, "2.00"), t0)
 	if err == nil {
 		t.Fatal("esperado erro")
 	}
@@ -754,10 +754,13 @@ func TestFalhaNaoDeixaEstadoPelaMetade(t *testing.T) {
 	saldo, versao, atualizado := w.Balance(), w.Version(), w.UpdatedAt()
 
 	tentativas := []func() error{
-		func() error { _, err := w.Debit(brl(t, "100.01"), t0.Add(time.Hour)); return err },
-		func() error { _, err := w.Debit(usd(t, "1.00"), t0.Add(time.Hour)); return err },
-		func() error { _, err := w.Credit(usd(t, "1.00"), t0.Add(time.Hour)); return err },
-		func() error { _, err := w.Debit(money.FromMinor(-1, money.BRL), t0.Add(time.Hour)); return err },
+		func() error { _, err := w.Debit("txn-teste", brl(t, "100.01"), t0.Add(time.Hour)); return err },
+		func() error { _, err := w.Debit("txn-teste", usd(t, "1.00"), t0.Add(time.Hour)); return err },
+		func() error { _, err := w.Credit("txn-teste", usd(t, "1.00"), t0.Add(time.Hour)); return err },
+		func() error {
+			_, err := w.Debit("txn-teste", money.FromMinor(-1, money.BRL), t0.Add(time.Hour))
+			return err
+		},
 	}
 
 	for i, tentativa := range tentativas {
@@ -801,7 +804,7 @@ func TestCreditComSaldoCorrompidoNoLimite(t *testing.T) {
 	corrompido := money.FromMinor(9_000_000_000_000_001, money.BRL)
 	w := Rehydrate("w-1", "p-1", corrompido, 3, t0, t0)
 
-	if _, err := w.Credit(brl(t, "1.00"), t0.Add(time.Minute)); err == nil {
+	if _, err := w.Credit("txn-teste", brl(t, "1.00"), t0.Add(time.Minute)); err == nil {
 		t.Fatal("crédito sobre saldo corrompido deveria falhar")
 	}
 	if saldoMinor(w) != 9_000_000_000_000_001 || w.Version() != 3 {
@@ -815,7 +818,7 @@ func TestDebitComSaldoCorrompidoAbaixoDoPiso(t *testing.T) {
 	corrompido := money.FromMinor(-9_000_000_000_000_001, money.BRL)
 	w := Rehydrate("w-1", "p-1", corrompido, 3, t0, t0)
 
-	if _, err := w.Debit(brl(t, "1.00"), t0); err == nil {
+	if _, err := w.Debit("txn-teste", brl(t, "1.00"), t0); err == nil {
 		t.Fatal("débito sobre saldo corrompido deveria falhar")
 	}
 	if w.Version() != 3 {
@@ -828,7 +831,7 @@ func TestApplyComDirecaoInvalida(t *testing.T) {
 	// mesmo que Debit e Credit já fixem a direção.
 	w := novaCarteira(t, "100.00")
 
-	if _, err := w.apply(Direction("TRANSFER"), brl(t, "1.00"), t0); err == nil {
+	if _, err := w.apply(Direction("TRANSFER"), "txn-teste", brl(t, "1.00"), t0); err == nil {
 		t.Fatal("direção inválida deveria falhar")
 	} else if !errors.Is(err, ErrInvalidEntry) {
 		t.Errorf("err = %v, esperado ErrInvalidEntry", err)
@@ -843,7 +846,7 @@ func TestNewEntryComSaldoCorrompido(t *testing.T) {
 	// erro de lançamento inválido, não um valor absurdo.
 	corrompido := money.FromMinor(9_000_000_000_000_000, money.BRL)
 
-	if _, err := NewEntry("w-1", DirectionCredit, brl(t, "1.00"), corrompido, t0); err == nil {
+	if _, err := NewEntry("w-1", "txn-teste", DirectionCredit, brl(t, "1.00"), corrompido, t0); err == nil {
 		t.Fatal("saldo posterior além do limite deveria falhar")
 	} else if !errors.Is(err, ErrInvalidEntry) {
 		t.Errorf("err = %v, esperado ErrInvalidEntry", err)

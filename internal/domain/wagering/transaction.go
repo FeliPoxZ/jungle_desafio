@@ -52,6 +52,7 @@ type WagerTransaction struct {
 	referenceTransactionID     TransactionID
 	failureCode                string
 	resultBalance              money.Money
+	resultBalanceSet           bool
 	referenceResolutionAttempt int
 	nextResolutionAttemptAt    time.Time
 }
@@ -220,7 +221,7 @@ func Rehydrate(
 	providerID, externalTransactionID, referenceExternalTxnID string,
 	referenceTransactionID TransactionID,
 	failureCode string,
-	resultBalance money.Money,
+	resultBalance *money.Money,
 	attempt int,
 	nextAttemptAt time.Time,
 	createdAt, updatedAt time.Time,
@@ -241,12 +242,25 @@ func Rehydrate(
 		referenceExternalTxnID:     referenceExternalTxnID,
 		referenceTransactionID:     referenceTransactionID,
 		failureCode:                failureCode,
-		resultBalance:              resultBalance,
+		resultBalance:              dinheiroOuZero(resultBalance),
+		resultBalanceSet:           resultBalance != nil,
 		referenceResolutionAttempt: attempt,
 		nextResolutionAttemptAt:    nextAttemptAt,
 		createdAt:                  createdAt,
 		updatedAt:                  updatedAt,
 	}
+}
+
+// dinheiroOuZero desreferencia o saldo anulável na reidratação.
+//
+// O parâmetro é ponteiro porque a COLUNA é anulável: NULL significa "ainda não
+// calculado", e zero é um saldo legítimo (carteira zerada). Espelhar a
+// nulabilidade no parâmetro evita ter que inferir a diferença.
+func dinheiroOuZero(m *money.Money) money.Money {
+	if m == nil {
+		return money.Money{}
+	}
+	return *m
 }
 
 // ---------------------------------------------------------------------------
@@ -299,7 +313,17 @@ func (t *WagerTransaction) ReferenceTransactionID() TransactionID { return t.ref
 func (t *WagerTransaction) FailureCode() string { return t.failureCode }
 
 // ResultBalance devolve o saldo resultante devolvido ao provedor.
+//
+// Zero pode significar "não houve movimentação" ou "não foi calculado ainda".
+// Para distinguir os dois casos, use HasResultBalance.
 func (t *WagerTransaction) ResultBalance() money.Money { return t.resultBalance }
+
+// HasResultBalance informa se o saldo resultante foi registrado.
+//
+// Necessário porque zero é um valor legítimo de saldo (carteira zerada). Sem
+// esta distinção, o repositório gravaria NULL para um saldo que existe, ou
+// gravaria zero para uma operação que ainda não terminou.
+func (t *WagerTransaction) HasResultBalance() bool { return t.resultBalanceSet }
 
 // ReferenceResolutionAttempt devolve a tentativa atual de resolução da referência.
 func (t *WagerTransaction) ReferenceResolutionAttempt() int { return t.referenceResolutionAttempt }
@@ -342,6 +366,7 @@ func (t *WagerTransaction) MarkProcessed(resultBalance money.Money, now time.Tim
 		return err
 	}
 	t.resultBalance = resultBalance
+	t.resultBalanceSet = true
 	return nil
 }
 

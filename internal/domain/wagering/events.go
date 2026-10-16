@@ -186,7 +186,7 @@ func NewBalanceChangedEvent(
 	walletVersion int64,
 	now time.Time,
 ) (*Event, error) {
-	if entry == (wallet.Entry{}) {
+	if entry.IsZero() {
 		return nil, invalid("evento de saldo exige um lançamento de ledger")
 	}
 	if walletVersion < 1 {

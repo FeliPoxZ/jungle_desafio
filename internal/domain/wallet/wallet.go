@@ -105,46 +105,81 @@ func (w *Wallet) CreatedAt() time.Time { return w.createdAt }
 // UpdatedAt devolve o instante da última mudança de saldo.
 func (w *Wallet) UpdatedAt() time.Time { return w.updatedAt }
 
+// Movement é o resultado de uma movimentação: o lançamento a gravar no ledger e
+// a versão que a carteira tinha ANTES da operação.
+//
+// # Por que a versão vem junto (e por que isso importa)
+//
+// Debit e Credit já incrementam a versão da carteira em memória. Quem persiste
+// precisa da versão ANTERIOR para o UPDATE condicional (`WHERE version = $3`).
+// Ler `carteira.Version()` DEPOIS do débito devolve a versão nova, o UPDATE casa
+// com zero linhas e a operação falha — um erro fácil de cometer e difícil de
+// enxergar.
+//
+// Devolvendo a versão como parte do resultado, o acoplamento fica explícito e o
+// erro deixa de ser possível: quem grava usa o que o domínio informou.
+type Movement struct {
+	entry         Entry
+	versionBefore int64
+	balanceBefore money.Money
+	walletAfter   *Wallet
+}
+
+// Entry devolve o lançamento a gravar no ledger.
+func (m Movement) Entry() Entry { return m.entry }
+
+// VersionBefore devolve a versão anterior, para o UPDATE condicional.
+func (m Movement) VersionBefore() int64 { return m.versionBefore }
+
+// BalanceBefore devolve o saldo antes da movimentação.
+func (m Movement) BalanceBefore() money.Money { return m.balanceBefore }
+
+// Wallet devolve a carteira já atualizada, pronta para persistir o saldo novo.
+func (m Movement) Wallet() *Wallet { return m.walletAfter }
+
+// IsZero informa se não houve movimentação (valor zero: nada a persistir).
+func (m Movement) IsZero() bool { return m.entry.IsZero() }
+
 // Debit desconta amount do saldo, exigindo a mesma moeda e preservando
 // saldo maior ou igual a zero (README §6.2).
 //
-// Devolve o lançamento de ledger correspondente, que deve ser persistido na
-// mesma transação da carteira.
-func (w *Wallet) Debit(amount money.Money, now time.Time) (Entry, error) {
-	entry, err := w.apply(DirectionDebit, amount, now)
-	if err != nil {
-		return Entry{}, err
-	}
-	return entry, nil
+// O transactionID identifica a operação que originou a movimentação e vai para
+// o lançamento do ledger: sem ele, o lançamento fica órfão e não há como
+// responder "por que o saldo mudou?".
+func (w *Wallet) Debit(transactionID TransactionID, amount money.Money, now time.Time) (Movement, error) {
+	return w.apply(DirectionDebit, transactionID, amount, now)
 }
 
 // Credit soma amount ao saldo, exigindo a mesma moeda.
-func (w *Wallet) Credit(amount money.Money, now time.Time) (Entry, error) {
-	return w.apply(DirectionCredit, amount, now)
+func (w *Wallet) Credit(transactionID TransactionID, amount money.Money, now time.Time) (Movement, error) {
+	return w.apply(DirectionCredit, transactionID, amount, now)
 }
 
 // apply é o único ponto que muda o saldo. Valida moeda e valor, calcula o
 // saldo novo pela aritmética do money, recusa débito que ficaria negativo e
 // só então altera o estado e a versão.
 //
-// Movimentação de valor zero devolve entrada vazia: não muda saldo, não muda
+// Movimentação de valor zero devolve resultado vazio: não muda saldo, não muda
 // versão e não gera lançamento no ledger (mesma regra do LOSS, README §7).
-func (w *Wallet) apply(direction Direction, amount money.Money, now time.Time) (Entry, error) {
+func (w *Wallet) apply(direction Direction, transactionID TransactionID, amount money.Money, now time.Time) (Movement, error) {
 	if err := direction.Validate(); err != nil {
-		return Entry{}, err
+		return Movement{}, err
+	}
+	if strings.TrimSpace(string(transactionID)) == "" {
+		return Movement{}, invalid("transactionID é obrigatório na movimentação")
 	}
 	if amount.Currency() != w.currency {
-		return Entry{}, &Error{
+		return Movement{}, &Error{
 			Code: CodeWalletCurrencyMismatch,
 			Message: fmt.Sprintf("movimentação em %q em carteira de %q",
 				amount.Currency(), w.currency),
 		}
 	}
 	if amount.IsNegative() {
-		return Entry{}, invalid("movimentação negativa: o sinal é definido pela direção")
+		return Movement{}, invalid("movimentação negativa: o sinal é definido pela direção")
 	}
 	if amount.IsZero() {
-		return Entry{}, nil
+		return Movement{}, nil
 	}
 
 	var (
@@ -154,29 +189,39 @@ func (w *Wallet) apply(direction Direction, amount money.Money, now time.Time) (
 	if direction == DirectionDebit {
 		after, err = w.balance.Sub(amount)
 		if err != nil {
-			return Entry{}, err
+			return Movement{}, err
 		}
 		if after.IsNegative() {
-			return Entry{}, insufficient(amount.Minor(), w.balance.Minor())
+			return Movement{}, insufficient(amount.Minor(), w.balance.Minor())
 		}
 	} else {
 		after, err = w.balance.Add(amount)
 		if err != nil {
-			return Entry{}, err
+			return Movement{}, err
 		}
 	}
 
-	entry, err := NewEntry(w.id, direction, amount, w.balance, now)
+	// A versão ANTERIOR é capturada antes da mutação: é ela que o UPDATE
+	// condicional precisa para detectar escritor concorrente.
+	versionBefore := w.version
+	balanceBefore := w.balance
+
+	entry, err := NewEntry(w.id, transactionID, direction, amount, balanceBefore, now)
 	if err != nil {
 		// Inalcançável hoje: o NewEntry revalida moeda, valor positivo,
-		// instante e faixa, e o apply já garantiu os quatro antes daqui.
-		// Fica como defesa se o NewEntry ganhar uma validação nova.
-		return Entry{}, err
+		// transactionID, instante e faixa, e o apply já garantiu os cinco antes
+		// daqui. Fica como defesa se o NewEntry ganhar validação nova.
+		return Movement{}, err
 	}
 
 	w.balance = after
 	w.version++
 	w.updatedAt = now
 
-	return entry, nil
+	return Movement{
+		entry:         entry,
+		versionBefore: versionBefore,
+		balanceBefore: balanceBefore,
+		walletAfter:   w,
+	}, nil
 }
