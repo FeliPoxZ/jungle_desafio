@@ -38,16 +38,14 @@ func (d Direction) Validate() error {
 // String devolve a direção como aparece no banco e no JSON.
 func (d Direction) String() string { return string(d) }
 
-// TransactionID identifica a operação que originou o lançamento. Na Fase 3 este
-// tipo vem do pacote wagering; aqui entra como string para o pacote de carteira
-// não depender do de transações.
+// TransactionID identifica a operação que originou o lançamento.
 type TransactionID string
 
 // Entry é uma linha do ledger: append-only e imutável.
 //
 // Guarda os dois saldos (antes e depois) porque o ledger precisa ser auditável
 // sozinho: quem lê a linha consegue conferir a aritmética sem depender do saldo
-// atual da carteira (README §Ledger).
+// atual da carteira.
 type Entry struct {
 	id            string
 	walletID      WalletID

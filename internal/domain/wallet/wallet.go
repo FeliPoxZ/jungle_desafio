@@ -17,7 +17,7 @@ type PlayerID string
 
 // Wallet é a raiz do agregado financeiro: identidade, dono, moeda, saldo,
 // versão e instantes. Os campos são não exportados para que o saldo só mude
-// pelos métodos do próprio agregado (README §6.2).
+// pelos métodos do próprio agregado.
 type Wallet struct {
 	id        WalletID
 	playerID  PlayerID
@@ -62,7 +62,7 @@ func NewWallet(id WalletID, playerID PlayerID, initial money.Money, now time.Tim
 
 // Rehydrate é o construtor de leitura: reconstrói a carteira do que está
 // persistido, sem reaplicar movimentações, sem emitir eventos e sem mexer na
-// versão ou nos instantes (README §Encapsulamento L89).
+// versão ou nos instantes.
 //
 // A validação dos dados lidos é responsabilidade do repositório, apoiada nas
 // constraints da tabela.
