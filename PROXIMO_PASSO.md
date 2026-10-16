@@ -167,6 +167,14 @@ e depois vinha o próximo bloco. Foi assim que o núcleo do domínio (`Money`, `
 Quando o sistema estiver **funcionando e fechado** (Fases 6–12 concluídas), a IA deve gerar
 **dois arquivos** — e eles fazem parte da entrega, não são opcionais:
 
+> ⭐ **Exigência do usuário (registrada em 2026-10-16):** os dois documentos precisam explicar
+> **do básico ao avançado**, e não presumir vocabulário. Ou seja: começar pelo que é dinheiro
+> em unidades mínimas, o que é uma carteira, o que é um lançamento de ledger, o que é uma
+> transação/lock, o que é idempotência, o que é outbox — e só DEPOIS as ligações entre as
+> partes (quem chama quem, onde cada garantia é imposta) e os conceitos de regra de negócio
+> (por que `LOSS` não movimenta, por que `ROLLBACK` de `REFUND` debita, por que o replay
+> devolve o saldo original). Quem lê precisa entender sem já saber o jargão.
+
 #### Documento 1 — Explicação do sistema completo
 
 **Arquivo sugerido:** `docs/SISTEMA_EXPLICADO.md`
@@ -477,9 +485,10 @@ tratado com `TrimSpace` e testado, `Movement` resolvendo a versão do UPDATE con
 - **`bin/migrate.exe` carrega as migrations embutidas** (`go:embed`): depois de criar ou alterar
   uma migration, é preciso rebuidá-lo, senão ele responde "schema já está atualizado" e não
   aplica nada (aconteceu na 000002);
-- a ordem entre os **dois eventos da mesma transação** não é garantida (mesmo `occurred_at`) e a
-  ordenação da outbox depende do relógio — as duas estão registradas como limitação na §16 do
-  `ARCHITECTURE.md`, com o motivo de não terem sido resolvidas agora;
+- a ordem dos eventos na outbox **foi resolvida** (bloco 6d, migration 000003): a fila é lida
+  por `sequence`, e o lote sai ordenado por ela. Ficou registrada em `ARCHITECTURE.md` §8 a
+  armadilha que apareceu no caminho — **`RETURNING` não garante a ordem das linhas**, então o
+  `UPDATE` do `ClaimBatch` virou CTE com `SELECT ... ORDER BY sequence` de fora;
 - o **`wager_transactions` de `OPENING`** tem `game_id` e `round_id` vazios por decisão
   (migration 000002); a reversão dessa migration exige decidir o que fazer com essas linhas — a
   condição está documentada no próprio `.down.sql`.

@@ -475,6 +475,12 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` feito e **validado por te
 - [ ] `ARCHITECTURE.md`: dinheiro, transações, idempotência (hash/algoritmo/campos/normalizações), locks/concorrência, referências pendentes, reversões (matriz REFUND/ROLLBACK), inbox/outbox, autenticação/autorização, Fx/ciclo de vida/shutdown, máquina de estados + transitório×permanente, HTTP (status/corpos), SQS (MessageGroupId/DeduplicationId/visibility/limites/DLQ), **limitações, interpretações e trabalho não concluído**
 
 **⭐ COMPROMISSO DE ENTREGA ASSUMIDO COM O USUÁRIO (estratégia mudou na Fase 6):**
+
+> ⭐ **Exigência do usuário (registrada em 2026-10-16):** os dois documentos abaixo precisam
+> explicar **do básico ao avançado** — o que é dinheiro em unidades mínimas, carteira,
+> lançamento de ledger, transação e lock, idempotência, outbox — e só depois as **ligações**
+> entre as partes e os **conceitos de regra de negócio**. Sem presumir que quem lê já conhece
+> o vocabulário do projeto.
 - [ ] **`docs/SISTEMA_EXPLICADO.md`** — explicação do sistema completo: o fluxo de uma
       requisição do HTTP ao commit e à publicação, cada componente e por que existe, **as
       lógicas pensadas e seguidas**, e **a lista de problemas resolvidos** em todas as fases
@@ -632,6 +638,7 @@ Formato: `[data] [fase] status — o que foi feito / decisão / bloqueio`.
     5. (harness) os dois pacotes de integração truncavam o mesmo banco em processos paralelos, e o `lock_timeout` do pool abortava a espera pelo lock consultivo.
   - **Números:** 55 casos unitários no caso de uso e 27 de integração; `go test -race` verde em 13 pacotes de unidade e nos 2 de integração. Cenário do README provado no banco: saldo final **20.00** e **um** débito no ledger; reconciliação do exemplo fechando em `975.00` com `checkedEntries: 2`.
   - **Evidências:** `docs/evidencias/FASE_6.md`.
+  - **Correção pós-fase (bloco 6d) — ordem dos eventos na outbox:** a fase tinha deixado duas limitações registradas (o par de eventos da mesma operação empatando em `occurred_at` e a dependência do relógio). Migration 000003 acrescentou `sequence BIGINT GENERATED ALWAYS AS IDENTITY`, e a fila passou a ser lida por ela. No caminho apareceu um defeito: **`RETURNING` não garante a ordem das linhas que devolve**, então o lote chegava embaralhado — pego por um teste que falhava 1 em 5, corrigido com o `UPDATE` virando CTE e o `SELECT` de fora ordenando por `sequence`. O teste que discrimina insere dois eventos com ordem de inserção e ordem de relógio opostas (56 unitários + 29 de integração ao final).
 
 ### Próximos 3 passos imediatos
 1. **Nós:** Fase 7 — HTTP + Auth: `chi` com middlewares, `problem.go` mapeando `Result`/erros para os status do A9 (`201` nova, `200` replay, `202` pendente, `422` rejeição, `409` conflito, `404` não encontrado, `400` entrada inválida, `503` transitório), `Idempotency-Key` obrigatório, Keycloak (OIDC discovery + JWKS) e isolamento por claim `provider_id`.

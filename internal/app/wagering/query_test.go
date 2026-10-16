@@ -5,7 +5,9 @@ import (
 	"errors"
 	"strconv"
 	"testing"
+	"time"
 
+	"github.com/FeliPoxZ/jungle_desafio/internal/app/ports"
 	appwagering "github.com/FeliPoxZ/jungle_desafio/internal/app/wagering"
 	"github.com/FeliPoxZ/jungle_desafio/internal/domain/ids"
 	"github.com/FeliPoxZ/jungle_desafio/internal/domain/ledger"
@@ -311,6 +313,73 @@ func TestReconcileDeCarteiraInexistente(t *testing.T) {
 	if !errors.Is(err, appwagering.ErrWalletNotFound) {
 		t.Fatalf("erro = %v, esperado WALLET_NOT_FOUND", err)
 	}
+}
+
+// TestOutboxEntregaOsEventosNaOrdemDeInsercao trava a propriedade que a coluna
+// `sequence` existe para garantir: os DOIS eventos de uma operação compartilham o
+// `occurredAt`, e sem ordem explícita o `WalletBalanceChanged` poderia sair antes
+// do `WagerTransactionProcessed` da mesma operação.
+func TestOutboxEntregaOsEventosNaOrdemDeInsercao(t *testing.T) {
+	a := novoAmbiente()
+
+	// Abertura (2 eventos) e uma aposta (2 eventos), na mesma carteira.
+	abertura := abrir(t, a, appwagering.OpenWalletRequest{
+		PlayerID: "jogador-1", InitialBalance: brl("1000.00"), IdempotencyKey: "abertura-1",
+	})
+	carteira := a.estado.wallets[abertura.WalletID]
+	processar(t, a, pedido(carteira, wagerdomain.KindBet, "25.00"))
+
+	// Reivindica UM por vez, como o publisher fará.
+	var (
+		tipos      []string
+		sequencias []int64
+	)
+	for i := 0; i < 4; i++ {
+		lote := a.reivindicar(t, 1)
+		if len(lote) != 1 {
+			t.Fatalf("lote %d veio com %d eventos", i, len(lote))
+		}
+		tipos = append(tipos, lote[0].EventType)
+		sequencias = append(sequencias, lote[0].Sequence)
+	}
+
+	esperados := []string{
+		wagerdomain.EventTypeProcessed,            // abertura
+		wagerdomain.EventTypeWalletBalanceChanged, // abertura
+		wagerdomain.EventTypeProcessed,            // aposta
+		wagerdomain.EventTypeWalletBalanceChanged, // aposta
+	}
+	for i := range esperados {
+		if tipos[i] != esperados[i] {
+			t.Fatalf("ordem = %v, esperado %v", tipos, esperados)
+		}
+	}
+	for i := 1; i < len(sequencias); i++ {
+		if sequencias[i] <= sequencias[i-1] {
+			t.Fatalf("sequências = %v, esperado estritamente crescente", sequencias)
+		}
+	}
+
+	// Um quinto lote não traz nada: os quatro estão sob lease.
+	if lote := a.reivindicar(t, 4); len(lote) != 0 {
+		t.Fatalf("lote extra = %v, esperado vazio (lease)", lote)
+	}
+}
+
+// reivindicar lê um lote da outbox pelo caminho do repositório.
+func (a *ambiente) reivindicar(t *testing.T, limite int) []ports.OutboxEvent {
+	t.Helper()
+
+	var lote []ports.OutboxEvent
+	err := a.uow.Run(context.Background(), func(ctx context.Context, r ports.Repos) error {
+		var e error
+		lote, e = r.Outbox.ClaimBatch(ctx, limite, time.Minute, a.relogio.Now())
+		return e
+	})
+	if err != nil {
+		t.Fatalf("ClaimBatch: %v", err)
+	}
+	return lote
 }
 
 // inserirLancamento grava um lançamento direto no estado, para os testes de

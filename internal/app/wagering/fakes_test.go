@@ -452,16 +452,23 @@ func (r *outboxMemoria) Insert(_ context.Context, event ports.OutboxEvent) error
 			return ports.ErrConflict
 		}
 	}
+	// A sequência é do BANCO (IDENTITY) no adaptador real; aqui ela é o tamanho
+	// da fila, para o dublê manter a mesma propriedade: ordem de inserção.
+	event.Sequence = int64(len(r.e.outbox) + 1)
 	r.e.outbox = append(r.e.outbox, event)
 	return nil
 }
 
-func (r *outboxMemoria) ClaimBatch(_ context.Context, limit int, _ time.Duration, now time.Time) ([]ports.OutboxEvent, error) {
+func (r *outboxMemoria) ClaimBatch(_ context.Context, limit int, lease time.Duration, now time.Time) ([]ports.OutboxEvent, error) {
+	// Espelha o SQL: a fila é lida em ordem de inserção (a `sequence`), cada
+	// evento reivindicado recebe o LEASE, e o que não está disponível é pulado.
 	var saida []ports.OutboxEvent
-	for _, x := range r.e.outbox {
+	for i := range r.e.outbox {
+		x := r.e.outbox[i]
 		if !x.PublishedAt.IsZero() || x.AvailableAt.After(now) {
 			continue
 		}
+		r.e.outbox[i].AvailableAt = now.Add(lease)
 		saida = append(saida, x)
 		if len(saida) == limit {
 			break

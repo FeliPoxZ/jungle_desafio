@@ -41,18 +41,22 @@ type outboxRepo struct {
 // NewOutboxRepo cria o repositório sobre o pool ou sobre uma transação.
 func NewOutboxRepo(q querier) ports.OutboxRepository { return &outboxRepo{q: q} }
 
-const outboxColumns = `
-	event_id, aggregate_id, aggregate_type, event_type, payload,
-	occurred_at, available_at, attempts, last_error, published_at, created_at`
-
-// outboxColumnsComAlias é a mesma lista qualificada pelo alias da tabela.
+// outboxColumnsComAlias é a lista qualificada pelo alias `o`, para o RETURNING do
+// ClaimBatch.
 //
-// Necessário no RETURNING do ClaimBatch: o UPDATE tem um FROM (subconsulta) que
-// também expõe event_id, e sem o alias o PostgreSQL recusa com
-// "column reference event_id is ambiguous" (42702).
+// O alias é necessário: o UPDATE tem um FROM (subconsulta) que também expõe
+// event_id, e sem qualificar o PostgreSQL recusa com "column reference event_id is
+// ambiguous" (42702).
 const outboxColumnsComAlias = `
 	o.event_id, o.aggregate_id, o.aggregate_type, o.event_type, o.payload,
-	o.occurred_at, o.available_at, o.attempts, o.last_error, o.published_at, o.created_at`
+	o.occurred_at, o.available_at, o.attempts, o.last_error, o.published_at, o.created_at,
+	o.sequence`
+
+// outboxColumns é a mesma lista sem alias, para ler da CTE do ClaimBatch.
+const outboxColumns = `
+	event_id, aggregate_id, aggregate_type, event_type, payload,
+	occurred_at, available_at, attempts, last_error, published_at, created_at,
+	sequence`
 
 func (r *outboxRepo) Insert(ctx context.Context, e ports.OutboxEvent) error {
 	const sql = `
@@ -89,19 +93,39 @@ func (r *outboxRepo) ClaimBatch(ctx context.Context, limit int, lease time.Durat
 	// O lease é aplicado empurrando available_at para o futuro: enquanto o
 	// instante não chega, outro publisher não pega o mesmo evento. Se este
 	// processo morrer, o evento volta sozinho quando o prazo passar.
+	//
+	// # A ORDEM é a de `sequence`, e a CTE existe por isso
+	//
+	// Ordenar por `occurred_at` não serve: os dois eventos de uma mesma operação
+	// compartilham o instante, e em empate não existe ordem — o
+	// `WalletBalanceChanged` poderia sair antes do `WagerTransactionProcessed`. A
+	// sequência é a ordem de inserção, e o lock da carteira garante que ela é a
+	// ordem dos efeitos para a mesma carteira (migration 000003).
+	//
+	// E o `ORDER BY` de dentro da subconsulta NÃO basta: ele decide QUAIS linhas
+	// entram no lote (o `LIMIT`), mas o `RETURNING` do UPDATE não promete a ordem
+	// das linhas que devolve — `RETURNING ... ORDER BY` nem é aceito pela
+	// linguagem. Sem a CTE e o `SELECT ... ORDER BY sequence` de fora, o lote
+	// chegaria embaralhado e o publisher publicaria fora de ordem. (Foi um teste
+	// que falhava de vez em quando que mostrou: "RETURNING não garante ordem".)
 	const sql = `
-		UPDATE outbox_events AS o
-		SET available_at = $3
-		FROM (
-			SELECT event_id
-			FROM outbox_events
-			WHERE published_at IS NULL AND available_at <= $1
-			ORDER BY occurred_at
-			LIMIT $2
-			FOR UPDATE SKIP LOCKED
-		) AS lote
-		WHERE o.event_id = lote.event_id
-		RETURNING ` + outboxColumnsComAlias
+		WITH reivindicados AS (
+			UPDATE outbox_events AS o
+			SET available_at = $3
+			FROM (
+				SELECT event_id
+				FROM outbox_events
+				WHERE published_at IS NULL AND available_at <= $1
+				ORDER BY sequence
+				LIMIT $2
+				FOR UPDATE SKIP LOCKED
+			) AS lote
+			WHERE o.event_id = lote.event_id
+			RETURNING ` + outboxColumnsComAlias + `
+		)
+		SELECT ` + outboxColumns + `
+		FROM reivindicados
+		ORDER BY sequence`
 
 	rows, err := r.q.Query(ctx, sql, now, limit, now.Add(lease))
 	if err != nil {
@@ -190,6 +214,7 @@ func scanOutbox(rows pgx.Rows) (ports.OutboxEvent, error) {
 	err := rows.Scan(
 		&e.EventID, &e.AggregateID, &e.AggregateType, &e.EventType, &e.Payload,
 		&e.OccurredAt, &e.AvailableAt, &e.Attempts, &lastError, &publishedAt, &e.CreatedAt,
+		&e.Sequence,
 	)
 	if err != nil {
 		return ports.OutboxEvent{}, Classify(err)

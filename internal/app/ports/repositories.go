@@ -181,6 +181,15 @@ type OutboxEvent struct {
 	LastError     string
 	PublishedAt   time.Time
 	CreatedAt     time.Time
+
+	// Sequence é a ordem de INSERÇÃO na outbox, atribuída pelo banco (IDENTITY).
+	//
+	// É por ela que a fila é lida, e não por `OccurredAt`: os dois eventos de uma
+	// mesma operação compartilham o instante, e em empate não existe ordem. Como o
+	// lock da carteira serializa as operações da mesma carteira, a ordem de
+	// inserção É a ordem dos efeitos — que é o que o `MessageGroupId` da fila
+	// FIFO exige.
+	Sequence int64
 }
 
 // OutboxRepository guarda os eventos na mesma transação que a mudança de estado.

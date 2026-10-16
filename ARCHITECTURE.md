@@ -302,9 +302,11 @@ Cinco tabelas: `wallets`, `wager_transactions`, `wallet_ledger_entries`,
 | Índice | 17 | leitura por provedor, por carteira, fila da outbox, pendências |
 | Trigger | 5 | `updated_at` automático e imutabilidade do ledger |
 
-**31 operações inválidas foram testadas e todas recusadas pelo banco**, mais um
-caso POSITIVO que confirma que o afrouxamento vale só para `OPENING`
-(`deploy/postgres/verify_constraints.sql`).
+**32 operações inválidas foram testadas e todas recusadas pelo banco**, mais um
+caso POSITIVO que confirma que o afrouxamento de jogo/rodada vale só para
+`OPENING` (`deploy/postgres/verify_constraints.sql`). Eram 30 na Fase 4: a
+migration 000002 acrescentou a recusa de operação externa sem jogo/rodada, e a
+000003 a recusa de `sequence` escrita à mão.
 
 ### [DECISÃO] `OPENING` não pertence a jogo nem a rodada (migration 000002)
 
@@ -534,9 +536,15 @@ tudo entra, ou nada entra. Um worker lê a tabela e publica depois. A entrega vi
 ### [PRONTO] `ClaimBatch` com `FOR UPDATE SKIP LOCKED` + lease
 
 ```sql
-UPDATE outbox_events SET available_at = $lease
-WHERE event_id IN (SELECT ... WHERE available_at <= now() ... FOR UPDATE SKIP LOCKED)
-RETURNING ...
+WITH reivindicados AS (
+    UPDATE outbox_events AS o SET available_at = $lease
+    FROM (SELECT event_id FROM outbox_events
+          WHERE published_at IS NULL AND available_at <= $now
+          ORDER BY sequence LIMIT $n FOR UPDATE SKIP LOCKED) AS lote
+    WHERE o.event_id = lote.event_id
+    RETURNING ...
+)
+SELECT ... FROM reivindicados ORDER BY sequence
 ```
 
 - **`SKIP LOCKED`**: dois publishers pegam lotes **diferentes**, sem um bloquear o
@@ -548,6 +556,38 @@ RETURNING ...
 `MarkRetry` incrementa `attempts` **no banco** (`attempts + 1`), não a partir do
 valor lido: duas instâncias falhando ao mesmo tempo contariam a mesma tentativa se
 o número viesse do processo.
+
+### [DECISÃO] A fila é lida por `sequence`, não por `occurred_at`
+
+`occurred_at` é **quando o fato aconteceu**; não serve como critério de ordem:
+
+1. os **dois** eventos da mesma operação compartilham o instante (o `now` é lido
+   uma vez por operação), e em empate não existe ordem — o
+   `WalletBalanceChanged` poderia ser publicado antes do
+   `WagerTransactionProcessed` da mesma operação;
+2. ordenar por relógio de processo supõe relógio monotônico, e ele não é (NTP,
+   ajuste manual, VM pausada).
+
+A coluna `sequence` (`BIGINT GENERATED ALWAYS AS IDENTITY`, migration 000003) é a
+**ordem de inserção**, e é ela que vale como ordem dos efeitos: o lock da carteira
+é mantido desde antes do `INSERT` até o commit, então todos os eventos da operação
+A são inseridos antes de qualquer evento da operação B **da mesma carteira** — que
+é exatamente o que o `MessageGroupId = walletId` da fila FIFO exige. A sequência é
+global (não por carteira) porque a ordem que importa é dentro do grupo, e a ordem
+global preserva a de cada grupo. Buracos deixados por rollback são normais
+(`sequence` não é transacional) e não afetam a ordem.
+
+### [DECISÃO] A CTE existe porque `RETURNING` não garante ordem
+
+O `ORDER BY sequence` **dentro** da subconsulta decide **quais** linhas entram no
+lote (com o `LIMIT`), mas o `RETURNING` do `UPDATE` não promete a ordem das linhas
+que devolve — e `RETURNING ... ORDER BY` nem é aceito pela linguagem. Sem a CTE e
+o `SELECT ... ORDER BY sequence` de fora, o lote chegava **embaralhado** e o
+publisher publicaria fora de ordem mesmo com a coluna no lugar.
+
+Quem mostrou foi um teste que falhava de vez em quando (`TestOrdemDaOutboxNaoDependeDoRelogio`,
+~1 falha em 5 execuções): a primeira versão da correção trocou o `ORDER BY` e achou
+que bastava. É o defeito 19 da §15.
 
 ### [PLANEJADO] Fase 9 — publisher e worker
 
@@ -875,6 +915,7 @@ introduzido de propósito, e todos foram corrigidos com teste que os trava.
 | 16 | 6a | O `lock_timeout` de 3s do pool abortava a **espera pelo lock consultivo** | o segundo pacote de integração morria com `55P03` antes de a outra suíte terminar | a sessão do harness espera sem prazo (`SET lock_timeout = 0`) |
 | 17 | 6b | O `CHECK ids_not_blank` exigia `game_id` e `round_id` de **toda** linha, inclusive `OPENING` | abrir carteira obrigaria a INVENTAR jogo e rodada, gravando dado falso no histórico financeiro | migration 000002: a exigência passou a valer só para operação externa; o domínio acompanha |
 | 18 | 6c | **Identificador malformado em coluna `UUID` virava erro permanente (500)** | `GET /wallets/abc` responderia 500 em vez de "não encontrado" (`22P02 invalid input syntax for type uuid`), e uma mensagem de SQS com `walletId` inválido derrubaria o processamento como falha de infraestrutura | guarda de formato antes da consulta (`ids.go`), com "não encontrado" na leitura e entrada inválida no `walletId` da requisição |
+| 19 | 6d | **`RETURNING` não garante a ordem das linhas que devolve** | a fila era lida por `occurred_at`; ao trocar por `sequence`, o `ORDER BY` da subconsulta passou a decidir só QUAIS linhas entram no lote — o lote chegava embaralhado (1 falha em 5 execuções do teste de ordem) e o publisher publicaria fora de ordem | o `UPDATE` virou uma CTE e o `SELECT` de fora ordena por `sequence` |
 
 ---
 
@@ -890,8 +931,6 @@ que funciona não ajuda quem vai manter.
 | Sem foreign key de `outbox_events` para o agregado | A outbox precisa sobreviver à remoção do agregado; ela é a fila, não um detalhe dele |
 | `testcontainers-go` baixado e **não usado** | Os testes apontam para o Postgres do compose. Remover com `go mod tidy` na Fase 12 |
 | `LOSS` com referência: o serviço confere quando ela resolve | O README permite referência opcional. A régua adotada está registrada em `docs/evidencias/FASE_6.md` §8: referência informativa não bloqueia a operação |
-| A ordem entre os DOIS eventos da MESMA transação não é garantida | `WagerTransactionProcessed` e `WalletBalanceChanged` compartilham o `occurred_at`, e a outbox não tem coluna de sequência. Os dois carregam `transactionId`, e o consumidor precisa ser idempotente de qualquer forma |
-| A ordenação da outbox por `occurred_at` depende do relógio do processo | Um salto para trás do relógio poderia inverter a ordem de duas operações da mesma carteira. Ordem forte exigiria sequência por carteira (coluna/sequence) — fora do escopo |
 | O dublê em memória não prova lock nem concorrência | Ele tem semântica de transação (cópia do estado, troca só no fim sem erro), mas não tem `FOR UPDATE`. Lock, lost update e disputa entre processos são provados contra o PostgreSQL real |
 | `next_resolution_attempt_at` fica preenchido em reversão já `PROCESSED` | Efeito de usar `MarkPendingReference` + `ResolveReference`, que é o único caminho que o agregado oferece para vincular a referência interna. A coluna só é lida para linhas `PENDING_REFERENCE`, então o valor é inerte |
 | `ListLedger` faz uma consulta a mais por página | Confere a existência da carteira antes de listar (para não devolver página vazia ambígua). É uma leitura a mais dentro da mesma transação de leitura |
@@ -923,16 +962,17 @@ docker exec -i jungleg-postgres psql -U jungleg -d jungleg < deploy/postgres/ver
 
 **Números atuais:** 574 casos no domínio (Fases 1–3) + **38** testes de
 persistência (Fase 5: 13 de unidade, incluindo os 3 de contrato e classificação, e
-25 de integração) + 3 de `idgen` + **55 casos** do caso de uso (42 funções `Test`,
-com os subtests de entrada inválida, abertura e referência divergente) + **27
+25 de integração) + 3 de `idgen` + **56 casos** do caso de uso (43 funções `Test`,
+com os subtests de entrada inválida, abertura e referência divergente) + **29
 casos** de integração do caminho completo. `go test -race` verde nos **13 pacotes**
 de unidade e nos 2 de integração. Cobertura do domínio: `money` 97,9%, `wallet`
 99,0%, `wagering` 100,0%.
 
-**Migrations:** duas (`000001_init`, `000002_opening_sem_jogo_e_rodada`). O binário
-`bin/migrate.exe` carrega as migrations **embutidas** (`go:embed`): depois de criar
-uma migration nova, é preciso **rebuidá-lo** (`go build -o bin/migrate.exe ./cmd/migrate`)
-— um binário velho responde "schema já está atualizado" e não aplica nada.
+**Migrations:** três (`000001_init`, `000002_opening_sem_jogo_e_rodada`,
+`000003_ordem_da_outbox`). O binário `bin/migrate.exe` carrega as migrations
+**embutidas** (`go:embed`): depois de criar uma migration nova, é preciso
+**rebuidá-lo** (`go build -o bin/migrate.exe ./cmd/migrate`) — um binário velho
+responde "schema já está atualizado" e não aplica nada.
 
 Os dois pacotes de integração usam o MESMO banco de teste e truncam tabelas.
 Como `go test ./...` roda pacotes em processos paralelos, cada `TestMain` toma um

@@ -4,7 +4,8 @@
 > `healthy`) e o banco `jungle_test`. Coletadas em 2026-10-16.
 >
 > **Estado da fase: CONCLUÍDA.** Três blocos, um commit cada: 6a (`Process`), 6b
-> (`OpenWallet`) e 6c (leituras + `Reconcile`).
+> (`OpenWallet`) e 6c (leituras + `Reconcile`) — mais a correção pós-fase do bloco
+> 6d (ordem dos eventos na outbox, §11), que fecha duas limitações registradas.
 
 ## Ambiente
 
@@ -14,7 +15,7 @@
 | Driver | `github.com/jackc/pgx/v5 v5.11.0` |
 | Pacote do caso de uso | `internal/app/wagering` (`service`, `request`, `payload`, `reference`, `outcome`, `events`, `codes`, `errors`, `ids`, `opening`, `query`, `reconcile`) |
 | Adições de contrato | `ports.Clock`, `platform/clock`, `GetByReferenceAndKind` e `CountByWallet` em `ports` + `infra/postgres` |
-| Migrations | `000001_init` (Fase 4) e `000002_opening_sem_jogo_e_rodada` (6b) |
+| Migration | `000001_init` (Fase 4), `000002_opening_sem_jogo_e_rodada` (6b) e `000003_ordem_da_outbox` (6d) |
 | Testes | `internal/app/wagering/*_test.go` (unitário) e `test/integration/` (integração) |
 
 ## 1. Build, vet e formatação
@@ -62,9 +63,9 @@ ok  	.../test/integration	10.016s
 (13 pacotes de unidade + 2 de integração, todos ok)
 ```
 
-**Números da fase:** 55 casos unitários em `internal/app/wagering` (42 funções
+**Números da fase:** 56 casos unitários em `internal/app/wagering` (43 funções
 `Test`, com os subtests de entrada inválida, abertura e referência divergente) e
-**27 casos de integração** em `test/integration`.
+**29 casos de integração** em `test/integration`.
 
 > O tempo de `test/integration` inclui a espera pelo lock do banco de teste (ver
 > §6.3): as duas suítes de integração usam o MESMO banco e truncam tabelas.
@@ -386,10 +387,75 @@ go test -count=1 -race ./...
 $env:TEST_DATABASE_URL='postgres://jungleg:jungleg@localhost:5432/jungle_test?sslmode=disable'
 go test -count=1 -race -tags=integration -timeout 300s ./...
 
-# as 31 operações que o banco precisa recusar (+ 1 caso positivo)
+# as 32 operações que o banco precisa recusar (+ 1 caso positivo)
 # O `<` precisa do cmd.exe: o PowerShell 5.1 não redireciona entrada de comando
 cmd /c "docker exec -i jungleg-postgres psql -U jungleg -d jungle_test -v ON_ERROR_STOP=1 < deploy\postgres\verify_constraints.sql"
 ```
 
 Os dois pacotes de integração se serializam sozinhos (lock consultivo), então
 **não é preciso** `-p 1`.
+
+## 11. Correção pós-fase: ordem dos eventos na outbox (bloco 6d)
+
+A ordem de saída da outbox estava registrada como **limitação** da fase: o
+`ClaimBatch` ordenava por `occurred_at`, e os DOIS eventos de uma operação
+compartilham o instante (o `now` é lido uma vez por operação). Em empate não existe
+ordem — o `WalletBalanceChanged` poderia ser publicado antes do
+`WagerTransactionProcessed` da mesma operação. E ordenar por relógio de processo
+supõe relógio monotônico, que ele não é.
+
+### 11.1. O que foi feito
+
+| Mudança | Por quê |
+| --- | --- |
+| Migration 000003: `sequence BIGINT GENERATED ALWAYS AS IDENTITY` | É a ordem de **inserção**, e o lock da carteira garante que ela é a ordem dos **efeitos** para a mesma carteira: todos os eventos da operação A são inseridos antes de qualquer evento da operação B daquela carteira |
+| Índice `outbox_events_pending` passou a `(available_at, sequence)` | A fila é lida por disponibilidade (lease) e ordenada por sequência |
+| `ClaimBatch` lê por `sequence` | `occurred_at` continua na tabela como *quando o fato aconteceu*; deixa de ser critério de ordem |
+| `ports.OutboxEvent.Sequence` | O publisher (Fase 9) e os testes enxergam a ordem |
+| Caso novo no script de constraints | `sequence` é `GENERATED ALWAYS`: escrita explícita **RECUSADA** — a ordem é da fila, não de quem grava |
+
+A migration foi aplicada **com dados presentes** nos dois bancos (a linha existente
+recebeu `sequence = 1`), que é o caso real.
+
+### 11.2. O defeito que apareceu no caminho: `RETURNING` não garante ordem
+
+A primeira versão da correção trocou `ORDER BY occurred_at` por `ORDER BY sequence`
+**dentro** da subconsulta e achou que bastava. Não bastava:
+
+- o `ORDER BY` de dentro decide **quais** linhas entram no lote (com o `LIMIT`);
+- o `RETURNING` do `UPDATE` **não promete** a ordem das linhas que devolve — e
+  `RETURNING ... ORDER BY` nem é aceito pela linguagem.
+
+O lote chegava **embaralhado**, e o publisher publicaria fora de ordem mesmo com a
+coluna no lugar. Quem mostrou foi o próprio teste, **falhando de vez em quando**:
+`TestOrdemDaOutboxNaoDependeDoRelogio` falhou 1 vez em 5 execuções com o
+`ORDER BY` já trocado.
+
+A correção foi transformar o `UPDATE` em **CTE** e ordenar no `SELECT` de fora:
+
+```sql
+WITH reivindicados AS (
+    UPDATE outbox_events AS o SET available_at = $lease
+    FROM (SELECT event_id FROM outbox_events
+          WHERE published_at IS NULL AND available_at <= $now
+          ORDER BY sequence LIMIT $n FOR UPDATE SKIP LOCKED) AS lote
+    WHERE o.event_id = lote.event_id
+    RETURNING ...
+)
+SELECT ... FROM reivindicados ORDER BY sequence
+```
+
+Depois da CTE: **8 execuções, 8 aprovações** (antes: 1 falha a cada ~5).
+
+### 11.3. Os testes, e qual deles DISCRIMINA
+
+| Teste | O que ele prova |
+| --- | --- |
+| `TestOrdemDosEventosNaOutbox` (integração) | Contra o banco real: abertura + BET + WIN na mesma carteira geram 6 eventos, reivindicados um a um, na ordem `Processed`/`BalanceChanged` de cada operação, com `sequence` estritamente crescente. Os pares **empatam** em `occurred_at` (o teste confere o empate no banco) |
+| `TestOrdemDaOutboxNaoDependeDoRelogio` (integração) | **Este é o que discrimina.** Insere dois eventos com ordem de inserção e ordem de relógio OPOSTAS (o segundo com `occurred_at` no passado): ordenar por tempo publicaria o segundo antes do primeiro, invertendo os efeitos. Com a sequência, sai na ordem de inserção |
+| `TestOutboxEntregaOsEventosNaOrdemDeInsercao` (unitário) | O mesmo caminho pelo dublê, que também aplica o lease |
+
+⚠️ **O primeiro teste não prova nada sobre a correção** — foi verificado: ele passa
+3 de 3 vezes com o código ANTIGO, porque em empate o PostgreSQL devolve as linhas
+na ordem física, que por acaso é a de inserção. Foi o segundo teste que reprovou o
+código antigo (ordem invertida), e é o segundo que sustenta a mudança.

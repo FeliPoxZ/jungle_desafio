@@ -335,6 +335,21 @@ DO $$ BEGIN
         RAISE NOTICE 'outbox attempts >= 0: RECUSADO (ok)';
     END;
 
+    -- A `sequence` é da FILA, não de quem grava: ela é `GENERATED ALWAYS`, e o
+    -- banco recusa valor explícito. É o que garante que a ordem de saída é a
+    -- ordem de inserção, e não algo que a aplicação escolheu (migration 000003).
+    BEGIN
+        INSERT INTO outbox_events (event_id, aggregate_id, aggregate_type, event_type, payload, sequence)
+        VALUES (gen_random_uuid(), 'a', 'wallet', 'X', '{}'::jsonb, 999);
+        RAISE EXCEPTION 'FALHOU: sequence escrita explicitamente foi aceita';
+    EXCEPTION WHEN others THEN
+        IF SQLERRM LIKE '%non-DEFAULT value%' THEN
+            RAISE NOTICE 'outbox sequence e da fila (GENERATED ALWAYS): RECUSADO (ok)';
+        ELSE
+            RAISE;
+        END IF;
+    END;
+
     RAISE NOTICE 'inbox e outbox: caminho feliz e constraints (ok)';
 END $$;
 
