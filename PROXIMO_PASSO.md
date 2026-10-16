@@ -62,7 +62,7 @@ solução + `ARCHITECTURE.md`.
 ### Histórico de commits (mais recente primeiro)
 
 ```
-<commit final> feat(money): completa o value object com serializacao JSON e suite de testes  ← FASE 1 (Blocos 3–7)
+b046e6a feat(money): completa o value object com aritmetica, comparacao e serializacao  ← FASE 1 (Blocos 3–7)
 3172772 bloco 2 monet incompleto                       ← Bloco 2 (mensagem a rever)
 b1bd10d docs(handoff): atualiza PROXIMO_PASSO para o Bloco 2 da Fase 1
 3a36aec feat(money): adiciona o value object Currency com erro de dominio tipado   ← Bloco 1
