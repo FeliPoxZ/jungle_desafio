@@ -45,14 +45,13 @@ solução + `ARCHITECTURE.md`.
 | Fase 3 (`WagerTransaction`) | ✅ **CONCLUÍDA E VALIDADA** — 127 casos, **100,0%** de cobertura |
 | Fase 4 (schema + migrations) | ✅ **CONCLUÍDA E VALIDADA** — 29 CHECK + 4 FK + 2 UNIQUE, 30 operações inválidas recusadas pelo banco |
 | Fase 5 (persistência `pgx` + Unit of Work) | ✅ **CONCLUÍDA E VALIDADA** — 38 testes (25 de integração), `-race` verde, 4 defeitos reais corrigidos |
-| Fase 6a (`Process` do caso de uso `wagering.Service`) | ✅ **CONCLUÍDA E VALIDADA** — 32 casos unitários + 15 de integração, **4 defeitos reais corrigidos** |
-| Fase 6b (`OpenWallet`) | ⬅ **PRÓXIMA** |
-| Fase 6c (leituras + `Reconcile`) | ⬜ Depois do 6b |
-| Fases 7–12 | ⬜ Não iniciadas (ver checklist no `PLANO.md` §3) |
+| Fase 6 (caso de uso `wagering.Service`) | ✅ **CONCLUÍDA E VALIDADA** em 3 blocos: 6a (`Process`), 6b (`OpenWallet`), 6c (leituras + `Reconcile`) — 55 casos unitários, 27 de integração, **6 defeitos reais corrigidos** |
+| Fase 7 (HTTP + autenticação) | ⬅ **PRÓXIMA** |
+| Fases 8–12 | ⬜ Não iniciadas (ver checklist no `PLANO.md` §3) |
 
-**Domínio (Fases 1–3): 574 casos verdes. Persistência (Fase 5): 38 testes. Caso de
-uso (Fase 6a): 32 unitários + 15 de integração. `go test -race ./...` verde em 13
-pacotes de unidade e nos 2 de integração. Árvore git limpa.**
+**Domínio (Fases 1–3): 574 casos. Persistência (Fase 5): 38. Caso de uso (Fase 6):
+55 unitários + 27 de integração. `go test -race` verde em 13 pacotes de unidade e
+nos 2 de integração. Árvore git limpa.**
 
 > ⚠️ Os **dois** pacotes de integração usam o mesmo banco de teste e truncam
 > tabelas. Cada `TestMain` toma um lock consultivo (`pg_advisory_lock`) e espera a
@@ -61,7 +60,10 @@ pacotes de unidade e nos 2 de integração. Árvore git limpa.**
 ### Histórico de commits (mais recente primeiro)
 
 ```
-4f0ab9d feat(app): adiciona caso de uso de operacoes com idempotencia e ledger transacional   ← FASE 6a
+21cf528 feat(app): adiciona leituras do caso de uso e reconciliacao em visao consistente   ← FASE 6c
+a397398 feat(app): adiciona abertura de carteira com lancamento de abertura e eventos       ← FASE 6b
+0cf1526 docs(handoff): atualiza PROXIMO_PASSO para a Fase 6b (abertura de carteira)
+4f0ab9d feat(app): adiciona caso de uso de operacoes com idempotencia e ledger transacional  ← FASE 6a
 aaa6c24 docs(arquitetura): cria ARCHITECTURE.md e o prompt de abertura da proxima conversa
 2e4c2c0 refactor(arquitetura): separa dominio, contrato e infraestrutura
 182df42 docs(estrategia): registra a mudanca de metodo e o compromisso dos dois documentos finais
@@ -82,8 +84,7 @@ b046e6a feat(money): completa o value object com aritmetica, comparacao e serial
 1eef5b2 chore(setup): fundacao do projeto com Fx, config validada, HTTP e observabilidade
 ```
 
-> ✅ **As Fases 0 a 5 e o bloco 6a estão commitadas e validadas. Não revalide nem
-> recommite.**
+> ✅ **As Fases 0 a 6 estão commitadas e validadas. Não revalide nem recommite.**
 
 ---
 
@@ -264,7 +265,7 @@ go test -count=1 -race -tags=integration -timeout 300s ./...
 ```
 internal/domain/{errors,ids,money,ledger,wallet,wagering}   regra de negócio, sem I/O
 internal/app/ports                                          CONTRATOS (interfaces + erros + Cursor + Clock)
-internal/app/wagering                                       CASO DE USO (Process pronto)
+internal/app/wagering                                       CASO DE USO (Process, OpenWallet, leituras, Reconcile)
 internal/infra/postgres                                     adaptador do banco
 internal/httpapi · internal/platform · internal/config · internal/observability
 test/integration                                            integração do caminho completo
@@ -294,6 +295,13 @@ própria cópia do extrator de Code.
 `ledger`. Não crie conversão entre os dois: são o mesmo conceito, e uma conversão esquecida
 viraria string vazia — exatamente o que `ledger.NewEntry` recusa.
 
+⚠️ **Identificador que não é UUID não pode chegar ao banco**: `wallets.id`,
+`wager_transactions.id` e `wallet_ledger_entries.wallet_id` são colunas `UUID`, e um texto
+qualquer numa consulta a elas vira `22P02`, que o driver classifica como falha
+**permanente** (500). O caso de uso confere o formato antes de consultar
+(`internal/app/wagering/ids.go`) — e os dublês de teste geram UUID de verdade, para não
+testarem um caminho que produção não tem.
+
 Detalhamento completo em `PLANO.md` §1 (A1–A14). O que afeta as Fases 6–7:
 
 | ID | Decisão |
@@ -306,87 +314,124 @@ Detalhamento completo em `PLANO.md` §1 (A1–A14). O que afeta as Fases 6–7:
 | **A5** | Idempotência **persistente**: índice único parcial + comparação de hash canônico |
 | **A8** | Tabela de `failureCode` estáveis — o `Code` do erro de domínio vira `failureCode` no HTTP |
 | A9 | Contrato HTTP: `201` nova, `200` replay, `202` pendente, `422` rejeição, `409` conflito, `403` provedor errado |
+| A9 | Ledger paginado: cursor opaco `base64url(createdAt RFC 3339Nano \| entryId)`, `limit` padrão 50 e **teto 200** |
+| A10 | `providerId` vem do TOKEN; operação de outro provedor responde **não encontrado** (nunca 403, que confirmaria a existência dela) |
 | A12 | Eventos com envelope: `eventId`, `eventType`, `aggregateId` (= `walletId`), `correlationId`, `causationId?`, `occurredAt`, `version`, `data` |
 
 ---
 
-## 6. 🎯 A TAREFA PONTUAL: FASE 6b — `OpenWallet`
+## 6. 🎯 A TAREFA PONTUAL: FASE 7 — HTTP + autenticação
 
-### 6.1. O que o bloco 6a deixou pronto (não refazer)
+### 6.1. O que a Fase 6 deixou pronto (não reimplementar)
 
-`internal/app/wagering` já tem `Process` completo: idempotência com duas leituras, lock da
-carteira, resolução de referência, movimentação, ledger, transições, outbox e retry. O que
-existe ali e deve ser **reusado**, não reescrito:
+`internal/app/wagering` tem o caso de uso COMPLETO. A Fase 7 é a borda: traduzir
+HTTP em `Request`/`OpenWalletRequest` e o desfecho em resposta.
 
-| Necessidade | O que usar |
+| Necessidade do handler | O que usar |
 | --- | --- |
-| Transação com os repositórios | `s.uow.Run` + o `ports.Repos` (o helper `processar` já encapsula) |
-| Gerar identificadores | `s.ids.NewID()` (`idgen.Generator`) |
-| Instante | `s.clock.Now().UTC()` — **depois do lock**, quando houver lock |
-| Gravar evento na outbox | `s.enfileirar(ctx, r, ev)` (serializa o envelope e insere) |
-| Emitir conclusão + mudança de saldo | `s.emitirProcessado(...)` (hoje amarrado ao `Movement`; `OpenWallet` usa o caminho de crédito) |
-| Códigos de falha | `internal/app/wagering/codes.go` |
+| Operação do provedor | `servico.Process(ctx, appwagering.Request{...})` → `Result` + erro |
+| Abertura de carteira | `servico.OpenWallet(ctx, appwagering.OpenWalletRequest{...})` → `OpenWalletResult` |
+| Leitura interna | `GetTransaction`, `GetWallet`, `ListLedger` |
+| Leitura do provedor | `GetProviderTransaction(providerID, id)` e `GetByProviderExternalID(providerID, externalID)` — **já aplicam o isolamento** (operação de outro provedor = "não encontrado") |
+| Reconciliação | `Reconcile(ctx, walletID)` → `Reconciliation` |
+| Código de falha | `domainerrors.CodeOf(err)` — é `failureCode` no corpo de erro |
+| Idempotência do corpo | `Request.IdempotencyKey` vem do header; o serviço recusa chave vazia com `IDEMPOTENCY_KEY_REQUIRED` |
 
-### 6.2. A armadilha do `OPENING` (leia antes de escrever)
+`app/ports` ganhou `Clock` (implementação em `platform/clock.System`) e os
+repositórios ganharam `GetByReferenceAndKind` e `CountByWallet`.
 
-O README §9 fixa: *"a versão da carteira nessa abertura é `1`"*, e o exemplo de resposta do
-`POST /wallets` traz `"balance": 1000.00, "version": 1`.
+### 6.2. O que JÁ EXISTE em `internal/httpapi` (a Fase 0 deixou pronto)
 
-O caminho intuitivo — criar a carteira zerada e chamar `wallet.Credit` — está **errado duas
-vezes**: `wallet.NewWallet` já nasce com o saldo inicial (então o crédito dobraria o saldo) e o
-`Credit` incrementa a versão para `2`.
+Não recrie nada disto — **estenda**:
 
-O caminho certo:
-
-1. `wallet.NewWallet(id, playerID, initialBalance, now)` → saldo inicial, versão **1**;
-2. `wagering.New(...)` com `kind = OPENING` (sem provedor, sem ID externo, **com** chave de
-   idempotência) → `MarkProcessed(saldoInicial, now)` → `INSERT` + `Save`;
-3. o lançamento de abertura é criado **direto**: `ledger.NewEntry(walletID, openingID, CREDIT,
-   inicial, balanceBefore = money.Zero(moeda), now)` — `balanceAfter` sai `= inicial`, e a
-   versão continua **1**;
-4. dois eventos: `ProcessedEvent` + `NewBalanceChangedEvent` (com `walletVersion = 1`).
-
-A prova de que é isso: a reconciliação do README (abertura `1000.00` + `BET` `25.00` → `975.00`
-com `checkedEntries: 2`) só fecha com o lançamento de abertura partindo de `0.00`.
-
-Demais regras do `OPENING`:
-
-| Regra | O que fazer |
+| Já existe | Onde |
 | --- | --- |
-| Saldo inicial zero | Carteira criada **sem** `OPENING`, sem ledger e sem eventos |
-| Carteira duplicada `(playerId, currency)` | `ErrConflict` do `Wallets.Insert` → conflito (409). Não há transação para gravar (não é operação do provedor) |
-| `OPENING` com chave repetida | `GetOpeningByIdempotencyKey` (a unicidade é só da chave, `WHERE kind = 'OPENING'`) → replay/conflito |
-| `OPENING` vindo de HTTP/SQS | já recusado em `Request.validate` (`OPERATION_NOT_ALLOWED`) |
+| Middlewares: `RequestID`, `RealIP`, `Recoverer`, `AccessLog`, `Timeout`, `MaxBody` | `middleware.go`, `recover.go` |
+| `APIError` com construtores tipados (`ErrBadRequest`, `ErrFailureBadRequest`, `ErrUnauthorized`, `ErrForbidden`, `ErrNotFound`, `ErrConflict`, `ErrUnprocessable`, `ErrUnavailable` com `Retry-After`, `ErrInternal`) e `WriteError` | `response.go` |
+| `decodeJSON` estrito (campo desconhecido, chave repetida, `Content-Type`) | `response.go` |
+| `Routes{Public, Internal, Provider}` + interface `Autenticador` | `router.go` |
+| `/health/live`, `/health/ready` (com `health_checkers`), `/metrics` | `health.go`, `router.go` |
 
-### 6.3. Depois do 6b: bloco 6c (leituras + reconciliação)
+O que falta: o **`Autenticador` de verdade** (Keycloak/OIDC), os **handlers** com
+DTOs, o **mapeamento desfecho→status**, o **módulo Fx do caso de uso** e as
+pendências P1/P4/P5.
 
-- `GetTransaction`, `GetByProviderExternalID` (**com checagem de provedor**),
-  `GetWallet`, `ListLedger(cursor)`;
-- `Reconcile(walletID)`: soma do ledger (incluindo a abertura) × saldo armazenado em **visão
-  consistente** (`RunReadOnly`, snapshot único) → `difference = stored - calculated` (pode ser
-  **negativo**: montar com `money.FromMinor`, nunca com `New`), `checkedEntries` (conta TODOS os
-  lançamentos, inclusive a abertura), `consistent`; divergência ⇒ log + métrica; **não altera
-  saldo**.
+### 6.3. O mapeamento desfecho → HTTP (é o que o avaliador cobra)
 
-### 6.4. Decisões do 6a que NÃO devem ser desfeitas
+| Situação | Status | Corpo |
+| --- | --- | --- |
+| Operação nova concluída | `201` | `{transactionId,status,balance,idempotentReplay:false}` |
+| Replay idempotente | `200` | idem com `idempotentReplay:true` — **saldo do processamento original** |
+| `PENDING_REFERENCE` | `202` | `{transactionId,status:"PENDING_REFERENCE",failureCode:null}` |
+| Rejeição de negócio | `422` | `{transactionId,status:"REJECTED",failureCode}` |
+| Abertura de carteira | `201` | `{id,playerId,balance,version}` (+ `idempotentReplay` no reenvio) |
+| Reconciliação | `200` | `{walletId,storedBalance,calculatedBalance,difference,consistent,checkedEntries}` |
+| Ledger paginado | `200` | `{entries:[...],nextCursor}` |
 
-| Decisão | Por quê |
+Erros (`WriteError` + `domainerrors.CodeOf`):
+
+| Erro | Status |
 | --- | --- |
-| Rejeição de negócio é desfecho (`Result`), não `error` | A operação existe, foi decidida e ficou gravada; só a borda HTTP sabe virar status |
-| `INSERT` da transação antes de resolver a referência | Todo desfecho é um **estado da linha**; sem a linha não há onde gravá-lo |
-| Instante lido **depois** do lock | É o `occurredAt` dos eventos, e a outbox ordena por ele com `MessageGroupId` = carteira |
-| Retry envolve a transação inteira e também o **conflito** | Unicidade violada = "alguém chegou primeiro"; a segunda passada responde replay ou conflito |
-| Retry esgotado **não** grava `FAILED` | Sem commit não existe linha para marcar; esgotou ⇒ erro transitório (503) |
-| Referência em `BET`/`WIN`/`LOSS` é **informativa** | Não bloqueia a operação; e não vai para `reference_transaction_id`, senão o índice parcial trataria a operação como reversão |
-| `ROLLBACK` de `BET` já estornada ⇒ `ALREADY_REVERSED` | Creditar de novo o mesmo débito criaria dinheiro; desfazer o estorno é `ROLLBACK` do `REFUND`, que debita |
-| A segunda leitura de idempotência compara a **chave** | Entre as duas consultas outra instância pode comitar; sem comparar, pedido legítimo vira 409 |
-| `wagering.Error` é **alias** de `domainerrors.Error` | Com tipo próprio, `CodeOf` devolvia vazio e o `failureCode` sairia em branco |
+| `ErrIdempotencyConflict`, `ErrWalletAlreadyExists` | `409` |
+| `ErrWalletNotFound`, `ErrTransactionNotFound` | `404` |
+| Códigos de entrada inválida (`INVALID_REQUEST`, `IDEMPOTENCY_KEY_REQUIRED`, `INVALID_AMOUNT`, `REFERENCE_REQUIRED`, `INVALID_TRANSACTION`, `INVALID_CURRENCY`, cursor inválido) | `400` |
+| `OPERATION_NOT_ALLOWED` (`OPENING` de fora) | `403` |
+| `ports.IsRetryable(err)` (transitório esgotado) | `503` + `Retry-After` |
+| Qualquer outro | `500` (sem vazar stack nem erro de driver) |
 
-### 6.5. Checkpoint obrigatório ao fim de cada bloco
+⚠️ **Nunca** mapear `error` de infraestrutura para `4xx`: a diferença entre
+"o cliente errou" e "o serviço está indisponível" é contrato (README §9).
+
+### 6.4. Autenticação e isolamento (A10 — é eliminatório)
+
+- OIDC discovery + JWKS com cache e rotação; valida `iss`, `aud`, `exp`, `nbf`, `alg` `RS256`;
+- **o `providerId` vem do TOKEN**, nunca do corpo: `POST /wagering/transactions` com
+  `providerId` diferente do claim ⇒ `403`; `GET /providers/:providerId/...` idem;
+- `POST /wallets`, `GET /wallets*`, `POST /wallets/:id/reconciliation` ⇒ role `internal`
+  (provedor recebe `403` **sem efeito financeiro**);
+- token ausente/inválido ⇒ `401`;
+- IdP indisponível ⇒ `503` e **nenhum efeito financeiro** (o teste tem que conferir o banco);
+- os endpoints públicos seguem públicos: `/health/live`, `/health/ready`, `/metrics`.
+
+### 6.5. Pendências que são DESTA fase
+
+| Pendência | O que fazer |
+| --- | --- |
+| **P1** | `cmd/api` ganhar a flag `-health-check` (o healthcheck do `api` no compose a usa) |
+| **P4** | `POST /wallets` de verdade — hoje o sub-roteador interno está montado em `/internal/wallets` |
+| **P5** | registrar Postgres (e SQS, na Fase 8) no grupo `health_checkers` do Fx |
+| **P2** | conferir a ordem `AccessLog` × `Recoverer` (o log precisa registrar o que o recover converteu) |
+| **P7** | `StopTimeout` do Fx vindo da config, não da constante em `app.go` |
+
+### 6.6. Fx
+
+- `fx.Module("infra")`: `postgres.NewPool` + `postgres.NewUnitOfWork` (a aplicação
+  recebe `ports.UnitOfWork`);
+- `fx.Module("usecase")`: `appwagering.New(uow, clock.System{}, idgen.New())`;
+- `fx.Module("auth")`: o `Autenticador` (OIDC);
+- `fx.Module("http")`: `httpapi.NewRouter` já existe — as rotas novas entram nele;
+- `app.ValidateApp()` já valida o grafo sem subir nada: use no teste de composição.
+
+### 6.7. Testes que a fase PRECISA ter
+
+- `httptest` com **servidor OIDC de teste assinando de verdade** (chave gerada no
+  teste, JWKS servido localmente) — sem isso, o teste de autenticação não prova nada;
+- token ausente / inválido / expirado / assinatura de outra chave / role errada /
+  provedor errado;
+- **isolamento**: provedor A não lê nem replica operação do provedor B (inclusive em
+  replay), e o corpo não escolhe o provedor;
+- **sem efeito financeiro** em acesso negado: afirmar o saldo e o ledger no banco
+  depois do `403`/`401`;
+- contrato de status: `201`/`200`/`202`/`422`/`409`/`404`/`400`/`503`/`400` de cursor;
+- IdP fora ⇒ `503`.
+
+### 6.8. Checkpoint obrigatório
 
 ```powershell
 $env:GOMODCACHE='E:\jungleg\.gocache\mod'; $env:GOCACHE='E:\jungleg\.gocache\build'; $env:GOPATH='E:\jungleg\.gocache\gopath'
 docker compose up -d postgres
+# migrations EMBUTIDAS no binário: rebuilde depois de criar/alterar migration
+go build -o bin\migrate.exe .\cmd\migrate\
 $env:DATABASE_URL='postgres://jungleg:jungleg@localhost:5432/jungleg?sslmode=disable'
 .\bin\migrate.exe up
 go build ./... ; go vet ./... ; go vet -tags=integration ./... ; gofmt -l .\internal\ .\cmd\ .\migrations\ .\test\
@@ -395,13 +440,12 @@ $env:TEST_DATABASE_URL='postgres://jungleg:jungleg@localhost:5432/jungle_test?ss
 go test -count=1 -race -tags=integration -timeout 300s ./...
 ```
 
-> `gofmt -l .` na raiz lista o cache de módulos (`.gocache/mod`) — formatar dependência de
-> terceiros não é nosso. Por isso a checagem é escopada.
+> `gofmt -l .` na raiz lista o cache de módulos (`.gocache/mod`) — formatar
+> dependência de terceiros não é nosso. Por isso a checagem é escopada.
 
-Commits esperados:
+Commit esperado ao fim do bloco:
 ```
-feat(app): adiciona abertura de carteira com lancamento de abertura e eventos
-docs(handoff): atualiza PROXIMO_PASSO para a Fase 6c (leituras e reconciliacao)
+feat(http): adiciona endpoints de wagering e carteira com autenticacao OIDC
 ```
 
 ---
@@ -417,35 +461,44 @@ pede `POST /wallets`), P5 (registrar Postgres/SQS no grupo `health_checkers`), P
 **Resolvidas:** P6 (`cmd/migrate` existe), `canonicaljson` criado, padding do `CHAR(3)`
 tratado com `TrimSpace` e testado, `Movement` resolvendo a versão do UPDATE condicional,
 `CodeOf` unificado em `domainerrors`, `wagering.Error` virou alias (defeito 13 da §15 do
-`ARCHITECTURE.md`), `LOSS` com referência decidido (informativa, ver §6.4 acima).
+`ARCHITECTURE.md`), `LOSS` com referência decidido (informativa — `ARCHITECTURE.md` §9 e
+`FASE_6.md` §8).
 
 **Abertas:**
-- **`ARCHITECTURE.md` existe** (criado em `aaa6c24` e atualizado no 6a): 17 seções com
+- **`ARCHITECTURE.md` existe** (criado em `aaa6c24`) e está atualizado até a Fase 6: 17 seções com
   marcadores `[PRONTO]` / `[PARCIAL]` / `[PLANEJADO]`. Faltam preencher as seções 10 (HTTP —
   Fase 7), 11 (SQS — Fase 8) e 12 (observabilidade de negócio — Fase 11);
 - `testcontainers-go` foi baixado e **não é usado** (os testes apontam para o Postgres do
   compose via `TEST_DATABASE_URL`). Remover com `go mod tidy` na Fase 12;
 - **métricas de negócio** (`wager_operations_total{kind,status}`, `wager_idempotent_replays_total`)
-  ficaram para a Fase 11 de propósito, para o caso de uso não nascer acoplado ao Prometheus;
+  ficaram para a Fase 11 de propósito, para o caso de uso não nascer acoplado ao Prometheus —
+  inclusive o **log e a métrica de divergência da reconciliação**;
 - `migrate.exe` sobrando na raiz (além de `bin/migrate.exe`): lixo de build, só limpar;
+- **`bin/migrate.exe` carrega as migrations embutidas** (`go:embed`): depois de criar ou alterar
+  uma migration, é preciso rebuidá-lo, senão ele responde "schema já está atualizado" e não
+  aplica nada (aconteceu na 000002);
 - a ordem entre os **dois eventos da mesma transação** não é garantida (mesmo `occurred_at`) e a
   ordenação da outbox depende do relógio — as duas estão registradas como limitação na §16 do
-  `ARCHITECTURE.md`, com o motivo de não terem sido resolvidas agora.
+  `ARCHITECTURE.md`, com o motivo de não terem sido resolvidas agora;
+- o **`wager_transactions` de `OPENING`** tem `game_id` e `round_id` vazios por decisão
+  (migration 000002); a reversão dessa migration exige decidir o que fazer com essas linhas — a
+  condição está documentada no próprio `.down.sql`.
 
 ---
 
 ## 8. CHECKLIST DE ARRANQUE PARA A NOVA CONVERSA
 
-- [ ] Ler `CONTEXTO.md`, `PLANO.md` §3 (Fase 6) e `docs/evidencias/FASE_6.md`
-- [ ] Confirmar containers de pé (`docker ps`) e o schema aplicado (`bin/migrate.exe version`)
+- [ ] Ler `README.md` (o enunciado é a fonte de verdade), `ARCHITECTURE.md`, `PLANO.md` §3 (Fase 7) e `docs/evidencias/FASE_6.md`
+- [ ] Confirmar containers de pé (`docker ps`) e o schema aplicado (`bin/migrate.exe version` — deve dizer **2**)
 - [ ] **Confirmar com o usuário que a estratégia mudou** (seção 3.1): a IA escreve o código e explica depois
-- [ ] Implementar `OpenWallet` pela seção 6.2 — em especial: **NÃO chamar `wallet.Credit` no caminho de abertura** (dobraria o saldo e subiria a versão para 2, contrariando o README)
-- [ ] Reusar `uow.Run`, `Movement`, `canonicaljson`, o `enfileirar` e os construtores de evento do `wagering` em vez de reimplementar
-- [ ] Respeitar as decisões do 6a listadas na seção 6.4 (rejeição é desfecho; instante depois do lock; retry do conflito; referência informativa)
-- [ ] Cobrir: abertura com saldo (2 eventos + ledger partindo de 0.00 + versão 1), abertura com zero (sem `OPENING`/ledger/eventos), carteira duplicada → conflito, `OPENING` com chave repetida → replay
-- [ ] Testar na integração a reconciliação do README (`1000.00` − `25.00` = `975.00`, `checkedEntries: 2`)
+- [ ] **Estender** `internal/httpapi` (middlewares, `APIError`/`WriteError`, `Routes`, health e métricas já existem) — não recriar
+- [ ] Implementar o `Autenticador` de verdade (OIDC/Keycloak) e o isolamento por `provider_id` do token (seção 6.4) — o `providerId` do CORPO não escolhe o provedor
+- [ ] Mapear `Result`/erros para os status da seção 6.3, sem nunca vazar stack nem erro de driver, e sem transformar falha de infraestrutura em `4xx`
+- [ ] Ligar o caso de uso no Fx (`fx.Module("usecase")` com `appwagering.New(uow, clock.System{}, idgen.New())`)
+- [ ] Resolver P1 (`-health-check`), P4 (`POST /wallets`), P5 (health checkers), P2 (ordem dos middlewares) e P7 (`StopTimeout` da config)
+- [ ] Testar com servidor OIDC de teste **assinando de verdade**: token ausente/inválido/expirado, role errada, provedor errado, isolamento em replay e leitura, e **nenhum efeito financeiro** em acesso negado (conferir o banco)
 - [ ] Aceitar contestação do usuário: se ele questionar e estiver certo, **admitir e corrigir**
-- [ ] Depois de aprovado, commitar: `feat(app): adiciona abertura de carteira com lancamento de abertura e eventos`
+- [ ] Depois de aprovado, commitar: `feat(http): adiciona endpoints de wagering e carteira com autenticacao OIDC`
 - [ ] Lembrar do **compromisso final** (seção 3.5): `docs/SISTEMA_EXPLICADO.md` e `docs/ENTREVISTA.md`
 
-**As Fases 0 a 5 e o bloco 6a estão commitados e validados. Não revalide nem recommite.**
+**As Fases 0 a 6 estão commitadas e validadas. Não revalide nem recommite.**
