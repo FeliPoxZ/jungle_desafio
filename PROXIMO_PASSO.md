@@ -358,11 +358,12 @@ Detalhamento completo em `PLANO.md` §1 (A1–A14). O que afeta as Fases 6–7:
 > | **7e** | `343ec51` | integração com **Keycloak real** (token por `client_credentials`) e PostgreSQL; binário real |
 > | **P1** | `31cf6b5` | `-health-check` para o healthcheck do compose |
 >
-> **8 defeitos reais corrigidos** (dois de código dormente desde a Fase 0, quatro de
-> composição Fx, um de healthcheck, um de ordem de middleware e o **defeito 27**, o
-> log de acesso saindo em texto enquanto o boot saía em JSON — que só apareceu ao
-> **rodar o binário**) — lista completa no `ARCHITECTURE.md` §15 (defeitos 20 a 27)
-> e no `FASE_7.md` §6.
+> **9 defeitos reais corrigidos:** dois de código dormentes desde a Fase 0
+> (`RequestSize(0)` recusando todo corpo e a ordem `AccessLog` × `Recoverer`),
+> quatro de composição Fx, um de healthcheck (P1), três asserções de teste com a
+> régua errada e o **defeito 27** — o log de acesso saindo em texto enquanto o boot
+> saía em JSON, que só apareceu ao **rodar o binário**. Lista completa no
+> `ARCHITECTURE.md` §15 (defeitos 20 a 27) e no `FASE_7.md` §6.
 
 ### 6.1. O que a Fase 6 deixou pronto (não reimplementar)
 
