@@ -331,15 +331,23 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` feito e **validado por te
 
 **Evidências:** `docs/evidencias/FASE_2.md`
 
-### FASE 3 — Domínio `WagerTransaction` (D0, ~2h)
-- [ ] `Kind` (`OPENING/BET/WIN/LOSS/REFUND/ROLLBACK`) com `ParseKind`, `IsExternal()`
-- [ ] `Status` (`PENDING/PENDING_REFERENCE/PROCESSED/REJECTED/FAILED`) com `IsTerminal()`
-- [ ] Construtor `NewWagerTransaction(...)` validando obrigatórios por origem (interna `OPENING` x externa)
-- [ ] Transições validadas (`ErrInvalidTransition`, `ErrTerminalState`)
-- [ ] `referenceExternalTransactionId` obrigatório p/ `REFUND`/`ROLLBACK`; valor `>0` para BET/WIN/REFUND/ROLLBACK; `LOSS` exige `0.00`
-- [ ] `failureCode` (tabela A8) + `result_balance` persistido
-- [ ] Eventos de domínio (structs tipadas + envelope, A12) com `New...Event()` definindo `type`/`version`
-- [ ] Testes: todos os tipos, política de zero, transições válidas/inválidas, terminal, `OPENING` rejeitado de fora
+### FASE 3 — Domínio `WagerTransaction` (D0, ~2h) — ✅ CONCLUÍDA E VALIDADA
+
+- [x] `Kind` (`OPENING/BET/WIN/LOSS/REFUND/ROLLBACK`) com `ParseKind`, `Validate`, `String`, `IsExternal`/`IsInternal`, `RequiresReference`, `AllowsZeroAmount`, `MovesMoney`, `ValidateAmount`
+- [x] `Status` (`PENDING/PENDING_REFERENCE/PROCESSED/REJECTED/FAILED`) com `ParseStatus`, `Validate`, `IsTerminal`, `CanTransition`, `ValidateTransition`, `AllowedTransitions` — máquina de estados em tabela explícita, com **25 transições verificadas**
+- [x] `New(...)` validando obrigatórios por origem: `OPENING` (interna) rejeita provedor e ID externo; operação externa exige provedor, ID externo, chave de idempotência e payload. **`OPENING` também exige chave de idempotência** — é o que impede crédito inicial duplicado
+- [x] Transições validadas: `MarkProcessed`, `MarkRejected`, `MarkFailed`, `MarkPendingReference`, `ResolveReference`. `transicionar` é o **único** ponto que muda estado
+- [x] Erro específico por causa: estado terminal devolve `ErrTerminalState`; transição fora de ordem devolve `ErrInvalidTransition` (códigos diferentes = `failureCode` diferentes)
+- [x] `referenceExternalTransactionId` obrigatório p/ `REFUND`/`ROLLBACK` (`REFERENCE_REQUIRED`); valor `> 0` para BET/WIN/REFUND/ROLLBACK e `== 0` para LOSS
+- [x] `failureCode` gravado na rejeição e na falha (`PROCESSING_FAILED` como padrão) + `resultBalance` + referência interna resolvida + tentativa e próximo instante de resolução
+- [x] Eventos de domínio (A12): envelope com `eventId`, `eventType`, `aggregateId`, `correlationId`, `causationId?`, `occurredAt`, `version`, `data`; construtores `ProcessedEvent` (inclui **LOSS**), `RejectedEvent`, `PendingReferenceEvent` e `NewBalanceChangedEvent` que **recusa** `Entry` vazio (LOSS e rejeição não geram `WalletBalanceChanged`)
+- [x] `PayloadEncoder` injetado em vez de `encoding/json` no domínio: o hash do payload vem de JSON canônico fornecido pela borda
+- [x] Testes: **127 casos** (39 testes + 88 subtests), cobertura **100,0%**
+- [x] `Rehydrate(...)` reconstrói estado, instantes e metadados **sem** reaplicar transição e **sem** emitir evento
+
+**Evidências:** `docs/evidencias/FASE_3.md`
+
+**O que a Fase 3 deliberadamente não faz:** movimentar dinheiro, criar lançamento, consultar idempotência existente, comparar metadados com a referência carregada e publicar evento. Tudo isso é Fase 5 (repositório) e Fase 6 (serviço) — a Fase 3 garante que a operação é **representável e permitida**, não que ela aconteceu.
 
 ### FASE 4 — Schema, migrations e constraints (D1, ~2h30) 🗄️
 - [ ] `000001_init.up.sql`: `players`(se necessário), `wallets`, `wager_transactions`, `wallet_ledger_entries`, `inbox_messages`, `outbox_events`
@@ -524,9 +532,17 @@ Formato: `[data] [fase] status — o que foi feito / decisão / bloqueio`.
   - **Decisão de design:** valor negativo é rejeitado na movimentação; o sinal é definido pela **direção**. Aceitar negativo inverteria a operação e furaria o saldo mínimo.
   - **Decisão de design:** `NewEntry` calcula o `balanceAfter` em vez de recebê-lo, então não existe entrada de ledger incoerente por erro de chamada.
   - **Números: 63 casos verdes** (29 testes, 34 subtests), cobertura **99,0%**, `go test -race ./...` verde nos 6 pacotes.
+- **D0** — **Fase 3 CONCLUÍDA** — transação de aposta em `internal/domain/wagering` (`errors.go`, `kind.go`, `status.go`, `transaction.go`, `events.go`).
+  - **Decisão de design:** `OPENING` **também** exige chave de idempotência. É o que impede crédito inicial duplicado — sem chave, duas aberturas para o mesmo jogador creditariam duas vezes. O plano previa apenas "identidade interna estável".
+  - **Decisão de design:** `PayloadEncoder` é injetado em vez de o domínio importar `encoding/json`. O hash do payload precisa ser sempre do mesmo formato; quem chama fornece JSON canônico (`internal/platform/canonicaljson`, Fase 4/6). Elimina a fragilidade de hash dependente da ordem dos campos.
+  - **Decisão de design:** `transicionar` é o **único** ponto que muda estado, mesma disciplina do `wallet.apply`. `ResolveReference` grava a referência **sem** mudar de estado: resolver e concluir são decisões diferentes.
+  - **Decisão de design:** estado terminal devolve `ErrTerminalState`, transição fora de ordem devolve `ErrInvalidTransition`. Códigos diferentes porque a causa é diferente — e o `failureCode` do cliente precisa distinguir.
+  - **Decisão de design:** `Kind.MovesMoney()` concentra a regra que a Fase 6 vai consultar para decidir se cria lançamento no ledger. A regra fica no domínio, não no serviço.
+  - **Achado durante os testes:** a cobertura só chegou a 100% depois de testar os 13 acessores. Acessores sem teste são pontos cegos silenciosos — o repositório da Fase 5 depende deles.
+  - **Números: 127 casos verdes** (39 testes, 88 subtests), cobertura **100,0%**, `go test -race ./...` verde nos 7 pacotes.
 
 ### Próximos 3 passos imediatos
-1. **Nós:** Fase 3 — domínio `WagerTransaction` (`Kind`, `Status`, transições, `failureCode`, eventos).
+1. **Nós:** Fase 4 — schema, migrations e constraints (`000001_init.up.sql`/`.down.sql`), onde as regras das Fases 2 e 3 passam a ser impostas pelo banco.
 2. **Nós:** Fase 4 — schema e constraints (ledger imutável, `UNIQUE (player_id, currency)`, `CHECK (balance_minor >= 0)`), que é onde as regras da Fase 2 passam a ser impostas pelo banco.
 3. **Usuário:** checkpoint de entendimento das Fases 1–2 antes da Fase 4 (a Fase 3 é sequência direta do domínio).
 
