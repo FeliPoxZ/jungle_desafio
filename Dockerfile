@@ -12,8 +12,13 @@
 
 # ---------------------------------------------------------------------------
 # deps: camada de dependências
+#
+# A versão da imagem precisa atender o que o go.mod exige (go 1.26.0). Com uma
+# imagem mais antiga o build falha em "go mod download" com
+# "go.mod requires go >= 1.26.0", porque a imagem oficial define
+# GOTOOLCHAIN=local e não baixa toolchain sozinha.
 # ---------------------------------------------------------------------------
-FROM golang:1.25-alpine AS deps
+FROM golang:1.26-alpine AS deps
 
 WORKDIR /src
 
@@ -30,6 +35,13 @@ FROM deps AS build
 ARG TARGET=api
 ARG VERSION=dev
 ARG COMMIT=unknown
+
+# O código-fonte. Fica DEPOIS do go mod download de propósito: enquanto só o
+# código mudar, a camada de dependências continua em cache.
+#
+# O que entra no contexto é controlado pelo .dockerignore (sem cache do Go,
+# sem binários locais, sem documentação).
+COPY . .
 
 # -trimpath  : remove caminhos absolutos do binário (build reprodutível)
 # -s -w      : remove tabela de símbolos e debug info (imagem menor)

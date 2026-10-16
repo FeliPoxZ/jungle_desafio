@@ -18,6 +18,8 @@ export
 endif
 
 DATABASE_URL ?= postgres://jungleg:jungleg@localhost:5432/jungleg?sslmode=disable
+POSTGRES_USER ?= jungleg
+POSTGRES_DB   ?= jungleg
 
 # --- Detecção de SO (só para o sufixo do binário) ----------------------------
 ifeq ($(OS),Windows_NT)
@@ -86,6 +88,12 @@ migrate-version: migrate-build ## Mostra a versão atual do schema
 migrate-reset: ## Reverte tudo e reaplica (útil em desenvolvimento)
 	$(MAKE) migrate-down || true
 	$(MAKE) migrate-up
+
+.PHONY: db-verify
+db-verify: ## Verifica as constraints do schema (cada INSERT inválido deve ser recusado)
+	docker cp deploy/postgres/verify_constraints.sql jungleg-postgres:/tmp/verify.sql
+	docker exec jungleg-postgres psql -U $(POSTGRES_USER) -d $(POSTGRES_DB) \
+		-v ON_ERROR_STOP=1 -f /tmp/verify.sql
 
 .PHONY: psql
 psql: ## Abre um psql na base local

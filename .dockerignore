@@ -1,0 +1,34 @@
+# =============================================================================
+# Contexto de build enxuto.
+#
+# Sem este arquivo, o contexto incluiria o cache do Go (~675 MB), os binários
+# locais e o backup do repositório antigo — deixando o build lento e a imagem
+# potencialmente errada (arquivos que não deveriam existir no container).
+#
+# Tudo que está aqui é regenerável ou não pertence à imagem.
+# =============================================================================
+
+# Cache e artefatos de build locais
+.gocache/
+bin/
+coverage.out
+
+# Versionamento
+.git/
+.gitattributes
+
+# Documentação e planejamento (não entram na imagem)
+docs/
+_backup_jungle_desafio_repo/
+*.md
+
+# Infra local e configuração de desenvolvimento
+.env
+.env.local
+docker-compose.yml
+Dockerfile
+Makefile
+
+# Dados e volumes locais
+postgres-data/
+localstack-data/

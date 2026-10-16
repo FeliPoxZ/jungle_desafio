@@ -349,20 +349,30 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` feito e **validado por te
 
 **O que a Fase 3 deliberadamente não faz:** movimentar dinheiro, criar lançamento, consultar idempotência existente, comparar metadados com a referência carregada e publicar evento. Tudo isso é Fase 5 (repositório) e Fase 6 (serviço) — a Fase 3 garante que a operação é **representável e permitida**, não que ela aconteceu.
 
-### FASE 4 — Schema, migrations e constraints (D1, ~2h30) 🗄️
-- [ ] `000001_init.up.sql`: `players`(se necessário), `wallets`, `wager_transactions`, `wallet_ledger_entries`, `inbox_messages`, `outbox_events`
-- [ ] `000001_init.down.sql` (drop na ordem inversa)
-- [ ] Constraints obrigatórias:
-  - [ ] `wallets`: `UNIQUE (player_id, currency)`, `CHECK (balance_minor >= 0)`, `CHECK (version >= 1)`
-  - [ ] `wallet_ledger_entries`: `CHECK (balance_after_minor = balance_before_minor + CASE direction WHEN 'CREDIT' THEN amount_minor ELSE -amount_minor END)`, `CHECK (amount_minor > 0)`, `UNIQUE (wallet_id, transaction_id)`, `UNIQUE (id)`, imutabilidade
-  - [ ] `wager_transactions`: `UNIQUE (provider_id, idempotency_key)`, `UNIQUE (provider_id, external_transaction_id)`, `UNIQUE (reference_transaction_id, kind) WHERE reference_transaction_id IS NOT NULL`, `UNIQUE (idempotency_key) WHERE kind='OPENING'` (impede crédito inicial duplicado), `CHECK (kind <> 'OPENING' OR provider_id IS NULL)`
-  - [ ] `inbox_messages`: `UNIQUE (consumer_name, message_id)`
-  - [ ] `outbox_events`: `UNIQUE (event_id)`, `CHECK (attempts >= 0)`
-- [ ] Imutabilidade do ledger **no banco**: trigger `BEFORE UPDATE OR DELETE ... RAISE EXCEPTION` (+ `GRANT` restrito, documentado)
-- [ ] Índices: `wallets(player_id)`, `wallet_ledger_entries(wallet_id, created_at DESC, id DESC)`, `wager_transactions(provider_id, external_transaction_id)`, `wager_transactions(status, next_attempt_at)`, `outbox_events(published_at, next_attempt_at, occurred_at)`
-- [ ] `wager_transactions` distingue origem interna/externa (`origin` gerada/`CHECK`)
-- [ ] `cmd/migrate` (up/down/version/force) com `iofs` embed + documentação de reversão
-- [ ] **Validar:** container Postgres + `migrate up`/`down`/`up` + testes de constraint que **esperam erro** (saldo negativo, ledger duplicado, update/delete no ledger, chave duplicada)
+### FASE 4 — Schema, migrations e constraints (D1, ~2h30) 🗄️ — ✅ CONCLUÍDA E VALIDADA
+
+- [x] `000001_init.up.sql` com `wallets`, `wager_transactions`, `wallet_ledger_entries`, `inbox_messages`, `outbox_events` (a tabela `players` não foi necessária: o jogador é identificado por `player_id` na carteira)
+- [x] `000001_init.down.sql` revertendo na ordem inversa — **testado**: 5 tabelas, 17 índices e 2 funções removidos, e o `up` reaplica do zero
+- [x] Constraints obrigatórias — **29 CHECK + 4 FK + 6 PK + 2 UNIQUE**, todas verificadas com operação que deve ser recusada:
+  - [x] `wallets`: `UNIQUE (player_id, currency)`, `CHECK (balance_minor >= 0)`, `CHECK (version >= 1)`, `CHECK (balance_minor <= 9e15)` (limite do domínio), `CHECK (currency ~ '^[A-Z]{3}$')`
+  - [x] `wallet_ledger_entries`: `CHECK (balance_after_minor = balance_before_minor + CASE direction ...)`, `CHECK (amount_minor > 0)`, `UNIQUE (wallet_id, transaction_id)`, saldos não negativos e dentro do limite
+  - [x] `wager_transactions`: `UNIQUE (provider_id, idempotency_key)`, `UNIQUE (provider_id, external_transaction_id)`, `UNIQUE (reference_transaction_id, kind) WHERE ...`, `UNIQUE (idempotency_key) WHERE kind='OPENING'`, `CHECK (kind <> 'OPENING' OR provider_id IS NULL)`, e ainda: política de valor por tipo (`LOSS` = 0, demais > 0), reversão exige referência, `REJECTED` exige `failure_code`
+  - [x] `inbox_messages`: `UNIQUE (consumer_name, message_id)` + status válido
+  - [x] `outbox_events`: PK `event_id`, `CHECK (attempts >= 0)` + índice parcial do que está pendente
+- [x] Imutabilidade do ledger **no banco**: função `prevent_ledger_mutation()` + trigger `BEFORE UPDATE OR DELETE` com `RAISE EXCEPTION` (ERRCODE `restrict_violation`) — testado nos dois sentidos
+- [x] Índices para as consultas reais: ledger por `(wallet_id, created_at, id)` para o cursor, `wager_transactions(next_resolution_attempt_at) WHERE status='PENDING_REFERENCE'` para o worker, `outbox_events(available_at, occurred_at) WHERE published_at IS NULL` para o publisher
+- [x] `wager_transactions` distingue origem interna e externa por **CHECK**, não por coluna `origin` extra: `OPENING` não aceita metadados de provedor e os demais exigem
+- [x] `cmd/migrate` com `up`, `down [n]` e `version`, migrations embutidas com `iofs` + `//go:embed`, códigos de saída no contrato do CLI oficial (0/1/2)
+- [x] **Validado em container real:** `migrate up`/`down`/`up` pelo binário local **e** pela imagem Docker (`jungleg-migrate:local`, 28,5 MB) rodando na rede do compose; 30 operações inválidas recusadas pelo banco
+
+**Três defeitos estruturais encontrados e corrigidos nesta fase** (nenhum era conhecido antes; os dois primeiros significavam que `docker compose up --build` nunca funcionaria):
+1. `Dockerfile` em `golang:1.25-alpine` com `go.mod` exigindo `go >= 1.26.0` → build falhava em `go mod download`
+2. Estágio `build` copiava só `go.mod`/`go.sum` e rodava `go build` → faltava o código-fonte
+3. Não existia `.dockerignore` → o contexto incluía 675 MB de cache do Go
+
+**Evidências:** `docs/evidencias/FASE_4.md`
+
+**Pendência resolvida:** P6 do `CONTEXTO.md` (`cmd/migrate` inexistente, referenciado pelo compose).
 
 ### FASE 5 — Persistência (pgx) + Unit of Work (D1, ~4h)
 - [ ] `postgres.NewPool` (`pgxpool`) com timeouts e `MaxConns`; `Ping` para readiness
@@ -541,10 +551,20 @@ Formato: `[data] [fase] status — o que foi feito / decisão / bloqueio`.
   - **Achado durante os testes:** a cobertura só chegou a 100% depois de testar os 13 acessores. Acessores sem teste são pontos cegos silenciosos — o repositório da Fase 5 depende deles.
   - **Números: 127 casos verdes** (39 testes, 88 subtests), cobertura **100,0%**, `go test -race ./...` verde nos 7 pacotes.
 
+- **D0** — **Fase 4 CONCLUÍDA** — schema, migrations e constraints em `migrations/` + CLI em `cmd/migrate`.
+  - **Decisão de design:** dinheiro como `BIGINT` + `CHAR(3)` em todo o schema, nunca `NUMERIC`/`FLOAT`. O domínio, a coluna e o índice falam a mesma unidade.
+  - **Decisão de design:** idempotência por **índice único parcial**, não por `SELECT` antes de `INSERT`. O `SELECT` seguido de `INSERT` tem corrida; o índice único não tem.
+  - **Decisão de design:** a aritmética do ledger (`balance_after = before ± amount`) é `CHECK` no banco. É a constraint que impede lançamento incoerente entrar mesmo com bug na aplicação.
+  - **Decisão de design:** imutabilidade do ledger por **trigger**, não por convenção. Convenção não sobrevive a um `UPDATE` de manutenção.
+  - **Decisão de design:** migrations embutidas com `//go:embed` num pacote dedicado (`migrations/embed.go`) porque o embed só enxerga o diretório do próprio pacote. Efeito colateral desejado: a imagem Docker não precisa copiar a pasta SQL.
+  - **Três defeitos estruturais corrigidos:** (1) `Dockerfile` em `golang:1.25-alpine` com `go.mod` exigindo 1.26 → build falhava; (2) estágio `build` não copiava o código-fonte → build falhava; (3) sem `.dockerignore`, o contexto levava 675 MB de cache. Os dois primeiros significavam que `docker compose up --build` **nunca funcionaria**.
+  - **Validação:** 30 operações inválidas testadas e recusadas pelo banco (29 CHECK + 4 FK + 6 PK + 2 UNIQUE, 17 índices, 5 triggers); `up`/`down`/`up` testados pelo binário local e pela imagem Docker na rede do compose.
+  - **Pendência resolvida:** P6 (`cmd/migrate` não existia e o compose o referenciava).
+
 ### Próximos 3 passos imediatos
-1. **Nós:** Fase 4 — schema, migrations e constraints (`000001_init.up.sql`/`.down.sql`), onde as regras das Fases 2 e 3 passam a ser impostas pelo banco.
-2. **Nós:** Fase 4 — schema e constraints (ledger imutável, `UNIQUE (player_id, currency)`, `CHECK (balance_minor >= 0)`), que é onde as regras da Fase 2 passam a ser impostas pelo banco.
-3. **Usuário:** checkpoint de entendimento das Fases 1–2 antes da Fase 4 (a Fase 3 é sequência direta do domínio).
+1. **Nós:** Fase 5 — persistência com `pgx` + Unit of Work: pool, `uow.Run`, repositórios (wallet, txn, ledger, inbox, outbox) e classificação de erro do `pgx` em `ErrConflict`/`ErrTransient`/`ErrPermanent`.
+2. **Nós:** criar `internal/platform/canonicaljson` — pendência deixada pela Fase 3 (o `PayloadEncoder` está injetado e ainda não tem implementação canônica).
+3. **Usuário:** checkpoint das Fases 1–4 antes da Fase 6 (serviço), que é o coração do desafio.
 
 ---
 
