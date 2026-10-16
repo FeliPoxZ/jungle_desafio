@@ -1091,6 +1091,12 @@ Postgres faria o orquestrador reiniciar em loop um processo saudável.
 
 ### Observabilidade da borda
 
+**Um logger por processo, e o formato é decisão da configuração:** `APP_ENV=local`
+usa `slog.NewTextHandler` (legível no terminal) e qualquer outro ambiente usa
+`NewJSONHandler`. Antes da correção do defeito 27 havia **dois loggers** no mesmo
+processo — o boot em JSON e o log de acesso em texto —, o que contrariava o
+README §12 justamente no log que mais se consulta num incidente.
+
 | Sinal | Onde |
 | --- | --- |
 | `http_request` (método, path, status, bytes, duração, `idempotencyKey`) | `AccessLog` |
@@ -1191,6 +1197,7 @@ introduzido de propósito, e todos foram corrigidos com teste que os trava.
 | 24 | 7 | `context.Context` exigido por `postgres.NewPool` não existe no grafo | `missing type: context.Context` | provider que cria `context.Background()` com prazo — **não** o contexto de start, que é cancelado no fim do boot e derrubaria o pool |
 | 25 | 7 | `-health-check` não existia, e a primeira versão exigia a configuração inteira | o healthcheck do compose apontava para uma flag inexistente (contêiner `unhealthy`); e um processo curto de verificação não deve depender de `DATABASE_URL`/`OIDC_ISSUER` para dar veredito sobre o **serviço** | modo healthcheck que não carrega a config e consulta o próprio `/health/ready` |
 | 26 | 7 | **Três asserções de teste erradas** (régua, não código) | (a) esperava envelope de erro na rejeição 422; (b) usava `cursor=%%%`, que é texto literal válido e devolvia página vazia; (c) tratava a mesma identidade externa em dois provedores como conflito, quando a identidade financeira é o PAR `(providerId, externalTransactionId)` | as três corrigidas, com o motivo escrito no próprio teste |
+| 27 | 7 | **Dois loggers no mesmo processo**: o log de acesso saía em TEXTO e o boot em JSON | `app.Run` montava o próprio `slog.NewJSONHandler` enquanto o resto do grafo recebia `observability.NewLogger(cfg)` (texto em `local`). O `/health/live` respondia `200` mas o `http_request` saía fora do formato estruturado que o README §12 exige — e o defeito **não aparecia em teste nenhum**, porque nenhum olhava o stdout do processo | um logger por processo, vindo da config; `local` = texto, produção = JSON (provado nos dois modos) |
 
 ---
 

@@ -121,30 +121,37 @@ func runHTTPServer(lc fx.Lifecycle, server *http.Server, cfg *config.Config, log
 // Run constrói a aplicação, sobe tudo e bloqueia até receber SIGINT/SIGTERM
 // (ou até o Fx pedir encerramento), executando o shutdown gracioso.
 func Run(version, commit string) error {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})).
-		With(
-			slog.String("service", "jungleg"),
-			slog.String("version", version),
-			slog.String("commit", commit),
-		)
-
-	// A configuração é carregada AQUI, antes do grafo, e não só por dentro dele
-	// (P7). Motivo: o prazo de shutdown é uma OPÇÃO do Fx (`fx.StopTimeout`),
-	// avaliada na construção do app — não há como um provider do grafo
-	// influenciá-la. Lendo a config antes, o prazo vem de `HTTP_STOP_TIMEOUT`
-	// (validado em `config.Validate`) em vez de uma constante no código.
+	// A configuração é carregada AQUI, antes do grafo (ver o motivo em P7, logo
+	// abaixo), e é dela que sai o LOGGER.
 	//
-	// O `config.Load` continua no grafo: aqui é só a leitura antecipada do mesmo
-	// valor, e ele é validado nos dois lugares.
+	// # Por que o logger sai da configuração, e não de um `slog.New` local
+	//
+	// Antes esta função montava o seu próprio `slog.NewJSONHandler` enquanto o
+	// resto do grafo recebia `observability.NewLogger(cfg)`. O efeito era o
+	// processo emitir DOIS formatos no mesmo stdout: o boot e o shutdown em
+	// JSON, e o log de acesso (`http_request`) em TEXTO — porque em ambiente
+	// local o logger da config usa `NewTextHandler`.
+	//
+	// Isso contraria o README §12, que pede log estruturado (JSON) para
+	// rastrear a operação, e no mínimo confunde quem lê o container. Um logger
+	// por processo; o formato é decisão da config (`APP_ENV`), num lugar só.
 	cfg, err := config.Load()
 	if err != nil {
 		return fmt.Errorf("app: %w", err)
 	}
+	logger := observability.NewLogger(cfg).With(
+		slog.String("version", version),
+		slog.String("commit", commit),
+	)
 
+	// P7: o prazo de shutdown é uma OPÇÃO do Fx (`fx.StopTimeout`), avaliada na
+	// construção do app — nenhum provider do grafo consegue influenciá-la. Por
+	// isso a config é lida antes, e `HTTP_STOP_TIMEOUT` (validado em
+	// `config.Validate`) manda, em vez de uma constante no código.
 	fxApp := fx.New(
 		ModuleOptions(),
-		// Os eventos internos do Fx (boot/shutdown) saem no mesmo formato JSON
-		// do resto da aplicação, em vez do logger de texto padrão.
+		// Os eventos internos do Fx (boot/shutdown) saem no mesmo logger — e,
+		// portanto, no mesmo formato — do resto da aplicação.
 		fx.WithLogger(func() fxevent.Logger { return &fxSlogLogger{logger: logger} }),
 		fx.StopTimeout(cfg.HTTP.StopTimeout),
 	)

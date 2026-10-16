@@ -293,7 +293,62 @@ Registrado porque a lição da Fase 1 se repetiu — e desta vez em três formas
 | `cursor=%%%` deveria dar 400 | `%%` é lido como texto literal, então o cursor era "válido" e a página voltou vazia | o valor de teste passou a ser realmente inválido (`###nao-e-cursor###`) |
 | mesmo `externalTransactionId` em dois provedores = conflito | são **duas** operações: a identidade financeira é o par `(providerId, externalTransactionId)` | o teste passou a afirmar o isolamento (cada provedor vê o SEU resultado) |
 
-### 6.8. Armadilha reconfirmada: `AccessLog` e o `statusRecorder` com panic
+### 6.8. Dois loggers no mesmo processo — o log de acesso saía em TEXTO
+
+**Sintoma (achado ao SUBIR o binário, não em teste):** o mesmo processo emitia
+**dois formatos** no stdout:
+
+```
+time=... level=INFO msg=http_server_started addr=127.0.0.1:18099      ← texto
+{"time":"...","level":"INFO","msg":"application_started",...}          ← JSON
+time=... level=INFO msg=http_request path=/health/ready status=200     ← texto
+```
+
+**Causa:** `app.Run` montava o **próprio** `slog.NewJSONHandler`, enquanto o resto
+do grafo recebia `observability.NewLogger(cfg)` — que em ambiente `local` usa
+`NewTextHandler`. Dois loggers, dois formatos, e o `service`/`env` de um lado só.
+
+**Por que importa:** o README §12 pede **log estruturado** com os identificadores
+para rastrear a operação. O log de acesso é justamente o que mais se consulta num
+incidente — e era o que saía fora do formato. Pior: o defeito só aparece quando
+alguém **roda o binário**; nenhum teste olhava o stdout do processo.
+
+**Correção:** um logger por processo, vindo da configuração. `Run` passou a usar
+`observability.NewLogger(cfg)` (e a acrescentar `version`/`commit`). Isso também
+devolveu o comportamento certo por ambiente: **texto** em `local`, **JSON** em
+produção. Provado nos dois modos:
+
+```
+APP_ENV=local
+time=... level=INFO msg=http_server_started service=jungleg env=local addr=127.0.0.1:18099
+time=... level=INFO msg=application_started service=jungleg env=local version=dev ...
+time=... level=INFO msg=http_request service=jungleg env=local method=GET path=/health/ready status=200 ...
+
+APP_ENV=production
+{"time":"...","level":"INFO","msg":"http_server_started","service":"jungleg","env":"production","addr":"127.0.0.1:18099"}
+{"time":"...","level":"INFO","msg":"application_started","service":"jungleg","env":"production","version":"dev",...}
+{"time":"...","level":"INFO","msg":"http_request","service":"jungleg","env":"production","method":"GET","path":"/health/live","status":200,...}
+```
+
+### 6.9. Log final: o binário real subindo contra Postgres e Keycloak de verdade
+
+```
+$ go build -o bin/api.exe ./cmd/api
+$ HTTP_ADDR=127.0.0.1:18099 DATABASE_URL=...jungle_test \
+  OIDC_ISSUER=http://localhost:8080/realms/jungleg \
+  OIDC_DISCOVERY_URL=http://localhost:8080/realms/jungleg OIDC_AUDIENCE=jungleg-api \
+  ./bin/api.exe
+
+GET /health/ready → 200 {"dependencies":{"oidc":"UP","postgres":"UP"},"status":"UP"}
+GET /health/live  → 200 {"status":"UP"}
+GET /metrics      → 200 (famílias `jungleg_wager_*` exportadas)
+./bin/api.exe -health-check → exit code 0        ← o comando exato do compose
+```
+
+O `oidc: UP` é o readiness do IdP **sem cache** — ou seja, o serviço falou com o
+Keycloak naquele instante, e não apenas uma vez no boot.
+
+### 6.10. Armadilha reconfirmada: `AccessLog` e o `statusRecorder` com panic
 
 Ver 6.2 — o mesmo defeito tem duas faces (log e métrica). Registrado
 
