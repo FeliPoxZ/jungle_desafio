@@ -36,7 +36,7 @@ caminho de escrita ponta a ponta (HTTP/SQS) entra nas Fases 6–9.
 | Schema, constraints e imutabilidade | `[PRONTO]` |
 | Transações e concorrência (Unit of Work) | `[PRONTO]` |
 | Idempotência | `[PRONTO]` — persistência + decisão de replay no caso de uso |
-| Caso de uso da aplicação | `[PARCIAL]` — `Process` pronto (Fase 6a); abertura de carteira, leituras e reconciliação na 6b/6c |
+| Caso de uso da aplicação | `[PRONTO]` — `Process`, `OpenWallet`, leituras e `Reconcile` (Fase 6) |
 | HTTP + autenticação | `[PLANEJADO]` — Fase 7 |
 | Consumo do SQS (inbox) | `[PLANEJADO]` — Fase 8 |
 | Outbox publisher e worker de referências | `[PLANEJADO]` — Fase 9 |
@@ -573,11 +573,13 @@ da mesma carteira precisam ser processados em ordem.
 
 ---
 
-## 9. Caso de uso da aplicação `[PARCIAL]` — Fase 6 (`Process` e `OpenWallet`)
+## 9. Caso de uso da aplicação `[PRONTO]` — Fase 6
 
 `internal/app/wagering`: `Process(ctx, Request)` — a operação externa ponta a
-ponta, em UMA transação — e `OpenWallet(ctx, OpenWalletRequest)` — a abertura
-interna de carteira. As consultas e o `Reconcile` entram no bloco 6c.
+ponta, em UMA transação; `OpenWallet(ctx, OpenWalletRequest)` — a abertura interna
+de carteira, no mesmo commit da carteira; e as leituras (`GetTransaction`,
+`GetProviderTransaction`, `GetByProviderExternalID`, `GetWallet`, `ListLedger`) e
+`Reconcile`, todas em transação **somente-leitura**.
 
 **Rejeição de negócio é desfecho, não erro.** `Result` carrega `Status`,
 `FailureCode` e o saldo (quando existe); `error` fica para o que impede a
@@ -715,11 +717,73 @@ manda não criar), então não há registro de idempotência para essa abertura.
 reenvio da mesma chave cai na unicidade da carteira e recebe `WALLET_CONFLICT` —
 que é exatamente a resposta prescrita para carteira duplicada.
 
-### O que falta na Fase 6
+### Leituras e reconciliação
 
-As leituras e a reconciliação (6c): `GetTransaction`, `GetByProviderExternalID`
-(com isolamento de provedor), `GetWallet`, `ListLedger` com cursor, e `Reconcile`
-em visão consistente — sem alterar saldo.
+| Operação | O que faz |
+| --- | --- |
+| `GetTransaction(id)` | Leitura do serviço interno, por identificador |
+| `GetProviderTransaction(providerID, id)` | Leitura do provedor: operação de OUTRO provedor responde **não encontrado** |
+| `GetByProviderExternalID(providerID, externalID)` | O provedor faz parte da consulta — a linha alheia nem é lida |
+| `GetWallet(id)` | A carteira |
+| `ListLedger(walletID, limit, cursor)` | Página do ledger com cursor opaco (limite padrão 50, teto 200) |
+| `Reconcile(walletID)` | Saldo gravado × saldo reconstruído do ledger, sem alterar nada |
+
+### [DECISÃO] Operação de outro provedor responde "não existe", e não "proibido"
+
+Devolver `403` para a operação de outro provedor confirmaria a **existência** dela
+— e essa é justamente a informação que o isolamento entre provedores protege
+(README §2 e §13). O provedor não pode nem descobrir que a operação do outro
+existe. `GetByProviderExternalID` vai além: o provedor é parte da consulta SQL, e
+a linha alheia não chega a ser lida.
+
+Quem responde `403` é a **rota**: `GET /providers/:providerId/...` com um
+`:providerId` diferente do claim do token é uma pergunta explícita sobre outro
+provedor, e aí o contrato do A9 manda `403`.
+
+### [DECISÃO] Identificador que não é UUID nunca chega ao banco
+
+`wallets.id`, `wager_transactions.id` e `wallet_ledger_entries.wallet_id` são
+colunas `UUID`. Um texto qualquer numa consulta a essas colunas faz o PostgreSQL
+recusar com `22P02`, que a classificação do driver trata como falha **permanente**
+— ou seja, **500**.
+
+Um identificador malformado nunca é erro de servidor: ele não pode existir. O caso
+de uso confere o formato **antes** de consultar (`ids.go`) e responde "não
+encontrado" (nas leituras) ou entrada inválida (no `walletId` de uma requisição).
+A checagem fica na aplicação, e não no adaptador do banco: lá o `22P02` também
+poderia vir de uma inserção, e transformá-lo em "não encontrado" mascararia
+defeito de gravação.
+
+### [DECISÃO] `ListLedger` confere a carteira antes de listar
+
+Sem essa conferência, uma carteira inexistente devolveria uma **página vazia**, e o
+cliente não teria como distinguir "não tem lançamento" de "não tem carteira". Custa
+uma consulta a mais na mesma transação de leitura.
+
+### [DECISÃO] `Reconcile` roda em transação somente-leitura, e isso não é detalhe
+
+As três leituras (saldo, soma e contagem) acontecem numa **única** transação
+`REPEATABLE READ` somente-leitura:
+
+- **uma visão só** — fora dela, uma operação confirmada entre a leitura do saldo e
+  a soma do ledger produziria uma divergência que **nunca existiu**, o clássico
+  falso positivo que faz alguém procurar dinheiro que está no lugar;
+- **somente-leitura** — é a garantia de que a conferência não altera saldo, nem por
+  acidente nem por bug. Há teste de integração que prova que uma escrita nesse modo
+  é recusada pelo PostgreSQL.
+
+`difference = stored − calculated` e pode ser **negativo** (saldo gravado menor que
+o reconstruído); o sinal é informação, não ruído. A resposta, o log e a métrica de
+divergência ficam na borda e na Fase 11 — o caso de uso devolve o resultado.
+
+### O que a Fase 6 não fez (e onde entra)
+
+- **métricas de negócio** (`wager_operations_total`, `wager_idempotent_replays_total`,
+  divergências de reconciliação): Fase 11, para o caso de uso não nascer acoplado ao
+  Prometheus;
+- **publicação dos eventos**: é do worker (Fase 9) — aqui os eventos **entram** na
+  outbox, na mesma transação;
+- **consumo por SQS**: Fase 8, compartilhando ESTE caso de uso.
 
 ---
 
@@ -809,6 +873,8 @@ introduzido de propósito, e todos foram corrigidos com teste que os trava.
 | 14 | 6a | **Corrida entre as duas leituras de idempotência** virava conflito falso | 12 disparos simultâneos da MESMA operação: entre 1 e 4 pedidos legítimos recebiam `IDEMPOTENCY_CONFLICT` em vez de replay (3 de 4 execuções) | a segunda leitura só é conflito se a chave da linha encontrada for DIFERENTE da pedida; chave igual decide pelo hash |
 | 15 | 6a | **Dois pacotes de integração truncando o mesmo banco em paralelo** | `go test -tags=integration ./...` falhava com "registro não encontrado", FK violada e `40P01` no `TRUNCATE`, enquanto cada pacote passava sozinho | lock consultivo (`pg_advisory_lock`) no `TestMain` dos dois pacotes |
 | 16 | 6a | O `lock_timeout` de 3s do pool abortava a **espera pelo lock consultivo** | o segundo pacote de integração morria com `55P03` antes de a outra suíte terminar | a sessão do harness espera sem prazo (`SET lock_timeout = 0`) |
+| 17 | 6b | O `CHECK ids_not_blank` exigia `game_id` e `round_id` de **toda** linha, inclusive `OPENING` | abrir carteira obrigaria a INVENTAR jogo e rodada, gravando dado falso no histórico financeiro | migration 000002: a exigência passou a valer só para operação externa; o domínio acompanha |
+| 18 | 6c | **Identificador malformado em coluna `UUID` virava erro permanente (500)** | `GET /wallets/abc` responderia 500 em vez de "não encontrado" (`22P02 invalid input syntax for type uuid`), e uma mensagem de SQS com `walletId` inválido derrubaria o processamento como falha de infraestrutura | guarda de formato antes da consulta (`ids.go`), com "não encontrado" na leitura e entrada inválida no `walletId` da requisição |
 
 ---
 
@@ -828,6 +894,8 @@ que funciona não ajuda quem vai manter.
 | A ordenação da outbox por `occurred_at` depende do relógio do processo | Um salto para trás do relógio poderia inverter a ordem de duas operações da mesma carteira. Ordem forte exigiria sequência por carteira (coluna/sequence) — fora do escopo |
 | O dublê em memória não prova lock nem concorrência | Ele tem semântica de transação (cópia do estado, troca só no fim sem erro), mas não tem `FOR UPDATE`. Lock, lost update e disputa entre processos são provados contra o PostgreSQL real |
 | `next_resolution_attempt_at` fica preenchido em reversão já `PROCESSED` | Efeito de usar `MarkPendingReference` + `ResolveReference`, que é o único caminho que o agregado oferece para vincular a referência interna. A coluna só é lida para linhas `PENDING_REFERENCE`, então o valor é inerte |
+| `ListLedger` faz uma consulta a mais por página | Confere a existência da carteira antes de listar (para não devolver página vazia ambígua). É uma leitura a mais dentro da mesma transação de leitura |
+| `Reconcile` não emite métrica nem log de divergência | O caso de uso devolve o resultado; log e métrica de divergência entram na Fase 11, junto com as demais métricas de negócio |
 | Sem `ARCHITECTURE.md` de HTTP/SQS/workers | As seções 10 e 11 estão `[PLANEJADO]`; entram nas Fases 7–9 |
 
 ---
@@ -855,9 +923,11 @@ docker exec -i jungleg-postgres psql -U jungleg -d jungleg < deploy/postgres/ver
 
 **Números atuais:** 574 casos no domínio (Fases 1–3) + **38** testes de
 persistência (Fase 5: 13 de unidade, incluindo os 3 de contrato e classificação, e
-25 de integração) + 3 de `idgen` + o caso de uso (Fase 6) + integração do caminho
-completo. `go test -race` verde nos **13 pacotes** de unidade e nos 2 de
-integração. Cobertura: `money` 97,9%, `wallet` 99,0%, `wagering` 100,0%.
+25 de integração) + 3 de `idgen` + **55 casos** do caso de uso (42 funções `Test`,
+com os subtests de entrada inválida, abertura e referência divergente) + **27
+casos** de integração do caminho completo. `go test -race` verde nos **13 pacotes**
+de unidade e nos 2 de integração. Cobertura do domínio: `money` 97,9%, `wallet`
+99,0%, `wagering` 100,0%.
 
 **Migrations:** duas (`000001_init`, `000002_opening_sem_jogo_e_rodada`). O binário
 `bin/migrate.exe` carrega as migrations **embutidas** (`go:embed`): depois de criar

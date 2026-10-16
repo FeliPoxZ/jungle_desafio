@@ -41,6 +41,10 @@ var (
 	// (jogador, moeda). A unicidade é do banco; este erro existe para o cliente
 	// receber a explicação, em vez de um 23505 cru.
 	ErrWalletAlreadyExists = domainerrors.New(CodeWalletConflict, "já existe carteira para este jogador nesta moeda")
+
+	// ErrTransactionNotFound é a operação que não existe para quem perguntou —
+	// inclusive quando ela existe e é de outro provedor.
+	ErrTransactionNotFound = domainerrors.New(CodeTransactionNotFound, "transação não encontrada")
 )
 
 // invalid marca requisição que o cliente corrige e reenvia com a mesma chave.

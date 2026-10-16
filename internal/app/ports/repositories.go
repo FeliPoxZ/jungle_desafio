@@ -124,6 +124,13 @@ type LedgerRepository interface {
 	// carteira revela divergência. Soma no banco (e não em Go) porque o volume
 	// pode ser grande e o BIGINT do PostgreSQL é exato.
 	SumSignedByWallet(ctx context.Context, walletID ids.WalletID) (int64, error)
+
+	// CountByWallet devolve quantos lançamentos a carteira tem.
+	//
+	// É o `checkedEntries` da reconciliação: quantas linhas a soma percorreu.
+	// Contado no banco pelo mesmo motivo da soma — trazer as linhas para contar
+	// em Go seria caro e não acrescentaria nada.
+	CountByWallet(ctx context.Context, walletID ids.WalletID) (int, error)
 }
 
 // InboxMessage é uma mensagem recebida do SQS, deduplicada por

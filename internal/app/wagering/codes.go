@@ -45,6 +45,14 @@ const (
 	// par (jogador, moeda). Não é erro de entrada: é a unicidade funcionando.
 	CodeWalletConflict = "WALLET_CONFLICT"
 
+	// CodeTransactionNotFound é a operação que não existe — ou que existe e não é
+	// DESTE provedor.
+	//
+	// Os dois casos compartilham o código de propósito: distinguir os dois
+	// confirmaria a existência de uma operação de outro provedor, que é a
+	// informação que o isolamento entre provedores protege.
+	CodeTransactionNotFound = "TRANSACTION_NOT_FOUND"
+
 	// CodeReferenceNotFound é a referência que nunca chegou, com o TTL de
 	// tentativas esgotado. Produzido pelo worker de referências (Fase 9).
 	CodeReferenceNotFound = "REFERENCE_NOT_FOUND"

@@ -3,8 +3,8 @@
 > Saídas reais dos comandos, contra PostgreSQL 16 real (`jungleg-postgres`,
 > `healthy`) e o banco `jungle_test`. Coletadas em 2026-10-16.
 >
-> **Estado da fase:** bloco 6a (`Process`) e bloco 6b (`OpenWallet`) concluídos e
-> validados. O bloco 6c (leituras + `Reconcile`) é o próximo.
+> **Estado da fase: CONCLUÍDA.** Três blocos, um commit cada: 6a (`Process`), 6b
+> (`OpenWallet`) e 6c (leituras + `Reconcile`).
 
 ## Ambiente
 
@@ -12,8 +12,8 @@
 | --- | --- |
 | PostgreSQL | 16-alpine (`jungleg-postgres`, healthy) |
 | Driver | `github.com/jackc/pgx/v5 v5.11.0` |
-| Pacote do caso de uso | `internal/app/wagering` (`service`, `request`, `payload`, `reference`, `outcome`, `events`, `codes`, `errors`, `opening`) |
-| Adições de contrato | `ports.Clock`, `platform/clock`, `GetByReferenceAndKind` em `ports` + `txnRepo` |
+| Pacote do caso de uso | `internal/app/wagering` (`service`, `request`, `payload`, `reference`, `outcome`, `events`, `codes`, `errors`, `ids`, `opening`, `query`, `reconcile`) |
+| Adições de contrato | `ports.Clock`, `platform/clock`, `GetByReferenceAndKind` e `CountByWallet` em `ports` + `infra/postgres` |
 | Migrations | `000001_init` (Fase 4) e `000002_opening_sem_jogo_e_rodada` (6b) |
 | Testes | `internal/app/wagering/*_test.go` (unitário) e `test/integration/` (integração) |
 
@@ -57,10 +57,14 @@ ok  	.../internal/platform/idgen	1.217s
 
 $ TEST_DATABASE_URL=postgres://jungleg:jungleg@localhost:5432/jungle_test?sslmode=disable \
     go test -count=1 -race -tags=integration -timeout 300s ./...
-ok  	.../internal/infra/postgres	6.404s
-ok  	.../test/integration	8.927s
+ok  	.../internal/infra/postgres	6.485s
+ok  	.../test/integration	10.016s
 (13 pacotes de unidade + 2 de integração, todos ok)
 ```
+
+**Números da fase:** 55 casos unitários em `internal/app/wagering` (42 funções
+`Test`, com os subtests de entrada inválida, abertura e referência divergente) e
+**27 casos de integração** em `test/integration`.
 
 > O tempo de `test/integration` inclui a espera pelo lock do banco de teste (ver
 > §6.3): as duas suítes de integração usam o MESMO banco e truncam tabelas.
@@ -173,14 +177,73 @@ BET com jogo vazio: RECUSADO (check constraint)
 recusadas**, mais um caso **positivo** (a abertura sem jogo/rodada) que existe
 para o afrouxamento não passar despercebido se algum dia abrir a porteira.
 
-## 5. Defeitos reais encontrados e corrigidos na fase
+## 5. Bloco 6c — leituras e reconciliação
 
-Nenhum era conhecido antes. Dois são defeitos de código (o segundo só apareceu
-por causa de um teste de concorrência), um é de schema, e dois são do harness de
-teste — um deles criado pelo próprio bloco 6a.
+### 5.1. Leitura e isolamento entre provedores
 
-### 5.1. `wagering.Error` era um tipo próprio, e `CodeOf` devolvia vazio
+| Cenário | Testes | Resultado |
+| --- | --- | --- |
+| Operação pelo identificador interno | `TestLeiturasDeTransacaoContraOBancoReal` | devolve status, valor e provedor |
+| Rejeição consultável | idem | status `REJECTED` com o `failureCode` que a explica |
+| Provedor DONO lê a própria operação | `TestLeituraDeOutroProvedorNaoEncontraNada` | devolve a operação |
+| **OUTRO provedor** lê a mesma operação | idem | `TRANSACTION_NOT_FOUND` — e **não** "proibido": confirmar que existe já seria vazar informação sobre o outro provedor |
+| Consulta pela identidade externa | idem | o provedor faz parte da consulta; a linha alheia não é lida |
+| Identificador que não é UUID | `TestGetWalletEGetWalletInexistente`, `TestEntradaInvalidaNaoGravaNada` | "não encontrado" na leitura, entrada inválida no `walletId` da requisição (nunca 500) |
 
+### 5.2. Paginação do ledger
+
+`TestListLedgerPaginacaoContraOBancoReal` — carteira com abertura e três
+operações (quatro lançamentos), páginas de 2:
+
+```
+páginas percorridas = 2  (2 + 2)
+lançamentos percorridos = 4, nenhum repetido
+primeiro lançamento = CREDIT partindo de 0.00  (a abertura)
+cursor inválido → erro de entrada (CodeInvalidRequest)
+```
+
+`TestListLedgerAplicaPadraoETetoDaPagina` (unitário, com 205 lançamentos): limite
+`0` devolve **50**; limite `100000` devolve **200** — o teto existe para o cliente
+não transformar paginação em varredura.
+
+### 5.3. Reconciliação
+
+`TestReconcileFechaOExemploDoREADME` — abertura de `1000.00` e aposta de `25.00`:
+
+```
+storedBalance      = 975.00
+calculatedBalance  = 975.00
+difference         = 0.00
+consistent         = true
+checkedEntries     = 2        (a abertura ENTRA na conferência)
+```
+
+`TestReconcileDetectaSaldoAdulteradoESeRecusaAMexer` — o saldo é adulterado por
+fora do fluxo (`UPDATE wallets SET balance_minor = balance_minor + 5000`):
+
+```
+difference  = 50.00     (stored − calculated, e o sinal é informação)
+consistent  = false
+saldo depois da conferência = 15000   (a reconciliação RELATA e não corrige)
+```
+
+`TestReconcileDetectaDivergenciaNosDoisSentidos` (unitário) cobre também a
+divergência **negativa**: saldo gravado menor que o reconstruído dá `difference`
+negativa, e o `Money` aceita negativo em cálculo interno.
+
+`TestTransacaoSomenteLeituraRecusaEscrita` prova o mecanismo em que a
+reconciliação se apoia: uma escrita dentro de `RunReadOnly` é recusada pelo
+PostgreSQL, e a carteira **não** fica gravada. É a garantia de que a conferência
+não altera saldo nem por bug.
+
+## 6. Defeitos reais encontrados e corrigidos na fase
+
+Nenhum era conhecido antes. Três são defeitos de código/schema (o segundo só
+apareceu por causa de um teste de concorrência, o terceiro por um teste de
+integração), e três são do harness de teste — um deles criado pelo próprio bloco
+6a.
+
+### 6.1. `wagering.Error` era um tipo próprio, e `CodeOf` devolvia vazio
 `money`, `wallet` e `ledger` compartilham `domainerrors.Error` por **alias**, e o
 comentário do `money` chegava a afirmar que `wagering.Error` era o mesmo tipo.
 Não era: o pacote `wagering` redefinia o struct.
@@ -191,7 +254,7 @@ Não era: o pacote `wagering` redefinia o struct.
 | **Por que passou despercebido** | Cada pacote testava com a **sua própria cópia** do extrator de Code (`errors.As` com o tipo local), então a suíte ficava verde enquanto a borda perdia o código |
 | **Correção** | `type Error = domainerrors.Error` em `wagering`, como nos outros três. O texto do erro passou a ser `"CODE: mensagem"` (sem o prefixo `wagering:`), e o teste de formato foi ajustado |
 
-### 5.2. A corrida entre as duas leituras de idempotência virava conflito falso
+### 6.2. A corrida entre as duas leituras de idempotência virava conflito falso
 
 | | |
 | --- | --- |
@@ -201,7 +264,7 @@ Não era: o pacote `wagering` redefinia o struct.
 | **Correção** | A segunda leitura só é conflito quando a chave da linha encontrada é DIFERENTE da chave pedida; chave igual é a mesma operação, e quem decide entre replay e conflito é o hash do payload (README §9: "não pode ser reaplicada usando **outra** chave") |
 | **Trava** | `TestLinhaApareceEntreAsDuasLeiturasDeIdempotenciaEUmReplay`, que esconde a primeira consulta uma vez e exige replay |
 
-### 5.3. Dois pacotes de integração truncando o mesmo banco, em paralelo
+### 6.3. Dois pacotes de integração truncando o mesmo banco, em paralelo
 
 | | |
 | --- | --- |
@@ -210,7 +273,7 @@ Não era: o pacote `wagering` redefinia o struct.
 | **Correção** | Lock consultivo do PostgreSQL (`pg_advisory_lock`) tomado no `TestMain` dos dois pacotes: quem chega segundo espera a suíte inteira do primeiro |
 | **Achado dentro do achado** | Com o `lock_timeout` de 3s que o pool configura em toda conexão, a **espera pelo lock consultivo** morria com `55P03` — o mesmo código que, em produção, é classificado como transitório e repetido. A sessão do harness espera sem prazo (`SET lock_timeout = 0`) |
 
-### 5.4. `game_id` e `round_id` obrigatórios para `OPENING` (§4.3)
+### 6.4. `game_id` e `round_id` obrigatórios para `OPENING` (§4.3)
 
 | | |
 | --- | --- |
@@ -218,7 +281,16 @@ Não era: o pacote `wagering` redefinia o struct.
 | **Consequência se ficasse** | A aplicação gravaria jogo e rodada INVENTADOS em toda abertura de carteira, e o histórico financeiro passaria a mentir sobre esses campos |
 | **Correção** | Migration 000002 (constraint condicional a `kind = 'OPENING'`) + exigência condicional no domínio + caso positivo no script de constraints |
 
-### 5.5. `bin/migrate.exe` velho não aplica migration nova
+### 6.5. Identificador malformado em coluna `UUID` virava erro permanente (500)
+
+| | |
+| --- | --- |
+| **Sintoma** | `Reconcile("carteira-que-nao-existe")` devolveu `falha permanente: invalid input syntax for type uuid (22P02)` em vez de "não encontrado". Pego pelo teste de integração da carteira inexistente |
+| **Alcance** | Todo caminho que consulta coluna `UUID`: `GET /wallets/abc` responderia **500**; um `walletId` inválido vindo do SQS derrubaria o processamento como falha de infraestrutura, quando é rejeição de entrada |
+| **Correção** | Guarda de formato antes de consultar (`ids.go`): "não encontrado" nas leituras e `INVALID_REQUEST` no `walletId` de uma requisição. A checagem fica na APLICAÇÃO — no adaptador do banco, `22P02` também pode vir de uma inserção, e transformá-lo em "não encontrado" mascararia defeito de gravação |
+| **Efeito nos testes** | Os dublês passaram a gerar identificadores com FORMATO de UUID: um dublê com `"id-1"` testaria um caminho que produção não tem |
+
+### 6.6. `bin/migrate.exe` velho não aplica migration nova
 
 | | |
 | --- | --- |
@@ -226,14 +298,14 @@ Não era: o pacote `wagering` redefinia o struct.
 | **Causa** | O binário carrega as migrations **embutidas** (`go:embed`): um binário construído antes da migration nova não sabe que ela existe |
 | **Correção** | Rebuild (`go build -o bin/migrate.exe ./cmd/migrate`) antes de migrar. Documentado no `ARCHITECTURE.md` §17 |
 
-### 5.6. Armadilha reconfirmada do PowerShell (processo, não código)
+### 6.7. Armadilha reconfirmada do PowerShell (processo, não código)
 
 Ao adicionar um import com `Set-Content -Encoding UTF8`, os acentos de um arquivo
 de teste foram gravados em dupla codificação (`operação` → `operaÃ§Ã£o`). É a
 terceira vez que a armadilha aparece; a lição 7 do `PROXIMO_PASSO` §3.4 continua
 valendo: **editar texto com a ferramenta de edição**, nunca com `Set-Content`.
 
-## 6. Decisões de design registradas
+## 7. Decisões de design registradas
 
 | Decisão | Motivo |
 | --- | --- |
@@ -249,8 +321,14 @@ valendo: **editar texto com a ferramenta de edição**, nunca com `Set-Content`.
 | `ROLLBACK` de `BET` já estornada ⇒ `ALREADY_REVERSED` | O índice permite `REFUND` e `ROLLBACK` conviverem; creditar de novo o mesmo débito criaria dinheiro. Desfazer o estorno é `ROLLBACK` apontando para o `REFUND`, que **debita** e é aceito |
 | O replay da abertura devolve a carteira como ela está | A carteira é recurso mutável: representá-la com o saldo da criação mentiria sobre o recurso. O `IdempotentReplay` é o que diz que nada foi criado |
 | `entrada` (e não `Movement`) nos emissores de evento | A abertura gera lançamento sem movimentação no agregado; `Movement` zerado significaria "não houve lançamento" — e a abertura tem lançamento |
+| Operação de outro provedor responde **não encontrado** | `403` confirmaria a existência de uma operação alheia, que é a informação que o isolamento protege (README §2 e §13). O `403` do A9 é da ROTA (`:providerId` diferente do token), que é uma pergunta explícita |
+| A consulta por identidade externa já filtra por provedor | A linha do outro provedor não é lida — o isolamento deixa de depender de uma checagem depois da leitura |
+| Identificador que não é UUID não chega ao banco | `22P02` é falha permanente para o driver (500). Um identificador malformado não pode existir: "não encontrado" na leitura, entrada inválida no `walletId` da requisição |
+| `Reconcile` em transação **somente-leitura** de visão única | Uma operação confirmada entre a leitura do saldo e a soma do ledger produziria divergência que nunca existiu (falso positivo). E o modo somente-leitura garante que a conferência não altera saldo |
+| `ListLedger` confere a carteira antes de listar | Página vazia é ambígua: o cliente não distingue "sem lançamento" de "sem carteira" |
+| Limite de página com teto (50 padrão, 200 máximo) | Sem teto, `limit=1000000` transforma paginação em varredura e segura conexão e memória do serviço |
 
-## 7. Interpretações adotadas (README §15 pede que sejam explícitas)
+## 8. Interpretações adotadas (README §15 pede que sejam explícitas)
 
 1. **Referência em `BET`, `WIN` e `LOSS` é informativa.** É conferida quando
    existe (provedor, jogador, carteira, moeda e rodada) e **não bloqueia** a
@@ -279,7 +357,7 @@ valendo: **editar texto com a ferramenta de edição**, nunca com `Set-Content`.
    interna com qualquer um deles é recusada, no domínio e (para jogo/rodada) no
    schema.
 
-## 8. Limitações conhecidas da fase
+## 9. Limitações conhecidas da fase
 
 | Limitação | Por que ficou assim |
 | --- | --- |
@@ -289,7 +367,7 @@ valendo: **editar texto com a ferramenta de edição**, nunca com `Set-Content`.
 | O `next_resolution_attempt_at` fica preenchido em operações de reversão já `PROCESSED` | Efeito de usar `MarkPendingReference` + `ResolveReference` (o agregado só resolve referência em `PENDING_REFERENCE`). A coluna só é lida para linhas `PENDING_REFERENCE` |
 | A migration 000002 não reverte com aberturas já gravadas | O `ADD CONSTRAINT` antigo falharia com `OPENING` de jogo/rodada vazios — e recusar é melhor do que apagar ou inventar dado financeiro. A condição está documentada no próprio arquivo `.down.sql` |
 
-## 9. Rotina de execução da fase
+## 10. Rotina de execução da fase
 
 ```powershell
 $env:GOMODCACHE='E:\jungleg\.gocache\mod'; $env:GOCACHE='E:\jungleg\.gocache\build'; $env:GOPATH='E:\jungleg\.gocache\gopath'

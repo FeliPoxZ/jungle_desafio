@@ -76,6 +76,11 @@ func (r Request) validate() error {
 	if strings.TrimSpace(string(r.WalletID)) == "" {
 		return invalid(CodeInvalidRequest, "walletID é obrigatório")
 	}
+	// `wallets.id` é UUID: um valor que não é UUID não chega a ser consulta — o
+	// banco recusaria com 22P02 e o cliente receberia 500 em vez de 400.
+	if !ehUUID(string(r.WalletID)) {
+		return invalid(CodeInvalidRequest, "walletID não é um identificador válido")
+	}
 	if strings.TrimSpace(r.GameID) == "" {
 		return invalid(CodeInvalidRequest, "gameID é obrigatório")
 	}

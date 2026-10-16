@@ -193,3 +193,15 @@ func (r *ledgerRepo) SumSignedByWallet(ctx context.Context, walletID ids.WalletI
 	}
 	return soma, nil
 }
+
+func (r *ledgerRepo) CountByWallet(ctx context.Context, walletID ids.WalletID) (int, error) {
+	// COUNT(*) e não COUNT(coluna): a pergunta é "quantas linhas", e o PostgreSQL
+	// resolve pelo índice da carteira.
+	const sql = `SELECT count(*) FROM wallet_ledger_entries WHERE wallet_id = $1`
+
+	var quantos int64
+	if err := r.q.QueryRow(ctx, sql, string(walletID)).Scan(&quantos); err != nil {
+		return 0, Classify(err)
+	}
+	return int(quantos), nil
+}

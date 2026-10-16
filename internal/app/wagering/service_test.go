@@ -3,7 +3,6 @@ package wagering_test
 import (
 	"context"
 	"errors"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -47,12 +46,12 @@ func novoAmbiente() *ambiente {
 	}
 }
 
-// abrirCarteira grava a carteira direto no estado: a abertura de carteira é
-// assunto do bloco 6b, e aqui ela é só o ponto de partida.
+// abrirCarteira grava a carteira direto no estado: aqui ela é só o ponto de
+// partida dos testes de operação (a abertura pela regra é o `OpenWallet`).
 func (a *ambiente) abrirCarteira(saldo string) *wallet.Wallet {
 	a.carteiras++
 	w, err := wallet.NewWallet(
-		ids.WalletID("carteira-"+strconv.Itoa(a.carteiras)),
+		ids.WalletID(uuidDeTeste(1, a.carteiras)),
 		ids.PlayerID("jogador-1"),
 		brl(saldo),
 		a.relogio.Now(),
@@ -595,7 +594,10 @@ func TestCarteiraInexistenteNaoViraRejeicaoGravada(t *testing.T) {
 	a := novoAmbiente()
 	w := a.abrirCarteira("100.00")
 
-	err := falhar(t, a, pedido(w, wagerdomain.KindBet, "25.00", comCarteira("carteira-que-nao-existe")))
+	// UUID válido de carteira que não existe: a operação não tem onde ser
+	// gravada (a FK impede), então é erro, e não rejeição.
+	inexistente := ids.WalletID(uuidDeTeste(9, 1))
+	err := falhar(t, a, pedido(w, wagerdomain.KindBet, "25.00", comCarteira(inexistente)))
 
 	exigirCodigo(t, err, appwagering.CodeWalletNotFound)
 	if len(a.estado.txns) != 0 {
@@ -655,6 +657,15 @@ func TestEntradaInvalidaNaoGravaNada(t *testing.T) {
 			"sem rodada",
 			func(w *wallet.Wallet) appwagering.Request {
 				return pedido(w, wagerdomain.KindBet, "25.00", comRodada("  "))
+			},
+			appwagering.CodeInvalidRequest,
+		},
+		{
+			// `wallets.id` é UUID: um valor que não é UUID seria recusado pelo
+			// PostgreSQL com 22P02, e o cliente receberia 500 em vez de 400.
+			"walletID que não é UUID",
+			func(w *wallet.Wallet) appwagering.Request {
+				return pedido(w, wagerdomain.KindBet, "25.00", comCarteira("nao-e-uuid"))
 			},
 			appwagering.CodeInvalidRequest,
 		},

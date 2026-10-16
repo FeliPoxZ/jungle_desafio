@@ -3,6 +3,7 @@ package wagering_test
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/FeliPoxZ/jungle_desafio/internal/app/ports"
@@ -330,14 +331,36 @@ func (r *ledgerMemoria) GetByTransaction(_ context.Context, walletID ids.WalletI
 	return nil, ports.ErrNotFound
 }
 
-func (r *ledgerMemoria) ListByWallet(_ context.Context, walletID ids.WalletID, limit int, _ *ports.Cursor) ([]*ledger.Entry, error) {
-	var saida []*ledger.Entry
-	for i, x := range r.e.ledger {
+func (r *ledgerMemoria) ListByWallet(_ context.Context, walletID ids.WalletID, limit int, cursor *ports.Cursor) ([]*ledger.Entry, error) {
+	// Espelha a consulta real: ordem por (createdAt, id) e cursor EXCLUSIVO. Um
+	// fake que ignorasse o cursor faria o teste de paginação passar sem provar
+	// nada.
+	var daCarteira []ledger.Entry
+	for _, x := range r.e.ledger {
 		if x.WalletID() == walletID {
-			saida = append(saida, &r.e.ledger[i])
-			if len(saida) == limit {
-				break
+			daCarteira = append(daCarteira, x)
+		}
+	}
+	sort.Slice(daCarteira, func(i, j int) bool {
+		if !daCarteira[i].CreatedAt().Equal(daCarteira[j].CreatedAt()) {
+			return daCarteira[i].CreatedAt().Before(daCarteira[j].CreatedAt())
+		}
+		return daCarteira[i].ID() < daCarteira[j].ID()
+	})
+
+	var saida []*ledger.Entry
+	for i := range daCarteira {
+		if cursor != nil {
+			depois := daCarteira[i].CreatedAt().After(cursor.CreatedAt) ||
+				(daCarteira[i].CreatedAt().Equal(cursor.CreatedAt) && daCarteira[i].ID() > cursor.ID)
+			if !depois {
+				continue
 			}
+		}
+		entrada := daCarteira[i]
+		saida = append(saida, &entrada)
+		if len(saida) == limit {
+			break
 		}
 	}
 	return saida, nil
@@ -351,6 +374,16 @@ func (r *ledgerMemoria) SumSignedByWallet(_ context.Context, walletID ids.Wallet
 		}
 	}
 	return soma, nil
+}
+
+func (r *ledgerMemoria) CountByWallet(_ context.Context, walletID ids.WalletID) (int, error) {
+	var quantos int
+	for _, x := range r.e.ledger {
+		if x.WalletID() == walletID {
+			quantos++
+		}
+	}
+	return quantos, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -493,11 +526,23 @@ func (r *relogioFixo) Now() time.Time { return r.agora }
 
 func (r *relogioFixo) avancar(d time.Duration) { r.agora = r.agora.Add(d) }
 
-// idsSequenciais gera "id-0001", "id-0002"...: o teste afirma o identificador em
-// vez de comparar UUID aleatório.
+// idsSequenciais gera identificadores previsíveis ("...-000000000002"): o teste
+// compara o que o serviço devolveu com o que está no estado, sem precisar de
+// igualdade de UUID aleatório.
+//
+// O FORMATO precisa ser o de UUID, e não "id-1": o caso de uso recusa
+// identificador que não é UUID antes de chegar ao banco (ver `ids.go`), e um
+// dublê com identificador impossível testaria um caminho que produção não tem.
 type idsSequenciais struct{ n int }
 
 func (g *idsSequenciais) NewID() string {
 	g.n++
-	return fmt.Sprintf("id-%04d", g.n)
+	return uuidDeTeste(2, g.n)
+}
+
+// uuidDeTeste monta um UUID válido e determinístico. O primeiro grupo separa
+// carteiras (1) de transações e eventos (2), para nenhum identificador de teste
+// se confundir com outro.
+func uuidDeTeste(grupo, n int) string {
+	return fmt.Sprintf("00000000-0000-7000-8000-%04d%08d", grupo, n)
 }
