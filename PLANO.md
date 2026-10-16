@@ -245,7 +245,7 @@ jungleg/
 ├── internal/
 │   ├── config/                   # env → Config + Validate()
 │   ├── domain/
-│   │   ├── money/                # money.go, currency.go, errors.go, money_test.go
+│   │   ├── money/                # money.go + money_test.go, parse_test.go, json_test.go, style_test.go
 │   │   ├── wallet/               # wallet.go, ledger_entry.go, repository.go(port), errors.go
 │   │   └── wagering/             # transaction.go, kind.go, status.go, failure.go, errors.go
 │   ├── app/
@@ -295,14 +295,24 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` feito e **validado por te
 
 **Evidências:** `docs/evidencias/FASE_0.md`
 
-### FASE 1 — Domínio `Money` (D0, ~2h) 💰 núcleo
-- [ ] `money.Currency`: validação ISO 4217 (3 letras maiúsculas), `BRL`
-- [ ] `money.New(minor int64, cur Currency)` (reidratação, permite qualquer sinal)
-- [ ] `money.Parse(amount, currency string) (Money, error)` — escala fixa 2, rejeita vazio/`NaN`/`Inf`/científica/`+`/espaços/>2 casas/overflow
-- [ ] `Zero(cur)`, `Add`, `Sub`, `Neg` (com tratamento de overflow), `Cmp`, `IsZero`, `IsNegative`, `IsPositive`, `Equal`, `Minor()`, `Currency()`, `String()` (`"975.00"`), `MarshalJSON`/`UnmarshalJSON`
-- [ ] `errors.go`: `ErrInvalidMoney`, `ErrCurrencyMismatch`, `ErrOverflow`, `ErrScaleExceeded` + `errors.Is`/`As` (`*MoneyError` com campo `Code`)
-- [ ] Testes de mesa (`money_test.go`): parsing feliz, limites (`±9_000_000_000_000_000`), overflow em add/sub/neg, escala, moedas incompatíveis, serialização round-trip, **nenhum `float` no pacote** (revisão manual + teste de grep no CI)
-- [ ] `go test -race ./internal/domain/money/...`
+### FASE 1 — Domínio `Money` (D0, ~2h) 💰 núcleo — ✅ CONCLUÍDA E VALIDADA
+
+- [x] `money.Currency`: validação ISO 4217 (3 letras maiúsculas ASCII), `BRL`, `Validate()`, `String()`
+- [x] `money.New(minor int64, cur Currency) (Money, error)` — **criação**, valida moeda **e** a faixa `|minor| <= maxMinor` (README §Encapsulamento: "construtores com validação")
+- [x] `money.FromMinor(minor int64, cur Currency) Money` — **reidratação**, sem revalidar (separa criação de reidratação, README §Encapsulamento L89). A validação na leitura fica no repositório (Fase 5) apoiada na `CHECK constraint` da coluna (Fase 4)
+- [x] `money.Parse(amount, currency string) (Money, error)` — escala fixa 2, rejeita vazio/`NaN`/`Inf`/científica/`+`/`-`/espaços/vírgula/`>2` casas/overflow, **sem passar por ponto flutuante** (dígitos acumulados como dígitos)
+- [x] `Zero(cur)`, `Add`, `Sub`, `Neg` (guarda de overflow **nos dois sentidos** em `Add` e `Sub`), `Cmp`, `CmpLess/CmpEqual/CmpGreater`, `Equal`, `Sign`, `IsZero`, `IsNegative`, `IsPositive`, `Minor()`, `Currency()`
+- [x] `String()` → `"975.00"` (e sinal para negativo) + `MarshalJSON`/`UnmarshalJSON` no contrato `{"amount":"25.00","currency":"BRL"}`
+- [x] Erros de domínio **no próprio `money.go`**: `Error{Code, Message}` + `Is()` por `Code` (com `errors.As`), sentinelas `ErrInvalidCurrency`, `ErrInvalidAmount`, `ErrCurrencyMismatch` e códigos `INVALID_CURRENCY`/`INVALID_AMOUNT`/`CURRENCY_MISMATCH`.
+  - **Decisão revista:** os códigos planejados `ErrOverflow` e `ErrScaleExceeded` **não foram criados**. Limite e escala são ambos `INVALID_AMOUNT`, e a distinção fica na mensagem. Motivo: `failureCode` precisa ser estável e pequeno para o cliente distinguir "entrada corrigível × resultado definitivo" (item 13); dois códigos a mais só criariam ruído no contrato. Se a Fase 7 precisar diferenciar, o `Code` é o único ponto a mudar.
+  - **Decisão revista:** `currency.go`/`errors.go` separados **não** foram criados. O pacote `money` tem 541 linhas de código e cabe em um arquivo com seções; arquivos por tipo só se o pacote crescer.
+- [x] `UnmarshalJSON` estrito quanto à forma, além do valor: rejeita **campo desconhecido** (`DisallowUnknownFields`) e **chave repetida** (o `encoding/json` ficaria com a última em silêncio). Um typo em `amount` viraria cobrança de `R$ 0,00`.
+- [x] **Serialização é assimétrica de propósito:** `MarshalJSON` de valor negativo **sai** com sinal (diferença interna, conciliação), mas `UnmarshalJSON` **recusa** sinal (README §6.1: negativo proibido na entrada financeira externa). Travado por teste.
+- [x] Testes (384 casos, table-driven + testes de propriedade): parsing feliz, entradas inválidas, escala, limites (`±9_000_000_000_000_000`), overflow em `Add`/`Sub`/`Neg`, moedas incompatíveis, comutatividade, `(a+b)-b == a`, `a-b == a+(-b)`, anti-simetria e transitividade do `Cmp`, involução do `Neg`, round-trip JSON, **nenhum `float` no pacote** (`TestSemPontoFlutuanteNoCodigo` via AST: literais float + identificadores `float64`/`ParseFloat`/`NaN`/`Inf`).
+- [x] `go test -race ./internal/domain/money/...` — verde; cobertura **97,9%** (o restante são guardas defensivas comprovadamente inalcançáveis, documentadas no código)
+- [x] Conformidade README §6.1 e §Encapsulamento: **10 de 10 itens**
+
+**Evidências:** `docs/evidencias/FASE_1.md`
 
 ### FASE 2 — Domínio `Wallet` + `LedgerEntry` (D0, ~2h)
 - [ ] `Wallet`: campos privados (`id, playerID, currency, balance, version, createdAt, updatedAt`)
@@ -490,11 +500,19 @@ Formato: `[data] [fase] status — o que foi feito / decisão / bloqueio`.
   - **Decisões de ambiente novas:** cache de módulos do Go movido para `.gocache/` DENTRO do workspace (o cache global `C:\Users\PoxZe\go` não é gravável nesta máquina) — o `Makefile` e o `.gitignore` já refletem isso.
   - **Achado a resolver:** existe `E:\jungleg\jungle_desafio\` — um SEGUNDO repositório git (clone vazio do GitHub, só `.gitattributes`). Precisa ser removido ou o workspace precisa ser reorganizado; um repo dentro de outro impede o commit do conteúdo.
 - **B1 segue ABERTO** — Docker Desktop ainda não instalado; nada de compose/integração foi validado até agora (todo o código acima foi validado sem Docker).
+- **D0** — **Fase 1 CONCLUÍDA** (commits `3a36aec`, `3172772` e o commit final do `money`) — value object `Money` completo em `internal/domain/money/money.go` (541 linhas) + suíte em 4 arquivos de teste (2.090 linhas).
+  - **Decisão de design revista (A2):** o `New` **valida a faixa**, não só a moeda. O plano dizia "reidratação, permite qualquer sinal" e o README §Encapsulamento L87/L91 pede "construtores com validação" e "valores de domínio inválidos devem ser rejeitados". A proposta original deixava uma porta por onde um `Money` fora da faixa entrava em silêncio. Resolvido separando em `New` (criação validada) e `FromMinor` (reidratação sem validação, conforme L89).
+  - **Achados durante a Fase 1** (todos corrigidos e travados por teste): guarda do `Add` com um lado só (10 furos achados por varredura exaustiva de 81 combinações, todos com dois operandos negativos); guarda do `Sub` com sinal invertido; guarda do `Neg` invertida (`m.minor > -maxMinor` rejeitava quase todo valor válido); `gofmt` pendente; comentário do `maxAmountDigits` impreciso.
+  - **Decisão de contrato registrada:** `UnmarshalJSON` é estrito quanto à forma — rejeita campo desconhecido e chave repetida. O `encoding/json` normal ignoraria os dois, e um typo em `amount` viraria `R$ 0,00` silencioso.
+  - **Decisão de contrato registrada:** serialização **assimétrica** para negativos — `MarshalJSON` emite sinal (diferença interna / conciliação), `UnmarshalJSON` recusa (entrada externa). Documentado no código e travado por teste.
+  - **Guardas inalcançáveis documentadas:** a guarda de overflow dentro do laço dos inteiros em `parseAmount` é inalcançável dado o portão de 15 dígitos (provado por exaustão); 3 guardas de forma em `rejectDuplicateKeys` são inalcançáveis a partir de `UnmarshalJSON`. Mantidas como defesa e comentadas no código — é a razão da cobertura estar em 97,9% e não 100%.
+  - **Anti-float é teste automatizado:** `TestSemPontoFlutuanteNoCodigo` varre a AST do pacote (literais `FLOAT` + identificadores `float64`/`float32`/`ParseFloat`/`FormatFloat`/`NaN`/`Inf`) e `TestImportsPermitidos` mantém lista fechada de imports do núcleo (`bytes`, `encoding/json`, `errors`, `fmt`, `strings`). O item eliminatório do enunciado deixou de depender de revisão manual.
+  - **Conformidade README §6.1 + §Encapsulamento: 10 de 10.** Números: **384 casos verdes** (65 testes, 319 subtests), `go test -race ./...` verde nos 5 pacotes, `go vet` e `gofmt` limpos.
 
 ### Próximos 3 passos imediatos
-1. **Usuário:** ler `docs/GUIA_FASE_0.md` e `docs/QUESTOES.md` — **checkpoint obrigatório** antes da Fase 1.
-2. **Usuário:** decidir o que fazer com a pasta `jungle_desafio` (segundo repo git) e confirmar como rodar Docker (ver `CONTEXTO.md` §2.2).
-3. **Nós:** Fase 1 — `Money`. Ritmo revisado: **um arquivo por vez**, contrato antes do código, checkpoint a cada arquivo. Detalhes em `CONTEXTO.md` §5 e §6.
+1. **Nós:** Fase 2 — domínio `Wallet` + `LedgerEntry` (mesmo ritmo: um bloco por vez, explicar antes, checkpoint a cada bloco).
+2. **Nós:** documentar a assimetria do negativo e a estritude do `UnmarshalJSON` em `ARCHITECTURE.md` quando a Fase 12 chegar (já comentadas no código).
+3. **Usuário:** checkpoint de entendimento da Fase 1 antes do Bloco 1 da Fase 2 — em especial `errors.Is`/`errors.As` e a guarda de overflow de dois lados.
 
 ---
 
