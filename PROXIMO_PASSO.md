@@ -245,6 +245,30 @@ go test -count=1 -race -tags=integration -timeout 300s ./...
 
 ## 5. DECISÕES TÉCNICAS JÁ CONGELADAS
 
+**Estrutura de pacotes (reorganizada depois da Fase 5 — commit `2e4c2c0`):**
+
+```
+internal/domain/{errors,ids,money,ledger,wallet,wagering}   regra de negócio, sem I/O
+internal/app/ports                                          CONTRATOS (interfaces + erros + Cursor)
+internal/infra/postgres                                     adaptador do banco
+internal/httpapi · internal/platform · internal/config · internal/observability
+```
+
+A direção das dependências é `app → ports ← infra`: a aplicação não importa o banco, e o
+banco não importa a aplicação. Motivos e histórico em `ARCHITECTURE.md` §1.
+
+⚠️ **Os sentinelas de erro são os MESMOS objetos nos dois lados** (`postgres.ErrConflict` é
+alias de `ports.ErrConflict`). Não recrie um jogo de erros na infra: `ports.IsConflict`
+devolveria `false` para erro do repositório, **silenciosamente**. Há teste de regressão que
+passa um `PgError` de verdade pela classificação.
+
+⚠️ **O ledger é pacote próprio desde a reorganização**: `ledger.Entry`, `ledger.Direction`,
+`ledger.NewEntry`. `wallet.Debit` devolve `Movement`, cujo `Entry()` é um `ledger.Entry`.
+
+⚠️ **`TransactionID` é um tipo só** (`ids.TransactionID`), com alias em `wagering` e
+`ledger`. Não crie conversão entre os dois: são o mesmo conceito, e uma conversão esquecida
+viraria string vazia — exatamente o que `ledger.NewEntry` recusa.
+
 Detalhamento completo em `PLANO.md` §1 (A1–A14). O que afeta as Fases 6–7:
 
 | ID | Decisão |
@@ -384,8 +408,10 @@ pede `POST /wallets`), P5 (registrar Postgres/SQS no grupo `health_checkers`), P
 tratado com `TrimSpace` e testado, `Movement` resolvendo a versão do UPDATE condicional.
 
 **Abertas:**
-- o helper `CodeOf` está duplicado em três arquivos de teste — vira função de produção na
-  Fase 7 (é ele que traduz `Code` em `failureCode`);
+- **`ARCHITECTURE.md` FOI CRIADO** (era o maior risco): 17 seções com marcadores de estado
+  `[PRONTO]` / `[PARCIAL]` / `[PLANEJADO]`, para ser atualizado a cada fase. As seções 10
+  (HTTP), 11 (SQS), 12 (observabilidade) e 13 (recuperação) são as que faltam preencher;
+- o helper `CodeOf` **RESOLVIDO**: virou `domainerrors.CodeOf` no pacote compartilhado;
 - `testcontainers-go` foi baixado e **não é usado** (os testes apontam para o Postgres do
   compose via `TEST_DATABASE_URL`). Remover com `go mod tidy` na Fase 12;
 - `LOSS` com referência opcional: decidir na Fase 6 se valida quando enviada;
