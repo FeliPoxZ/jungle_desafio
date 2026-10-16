@@ -42,10 +42,11 @@ solução + `ARCHITECTURE.md`.
 | Fase 2 (`Wallet` + `LedgerEntry`) | ✅ **CONCLUÍDA E VALIDADA** — 63 casos, 99,0% de cobertura |
 | Fase 3 (`WagerTransaction`) | ✅ **CONCLUÍDA E VALIDADA** — 127 casos, **100,0%** de cobertura |
 | Fase 4 (schema + migrations) | ✅ **CONCLUÍDA E VALIDADA** — 29 CHECK + 4 FK + 2 UNIQUE, 30 operações inválidas recusadas pelo banco |
-| Fase 5 (persistência `pgx` + Unit of Work) | ⬅ **PRÓXIMA** |
-| Fases 6–12 | ⬜ Não iniciadas (ver checklist no `PLANO.md` §3) |
+| Fase 5 (persistência `pgx` + Unit of Work) | ✅ **CONCLUÍDA E VALIDADA** — 38 testes (25 de integração), `-race` verde, 4 defeitos reais corrigidos |
+| Fase 6 (caso de uso `wagering.Service`) | ⬅ **PRÓXIMA** |
+| Fases 7–12 | ⬜ Não iniciadas (ver checklist no `PLANO.md` §3) |
 
-**Domínio completo (Fases 1–3): 574 casos verdes, `go test -race ./...` verde nos 8 pacotes.**
+**Domínio (Fases 1–3): 574 casos verdes. Persistência (Fase 5): 38 testes, `go test -race ./...` verde nos 10 pacotes.**
 
 ### O domínio está completo (Fases 1–3)
 
@@ -91,7 +92,13 @@ idempotência existente, comparar metadados com a referência carregada, publica
 > Usar a ferramenta de edição ou `[System.IO.File]::WriteAllLines` com `UTF8Encoding($false)`.
 > Já aconteceu uma vez neste projeto.
 
-> **6. Não confie em contagem de falha tirada de pipeline do PowerShell.** Um
+> **6. Retry envolve a TRANSAÇÃO INTEIRA, nunca uma chamada por dentro dela.**
+> Repetir dentro da transação deixa a tentativa que falhou com a conexão aberta
+> segurando o lock, e o sintoma aparece longe (o próximo `TRUNCATE` morre com
+> deadlock). A unidade de retry é a transação — vale para os testes e para a
+> Fase 6.
+
+> **7. Não confie em contagem de falha tirada de pipeline do PowerShell.** Um
 > `Select-String` sem `-Pattern` já produziu um "24 falhas" falso neste projeto. Ler o
 > output real do `go test`.
 
@@ -154,76 +161,109 @@ Detalhamento completo em `PLANO.md` §1 (A1–A14). O que afeta a Fase 4:
 
 ---
 
-## 6. 🎯 A TAREFA PONTUAL: FASE 5 (persistência `pgx` + Unit of Work)
+## 6. 🎯 A TAREFA PONTUAL: FASE 6 (caso de uso `wagering.Service`)
 
-**Esta é a fase em que o domínio passa a ter memória.** As Fases 2–4 definiram as regras e as
-imposeram no banco; agora é preciso gravar e ler de verdade, com a garantia de que carteira,
-ledger, transação, inbox e outbox mudam **na mesma transação**.
+**Esta é a fase mais importante do desafio** (o plano estima ~4h). É onde o
+domínio, o banco e as regras de negócio se encontram: uma requisição do provedor
+vira uma transação SQL única que decide, movimenta dinheiro e enfileira eventos.
 
-### 6.1. O que já existe para reusar
+### 6.1. O que as Fases 1–5 deixaram pronto
 
-| Necessidade | O que usar |
+| Necessidade do serviço | O que usar |
 | --- | --- |
-| O schema e as constraints | `migrations/000001_init.up.sql` — cobrir TODAS as colunas |
-| Aplicar migrations | `cmd/migrate` (`up`/`down`/`version`) |
-| Limite do domínio | `money.FromMinor` para reidratar, `New` para criar |
-| Reidratar carteira | `wallet.Rehydrate(...)` (não valida de propósito) |
-| Reidratar lançamento | `wallet.RehydrateEntry(...)` |
-| Reidratar transação | `wagering.Rehydrate(...)` |
-| Direção e tipo do banco | `wallet.ParseDirection`, `wagering.ParseKind`, `wagering.ParseStatus` |
-| URL do banco | `DATABASE_URL` (já é lida por `internal/config`) |
+| Valor, parsing e formatação | `money.Parse`, `Money.Add/Sub/Neg/Cmp`, `String`/JSON |
+| Validar tipo, valor e origem | `wagering.New` (já valida `LOSS` = 0, reversão exige referência, `OPENING` é interna) |
+| Transições de estado | `MarkProcessed`, `MarkRejected`, `MarkFailed`, `MarkPendingReference`, `ResolveReference` |
+| Saber se movimenta dinheiro | `kind.MovesMoney()` |
+| Aplicar a movimentação | `wallet.Debit`/`Credit` → devolvem `Movement` (com a **versionBefore**) |
+| Persistir a movimentação | `r.Wallets.Update(ctx, id, mov.VersionBefore(), carteira.Balance())` + `r.Ledger.Insert(ctx, mov.Entry())` |
+| Uma transação para tudo | `uow.Run(ctx, func(ctx, r) error)` |
+| Lock da carteira | `r.Wallets.GetByIDForUpdate` |
+| Idempotência | `r.Transactions.GetByIdempotencyKey` + `UNIQUE` no banco; `matchesPayload` para separar replay de conflito |
+| Hash do payload | `canonicaljson.Hash(payload)` |
+| Eventos na outbox | `wagering.ProcessedEvent`/`RejectedEvent`/`PendingReferenceEvent`/`NewBalanceChangedEvent` + `r.Outbox.Insert` |
+| Classificar falha do banco | `postgres.IsConflict`, `IsRetryable`, `IsNotFound` |
 
-### 6.2. Entregáveis (`PLANO.md` §3, Fase 5)
+### 6.2. A ordem exata dentro da transação (é isso que o avaliador cobra)
 
-| Item | Conteúdo |
+```
+1. valida Idempotency-Key e calcula o hash canônico
+2. SELECT por (provider_id, idempotency_key)
+     ├─ existe e hash igual   → REPLAY: devolve o resultado persistido, sem movimentar
+     └─ existe e hash diferente → CONFLITO (409)
+3. SELECT carteira FOR UPDATE        ← o lock vem ANTES de qualquer cálculo
+4. valida moeda da carteira × moeda da operação
+5. resolve a referência (REFUND/ROLLBACK)
+     ├─ ausente  → MarkPendingReference + evento + 202, sem movimentar
+     └─ presente → valida provedor/jogador/carteira/moeda/rodada e valor igual
+6. cria a transação (wagering.New) e grava (INSERT)
+7. aplica a movimentação no agregado (Debit/Credit → Movement)
+8. grava saldo + versão (Wallets.Update com mov.VersionBefore())
+9. grava o lançamento no ledger (Ledger.Insert)
+10. transiciona e grava o estado (MarkProcessed/MarkRejected + Transactions.Save)
+11. grava os eventos na outbox
+12. COMMIT  ← só depois disso a resposta sai
+```
+
+**O lock no passo 3 é o que impede lost update.** Se o `SELECT` da carteira
+vier depois do cálculo do saldo, dois escritores leem o mesmo valor e um
+sobrescreve o outro.
+
+### 6.3. Regras de negócio que faltam implementar (e onde)
+
+| Regra (README) | O que fazer |
 | --- | --- |
-| `internal/infra/postgres/pool.go` | `pgxpool` com `MaxConns`/timeouts da config + `Ping` para readiness |
-| `internal/infra/postgres/uow.go` | `uow.Run(ctx, fn func(ctx, Repos) error)`: `BeginTx`/`Commit`/`Rollback` com `defer` |
-| `Internal/infra/postgres/wallet_repo.go` | `Insert`, `GetByID`, `GetByIDForUpdate` (**row lock**), `GetByPlayerAndCurrency`, `UpdateBalance` |
-| `internal/infra/postgres/txn_repo.go` | `Insert`, `GetByID`, `GetByProviderAndExternalID`, `GetByIdempotencyKey`, transições, `ListPendingReferencesDue`, `ListByWallet` (cursor) |
-| `internal/infra/postgres/ledger_repo.go` | `Insert` (append-only), `ListByWalletCursor`, `SumSignedByWallet` (reconciliação) |
-| `internal/infra/postgres/inbox_repo.go` | `InsertIfAbsent`, `Get`, `MarkCompleted`, `MarkFailed` |
-| `internal/infra/postgres/outbox_repo.go` | `Insert`, `ClaimBatch` (`FOR UPDATE SKIP LOCKED`), `MarkPublished`, `MarkRetry`, `PendingStats` |
-| `internal/infra/postgres/errors.go` | `pgconn.PgError` → `ErrConflict` (23505), `ErrCheck` (23514), `ErrTransient` (40001, 40P01, 57P03, 53300), `ErrPermanent` |
-| `internal/platform/canonicaljson` | **pendência da Fase 3**: o `PayloadEncoder` está injetado e ainda não tem implementação canônica |
-| Testes de integração | `//go:build integration` com testcontainers, ou contra o Postgres do compose |
+| `BET` exige saldo suficiente | `wallet.Debit` já devolve `ErrInsufficientFunds`; traduzir para `failureCode: INSUFFICIENT_FUNDS` e `422` |
+| `WIN` pode referenciar aposta da mesma rodada | referência **opcional**: se enviada, validar rodada/provedor/jogador/carteira/moeda |
+| `LOSS` não movimenta | `kind.MovesMoney()` é falso: não chama `Debit`/`Credit`, não cria ledger, não incrementa versão. Ainda produz `WagerTransactionProcessed` |
+| `REFUND` devolve integralmente a `BET` | referência obrigatória; valor **igual** ao referenciado; erro diferente de "sem saldo" |
+| `ROLLBACK` desfaz `BET`/`WIN`/`REFUND` | movimento contrário ao original; se precisaria debitar mais que o saldo → `ROLLBACK_INSUFFICIENT_FUNDS` (código **diferente** de `BET` sem saldo) |
+| Reversão não pode acontecer duas vezes | `UNIQUE (reference_transaction_id, kind)` já barra; traduzir para `ALREADY_REVERSED` |
+| Referência existe mas foi rejeitada/falhou | `REFERENCE_NOT_PROCESSABLE` |
+| Referência diverge em provedor/jogador/carteira/moeda/rodada | `REFERENCE_MISMATCH` |
+| TTL/tentativas de referência pendente | ao esgotar: `MarkRejected` com `REFERENCE_NOT_FOUND` + evento de rejeição |
+| `OPENING` interno (abertura de carteira) | caminho separado: cria carteira, `OPENING` em `PROCESSED`, lançamento de crédito, eventos `Processed` + `BalanceChanged`. Saldo zero ⇒ **sem** `OPENING`, sem ledger, sem eventos |
 
-### 6.3. Pontos que o avaliador vai cobrar
+### 6.4. Ponto de arquitetura que precisa de decisão
 
-1. **`SELECT ... FOR UPDATE` na carteira antes de calcular o saldo novo.** É o que impede lost update entre duas instâncias. Ler o saldo sem lock e depois gravar é o bug que o enunciado chama de eliminatório ("saldo negativo por concorrência").
-2. **Ordem das operações na transação.** Lock da carteira → validar no domínio → gravar ledger → gravar transação → outbox. Se o lock vier depois da validação, dois escritores leem o mesmo saldo.
-3. **`ReadCommitted` + `FOR UPDATE`, não `Serializable`.** `Serializable` gera `40001` sob disputa e exigiria retry em todo caminho; o lock explícito de linha resolve o caso real (uma carteira por vez) sem serializar o banco inteiro. Documentar em `ARCHITECTURE.md`.
-4. **Erro do `pgx` vira erro tipado do domínio.** `23505` (unique) **não** é "erro de banco": no nosso schema, o unique é a idempotência funcionando. Precisa virar `ErrConflict` para o serviço decidir entre replay e conflito.
-5. **`ClaimBatch` com `FOR UPDATE SKIP LOCKED`.** É o que permite várias instâncias publicarem a outbox sem pegarem o mesmo evento.
-6. **`SumSignedByWallet` somando `CASE direction`** — a base da reconciliação da Fase 11. Se a soma dos lançamentos não bater com o saldo, o sistema precisa avisar.
-7. **Reidratar sem reaplicar.** Os repositórios devolvem entidades via `Rehydrate`/`RehydrateEntry`, nunca chamando `Debit`/`Credit` na leitura.
+Onde ficam as **interfaces de repositório** que o serviço consome? Hoje elas estão
+em `internal/infra/postgres`, o que faria o pacote de aplicação importar
+infraestrutura. Opções:
 
-### 6.4. Cuidados com o schema já criado
+| Opção | Prós | Contras |
+| --- | --- | --- |
+| Definir as interfaces em `internal/app/ports` e o `postgres` satisfazê-las | Aplicação não importa infraestrutura; testável com dublê | Mais um pacote e conversão de tipos em alguns pontos |
+| Consumir as interfaces de `internal/infra/postgres` direto | Menos código | Acopla aplicação à infra; o `PLANO.md` A3 diz o contrário |
 
-| Coluna | Detalhe que morde |
-| --- | --- |
-| `currency CHAR(3)` | `CHAR` preenche com espaço: o driver pode devolver `"BRL"` mas também pode devolver com padding. **Testar** e, se necessário, `TrimSpace` na leitura |
-| `created_at`/`updated_at` | `updated_at` é atualizado por **trigger**: não enviar valor na leitura nem tentar forçar |
-| `payload_hash` | é `TEXT` com o SHA-256 em hexadecimal (64 chars) |
-| `result_balance_minor` | `NULL` enquanto a operação não terminou — precisa de `*int64` e depois `money.FromMinor` |
-| `reference_transaction_id` | auto-relacionamento: ao inserir uma reversão, a transação referenciada já precisa existir |
-| Ledger append-only | `UPDATE`/`DELETE` levantam exceção. O repositório **só** pode `INSERT` — não criar método de correção |
+**Recomendação:** `internal/app/ports` com interfaces estreitas (só o que o
+serviço usa). O `Repos` do `uow` já é uma struct concreta — o serviço pode
+receber uma interface `UnitOfWork` que devolve `ports.Repos`.
 
-### 6.5. Checkpoint esperado
+### 6.5. Casos de teste que a suíte PRECISA cobrir
+
+**Idempotência:** mesma chave + mesmo hash → replay devolve o **saldo original** (mesmo que a carteira já tenha mudado depois); mesma chave + hash diferente → 409; `external_transaction_id` com chave diferente → 409
+**Tipos:** `BET` com saldo e sem saldo; `WIN` credita; `LOSS` não move, não cria ledger e não incrementa versão mas produz evento; `REFUND` devolve; `ROLLBACK` desfaz
+**Reversão:** referência inexistente → `PENDING_REFERENCE` + 202; referência rejeitada → `REFERENCE_NOT_PROCESSABLE`; valor diferente → erro; `REFUND` duplicado → `ALREADY_REVERSED`; `ROLLBACK` sem saldo → `ROLLBACK_INSUFFICIENT_FUNDS`
+**Atomicidade:** falha em qualquer passo não deixa saldo, ledger nem evento
+**Concorrência:** duas `BET` de 80 sobre saldo de 100 (o cenário do README) → uma processa, a outra rejeita por saldo, saldo final **20.00** e **um** débito no ledger
+**Abertura:** `POST /wallets` com saldo positivo cria `OPENING` + crédito + 2 eventos; com zero não cria `OPENING`; duplicado → conflito
+**Eventos:** `LOSS` e rejeição **não** geram `WalletBalanceChanged`; `Processed` inclui `LOSS`
+
+### 6.6. Checkpoint esperado
 
 ```powershell
 $env:GOMODCACHE='E:\jungleg\.gocache\mod'; $env:GOCACHE='E:\jungleg\.gocache\build'; $env:GOPATH='E:\jungleg\.gocache\gopath'
 docker compose up -d postgres
 $env:DATABASE_URL='postgres://jungleg:jungleg@localhost:5432/jungleg?sslmode=disable'
 .\bin\migrate.exe up
-go build ./...; go vet ./...; go test -count=1 ./...
-# integração (contra o Postgres do compose ou testcontainers)
-go test -count=1 -race -tags=integration ./test/...
+go build ./...; go vet ./...; go test -race ./...
+$env:TEST_DATABASE_URL='postgres://jungleg:jungleg@localhost:5432/jungle_test?sslmode=disable'
+go test -count=1 -race -tags=integration -timeout 300s ./...
 ```
 
 Commit ao final:
 ```
-feat(postgres): adiciona repositorios pgx com unit of work e locking por carteira
+feat(app): adiciona caso de uso de operacoes com idempotencia e ledger transacional
 ```
 
 ---
@@ -239,29 +279,34 @@ pede `POST /wallets`), P5 (registrar Postgres/SQS no grupo `health_checkers`), P
 **P6 RESOLVIDA na Fase 4**: `cmd/migrate` existe, funciona e é o que o compose executa.
 P9/P10 resolvidas anteriormente.
 
-Das Fases 1–3: o helper `CodeOf` está **duplicado** em três arquivos de teste
-(`money_test.go`, `wallet_test.go`, `wagering_test.go`). Quando a Fase 7 montar o handler,
-ele vira função de produção no pacote de erros — é ele que traduz `Code` em `failureCode`.
+**Resolvidas na Fase 5:**
+- `internal/platform/canonicaljson` criado (era pendência da Fase 3);
+- o padding do `CHAR(3)` foi tratado (`moedaGo` faz `TrimSpace`) e testado em
+  `TestWalletInsertELeitura`, que compara com `money.BRL` e falharia se viesse `"BRL "`;
+- o helper `CodeOf` continua duplicado em três arquivos de teste: quando a Fase 7 montar o
+  handler, ele vira função de produção (é ele que traduz `Code` em `failureCode`).
 
-Da Fase 3: o `PayloadEncoder` está injetado e o JSON canônico **ainda não existe** — precisa
-ser criado em `internal/platform/canonicaljson` na Fase 5.
-
-Da Fase 4: o schema usa `CHAR(3)` para moeda. `CHAR` preenche com espaço no PostgreSQL, então
-os repositórios da Fase 5 precisam **testar** se o driver devolve `"BRL"` ou `"BRL"` com
-padding, e tratar a leitura em conformidade.
+**Novas pendências registradas:**
+- **Retry:** a unidade de retry é a **transação inteira**, nunca uma chamada por dentro dela
+  (repetir por dentro deixa a conexão aberta segurando o lock e o sintoma aparece como
+  deadlock em outro lugar). Vale para os testes e para a Fase 6;
+- **`testcontainers-go` foi baixado e não é usado** — os testes de integração apontam para o
+  Postgres do compose via `TEST_DATABASE_URL`. Remover com `go mod tidy` na Fase 12;
+- **`LOSS` com referência**: o domínio aceita `LOSS` sem referência, mas o README permite
+  referência opcional. Decidir na Fase 6 se valida quando enviada.
 
 ---
 
 ## 8. CHECKLIST DE ARRANQUE PARA A NOVA CONVERSA
 
-- [ ] Ler `CONTEXTO.md`, `PLANO.md` §3 (Fase 5) e `docs/evidencias/FASE_4.md`
-- [ ] Confirmar que os containers estão de pé (`docker ps`) e o schema aplicado (`bin/migrate.exe version`)
-- [ ] Criar `internal/platform/canonicaljson` (pendência da Fase 3) antes dos repositórios
-- [ ] Implementar pool + `uow.Run` com `ReadCommitted` + `FOR UPDATE` na carteira
-- [ ] Implementar os repositórios cobrindo **todas** as colunas do schema da Fase 4
-- [ ] Classificar erro do `pgx` (`23505` → `ErrConflict`) — o unique do nosso schema **é** a idempotência funcionando, não um erro de banco
-- [ ] Testar de verdade: `SKIP LOCKED` com duas conexões, lost update, atomicidade (rollback não deixa resíduo)
+- [ ] Ler `CONTEXTO.md`, `PLANO.md` §3 (Fase 6) e `docs/evidencias/FASE_5.md`
+- [ ] Confirmar containers de pé (`docker ps`) e o schema aplicado (`bin/migrate.exe version`)
+- [ ] **Decidir onde ficam as interfaces de repositório** (seção 6.4): `internal/app/ports` é a recomendação, para a aplicação não importar infraestrutura
+- [ ] Implementar `Process(ctx, Request)` na **ordem exata da seção 6.2** — o lock da carteira vem ANTES de qualquer cálculo de saldo
+- [ ] Reusar `uow.Run`, `Movement`, `canonicaljson.Hash` e os eventos do `wagering` em vez de reimplementar
+- [ ] Cobrir os casos da seção 6.5, em especial o cenário do README: duas `BET` de 80 sobre saldo 100 → **saldo final 20.00 e UM débito no ledger**
+- [ ] Testar idempotência de verdade: replay devolve o saldo **original**, mesmo com a carteira já alterada
 - [ ] Aceitar contestação do usuário: se ele questionar e estiver certo, **admitir e corrigir**
-- [ ] Depois de aprovado, commitar: `feat(postgres): adiciona repositorios pgx com unit of work e locking por carteira`
+- [ ] Depois de aprovado, commitar: `feat(app): adiciona caso de uso de operacoes com idempotencia e ledger transacional`
 
-**As Fases 0 a 4 estão commitadas e validadas. Não revalide nem recommite.**
+**As Fases 0 a 5 estão commitadas e validadas. Não revalide nem recommite.**
