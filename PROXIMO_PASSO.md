@@ -41,10 +41,11 @@ solução + `ARCHITECTURE.md`.
 | Fase 1 (`Money`) | ✅ **CONCLUÍDA E VALIDADA** — 384 casos, 97,9% de cobertura, 10/10 no README |
 | Fase 2 (`Wallet` + `LedgerEntry`) | ✅ **CONCLUÍDA E VALIDADA** — 63 casos, 99,0% de cobertura |
 | Fase 3 (`WagerTransaction`) | ✅ **CONCLUÍDA E VALIDADA** — 127 casos, **100,0%** de cobertura |
-| Fase 4 (schema + migrations) | ⬅ **PRÓXIMA** |
-| Fases 5–12 | ⬜ Não iniciadas (ver checklist no `PLANO.md` §3) |
+| Fase 4 (schema + migrations) | ✅ **CONCLUÍDA E VALIDADA** — 29 CHECK + 4 FK + 2 UNIQUE, 30 operações inválidas recusadas pelo banco |
+| Fase 5 (persistência `pgx` + Unit of Work) | ⬅ **PRÓXIMA** |
+| Fases 6–12 | ⬜ Não iniciadas (ver checklist no `PLANO.md` §3) |
 
-**Total do domínio: 574 casos verdes, `go test -race ./...` verde nos 7 pacotes.**
+**Domínio completo (Fases 1–3): 574 casos verdes, `go test -race ./...` verde nos 8 pacotes.**
 
 ### O domínio está completo (Fases 1–3)
 
@@ -153,114 +154,114 @@ Detalhamento completo em `PLANO.md` §1 (A1–A14). O que afeta a Fase 4:
 
 ---
 
-## 6. 🎯 A TAREFA PONTUAL: FASE 4 (schema, migrations e constraints)
+## 6. 🎯 A TAREFA PONTUAL: FASE 5 (persistência `pgx` + Unit of Work)
 
-**Esta é a fase em que as regras do domínio passam a ser impostas pelo banco.** Tudo que as
-Fases 2 e 3 validam em memória precisa de uma constraint correspondente — é a segunda
-barreira, e a única que sobrevive a um bug de aplicação.
+**Esta é a fase em que o domínio passa a ter memória.** As Fases 2–4 definiram as regras e as
+imposeram no banco; agora é preciso gravar e ler de verdade, com a garantia de que carteira,
+ledger, transação, inbox e outbox mudam **na mesma transação**.
 
-### 6.1. Pré-requisito: Docker
+### 6.1. O que já existe para reusar
 
-A Fase 4 **exige Docker rodando** para validar as migrations de verdade (subir, aplicar,
-testar as constraints com `INSERT` inválido, reverter). Se o pipe não existir, subir o
-Docker Desktop e aguardar.
-
-### 6.2. Entregáveis
-
-| Artefato | Conteúdo |
+| Necessidade | O que usar |
 | --- | --- |
-| `migrations/000001_init.up.sql` | `players` (se necessário), `wallets`, `wager_transactions`, `wallet_ledger_entries`, `inbox_messages`, `outbox_events` |
-| `migrations/000001_init.down.sql` | drop na ordem inversa |
-| Trigger de imutabilidade | `BEFORE UPDATE OR DELETE` no ledger com `RAISE EXCEPTION` |
-| `cmd/migrate` | **não existe ainda** (pendência P6) e o compose o referencia |
-| Teste das constraints | `INSERT`/`UPDATE` inválidos devem falhar de verdade |
+| O schema e as constraints | `migrations/000001_init.up.sql` — cobrir TODAS as colunas |
+| Aplicar migrations | `cmd/migrate` (`up`/`down`/`version`) |
+| Limite do domínio | `money.FromMinor` para reidratar, `New` para criar |
+| Reidratar carteira | `wallet.Rehydrate(...)` (não valida de propósito) |
+| Reidratar lançamento | `wallet.RehydrateEntry(...)` |
+| Reidratar transação | `wagering.Rehydrate(...)` |
+| Direção e tipo do banco | `wallet.ParseDirection`, `wagering.ParseKind`, `wagering.ParseStatus` |
+| URL do banco | `DATABASE_URL` (já é lida por `internal/config`) |
 
-### 6.3. Constraints obrigatórias (`PLANO.md` §3, Fase 4)
+### 6.2. Entregáveis (`PLANO.md` §3, Fase 5)
 
-**`wallets`**
-- `UNIQUE (player_id, currency)` — o par identifica uma única carteira
-- `CHECK (balance_minor >= 0)` — saldo nunca negativo
-- `CHECK (version >= 1)`
-- `CHECK (balance_minor BETWEEN -9000000000000000 AND 9000000000000000)` — o limite do domínio
+| Item | Conteúdo |
+| --- | --- |
+| `internal/infra/postgres/pool.go` | `pgxpool` com `MaxConns`/timeouts da config + `Ping` para readiness |
+| `internal/infra/postgres/uow.go` | `uow.Run(ctx, fn func(ctx, Repos) error)`: `BeginTx`/`Commit`/`Rollback` com `defer` |
+| `Internal/infra/postgres/wallet_repo.go` | `Insert`, `GetByID`, `GetByIDForUpdate` (**row lock**), `GetByPlayerAndCurrency`, `UpdateBalance` |
+| `internal/infra/postgres/txn_repo.go` | `Insert`, `GetByID`, `GetByProviderAndExternalID`, `GetByIdempotencyKey`, transições, `ListPendingReferencesDue`, `ListByWallet` (cursor) |
+| `internal/infra/postgres/ledger_repo.go` | `Insert` (append-only), `ListByWalletCursor`, `SumSignedByWallet` (reconciliação) |
+| `internal/infra/postgres/inbox_repo.go` | `InsertIfAbsent`, `Get`, `MarkCompleted`, `MarkFailed` |
+| `internal/infra/postgres/outbox_repo.go` | `Insert`, `ClaimBatch` (`FOR UPDATE SKIP LOCKED`), `MarkPublished`, `MarkRetry`, `PendingStats` |
+| `internal/infra/postgres/errors.go` | `pgconn.PgError` → `ErrConflict` (23505), `ErrCheck` (23514), `ErrTransient` (40001, 40P01, 57P03, 53300), `ErrPermanent` |
+| `internal/platform/canonicaljson` | **pendência da Fase 3**: o `PayloadEncoder` está injetado e ainda não tem implementação canônica |
+| Testes de integração | `//go:build integration` com testcontainers, ou contra o Postgres do compose |
 
-**`wallet_ledger_entries`**
-- `CHECK (balance_after_minor = balance_before_minor + CASE direction WHEN 'CREDIT' THEN amount_minor ELSE -amount_minor END)` — **a aritmética do ledger no banco**
-- `CHECK (amount_minor > 0)` — lançamento de valor zero não existe
-- `CHECK (direction IN ('DEBIT','CREDIT'))`
-- `UNIQUE (wallet_id, transaction_id)` — um lançamento por operação
-- **imutabilidade:** trigger `BEFORE UPDATE OR DELETE ... RAISE EXCEPTION`
+### 6.3. Pontos que o avaliador vai cobrar
 
-**`wager_transactions`**
-- `UNIQUE (provider_id, idempotency_key)` — **idempotência persistente**
-- `UNIQUE (provider_id, external_transaction_id)`
-- `UNIQUE (reference_transaction_id, kind) WHERE reference_transaction_id IS NOT NULL` — impede dupla reversão do mesmo tipo
-- `UNIQUE (idempotency_key) WHERE kind = 'OPENING'` — **impede crédito inicial duplicado**
-- `CHECK (kind <> 'OPENING' OR provider_id IS NULL)` — `OPENING` é interna
-- `CHECK (kind IN (...))` e `CHECK (status IN (...))`
-- `CHECK (kind <> 'LOSS' OR amount_minor = 0)` e `CHECK (kind = 'LOSS' OR amount_minor > 0)`
-- `CHECK (kind NOT IN ('REFUND','ROLLBACK') OR reference_external_transaction_id IS NOT NULL)`
+1. **`SELECT ... FOR UPDATE` na carteira antes de calcular o saldo novo.** É o que impede lost update entre duas instâncias. Ler o saldo sem lock e depois gravar é o bug que o enunciado chama de eliminatório ("saldo negativo por concorrência").
+2. **Ordem das operações na transação.** Lock da carteira → validar no domínio → gravar ledger → gravar transação → outbox. Se o lock vier depois da validação, dois escritores leem o mesmo saldo.
+3. **`ReadCommitted` + `FOR UPDATE`, não `Serializable`.** `Serializable` gera `40001` sob disputa e exigiria retry em todo caminho; o lock explícito de linha resolve o caso real (uma carteira por vez) sem serializar o banco inteiro. Documentar em `ARCHITECTURE.md`.
+4. **Erro do `pgx` vira erro tipado do domínio.** `23505` (unique) **não** é "erro de banco": no nosso schema, o unique é a idempotência funcionando. Precisa virar `ErrConflict` para o serviço decidir entre replay e conflito.
+5. **`ClaimBatch` com `FOR UPDATE SKIP LOCKED`.** É o que permite várias instâncias publicarem a outbox sem pegarem o mesmo evento.
+6. **`SumSignedByWallet` somando `CASE direction`** — a base da reconciliação da Fase 11. Se a soma dos lançamentos não bater com o saldo, o sistema precisa avisar.
+7. **Reidratar sem reaplicar.** Os repositórios devolvem entidades via `Rehydrate`/`RehydrateEntry`, nunca chamando `Debit`/`Credit` na leitura.
 
-**`inbox_messages`** — `UNIQUE (consumer_name, message_id)`
-**`outbox_events`** — `UNIQUE (event_id)`, `CHECK (attempts >= 0)`
+### 6.4. Cuidados com o schema já criado
 
-### 6.4. Pontos que o avaliador vai cobrar
-
-1. **A aritmética do ledger no banco.** O `CHECK` que compara `balance_after` com `before ± amount` é o que impede um lançamento incoerente entrar, mesmo com bug na aplicação.
-2. **Imutabilidade do ledger é trigger, não convenção.** `UPDATE`/`DELETE` levantam exceção.
-3. **Idempotência é índice único, não `SELECT` antes de `INSERT`.** `SELECT` seguido de `INSERT` tem corrida; o índice único não tem.
-4. **`OPENING` com `UNIQUE` parcial em `idempotency_key`.** É o que impede dois créditos iniciais para o mesmo jogador.
-5. **Índices para as consultas reais:** `(wallet_id, created_at, id)` para paginação de ledger, `(status, next_attempt_at)` para o worker de referências pendentes.
-6. **`down.sql` que realmente reverte.** Migration sem rollback testado é migration que não existe.
+| Coluna | Detalhe que morde |
+| --- | --- |
+| `currency CHAR(3)` | `CHAR` preenche com espaço: o driver pode devolver `"BRL"` mas também pode devolver com padding. **Testar** e, se necessário, `TrimSpace` na leitura |
+| `created_at`/`updated_at` | `updated_at` é atualizado por **trigger**: não enviar valor na leitura nem tentar forçar |
+| `payload_hash` | é `TEXT` com o SHA-256 em hexadecimal (64 chars) |
+| `result_balance_minor` | `NULL` enquanto a operação não terminou — precisa de `*int64` e depois `money.FromMinor` |
+| `reference_transaction_id` | auto-relacionamento: ao inserir uma reversão, a transação referenciada já precisa existir |
+| Ledger append-only | `UPDATE`/`DELETE` levantam exceção. O repositório **só** pode `INSERT` — não criar método de correção |
 
 ### 6.5. Checkpoint esperado
 
 ```powershell
 $env:GOMODCACHE='E:\jungleg\.gocache\mod'; $env:GOCACHE='E:\jungleg\.gocache\build'; $env:GOPATH='E:\jungleg\.gocache\gopath'
-# 1) docker rodando
 docker compose up -d postgres
-# 2) aplicar migrations
-$env:PGPASSWORD='...'; psql -h localhost -U jungleg -d jungleg -f migrations/000001_init.up.sql
-# 3) testar as constraints com INSERT invalido (deve falhar)
-# 4) reverter
-psql -h localhost -U jungleg -d jungleg -f migrations/000001_init.down.sql
-go build ./...
-go vet ./...
-go test -race ./...
+$env:DATABASE_URL='postgres://jungleg:jungleg@localhost:5432/jungleg?sslmode=disable'
+.\bin\migrate.exe up
+go build ./...; go vet ./...; go test -count=1 ./...
+# integração (contra o Postgres do compose ou testcontainers)
+go test -count=1 -race -tags=integration ./test/...
 ```
 
 Commit ao final:
 ```
-feat(db): adiciona schema inicial com constraints de saldo, ledger imutavel e idempotencia
+feat(postgres): adiciona repositorios pgx com unit of work e locking por carteira
 ```
 
 ---
 
 ## 7. PENDÊNCIAS CONHECIDAS
 
-Do `CONTEXTO.md` §4: P1 (healthcheck do `api` no compose usa flag inexistente), P2 (ordem
-`AccessLog` × `Recoverer`), P3 (`net.Listen` em vez de `select`+`time.After`), P4 (path
-`/internal/wallets` — o enunciado pede `POST /wallets`), P5 (registrar Postgres/SQS no grupo
-`health_checkers`), **P6 (`cmd/migrate` não existe — o compose o referencia: resolver na
-Fase 4)**, P7 (`StopTimeout` deve vir da config), P8 (testar SIGTERM real). P9/P10 resolvidas.
+Do `CONTEXTO.md` §4: P1 (healthcheck do `api` no compose usa `-health-check`, flag que o
+binário não implementa — **é da Fase 7**), P2 (ordem `AccessLog` × `Recoverer`), P3
+(`net.Listen` em vez de `select`+`time.After`), P4 (path `/internal/wallets` — o enunciado
+pede `POST /wallets`), P5 (registrar Postgres/SQS no grupo `health_checkers`), P7
+(`StopTimeout` deve vir da config), P8 (testar SIGTERM real).
+
+**P6 RESOLVIDA na Fase 4**: `cmd/migrate` existe, funciona e é o que o compose executa.
+P9/P10 resolvidas anteriormente.
 
 Das Fases 1–3: o helper `CodeOf` está **duplicado** em três arquivos de teste
 (`money_test.go`, `wallet_test.go`, `wagering_test.go`). Quando a Fase 7 montar o handler,
 ele vira função de produção no pacote de erros — é ele que traduz `Code` em `failureCode`.
 
 Da Fase 3: o `PayloadEncoder` está injetado e o JSON canônico **ainda não existe** — precisa
-ser criado em `internal/platform/canonicaljson` antes ou durante a Fase 5/6.
+ser criado em `internal/platform/canonicaljson` na Fase 5.
+
+Da Fase 4: o schema usa `CHAR(3)` para moeda. `CHAR` preenche com espaço no PostgreSQL, então
+os repositórios da Fase 5 precisam **testar** se o driver devolve `"BRL"` ou `"BRL"` com
+padding, e tratar a leitura em conformidade.
 
 ---
 
 ## 8. CHECKLIST DE ARRANQUE PARA A NOVA CONVERSA
 
-- [ ] Ler `CONTEXTO.md`, `PLANO.md` §3 (Fase 4) e `docs/evidencias/FASE_3.md`
-- [ ] Subir o Docker Desktop (a Fase 4 depende dele) e confirmar os 3 containers
-- [ ] Criar `migrations/000001_init.up.sql` e `.down.sql` seguindo a lista da seção 6.3
-- [ ] **Testar cada constraint com um `INSERT` inválido de verdade**, não só aplicar a migration
-- [ ] Testar o `down.sql` revertendo e reaplicando
-- [ ] Resolver a pendência P6 (`cmd/migrate`) para o compose ficar coerente
+- [ ] Ler `CONTEXTO.md`, `PLANO.md` §3 (Fase 5) e `docs/evidencias/FASE_4.md`
+- [ ] Confirmar que os containers estão de pé (`docker ps`) e o schema aplicado (`bin/migrate.exe version`)
+- [ ] Criar `internal/platform/canonicaljson` (pendência da Fase 3) antes dos repositórios
+- [ ] Implementar pool + `uow.Run` com `ReadCommitted` + `FOR UPDATE` na carteira
+- [ ] Implementar os repositórios cobrindo **todas** as colunas do schema da Fase 4
+- [ ] Classificar erro do `pgx` (`23505` → `ErrConflict`) — o unique do nosso schema **é** a idempotência funcionando, não um erro de banco
+- [ ] Testar de verdade: `SKIP LOCKED` com duas conexões, lost update, atomicidade (rollback não deixa resíduo)
 - [ ] Aceitar contestação do usuário: se ele questionar e estiver certo, **admitir e corrigir**
-- [ ] Depois de aprovado, commitar: `feat(db): adiciona schema inicial com constraints de saldo, ledger imutavel e idempotencia`
+- [ ] Depois de aprovado, commitar: `feat(postgres): adiciona repositorios pgx com unit of work e locking por carteira`
 
-**As Fases 0 a 3 estão commitadas e validadas. Não revalide nem recommite.**
+**As Fases 0 a 4 estão commitadas e validadas. Não revalide nem recommite.**
