@@ -402,9 +402,9 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` feito e **validado por te
 **Dependência nova:** `github.com/jackc/pgx/v5 v5.11.0`. O `testcontainers-go` foi baixado mas **não é usado**: os testes de integração apontam para o Postgres do compose via `TEST_DATABASE_URL` (mais simples e sem Docker-in-Docker). Remover a dependência não usada fica para o `go mod tidy` final.
 
 ### FASE 6 — Caso de uso (aplicação) `wagering.Service` (D1, ~4h) 🧠 coração
-> **Em andamento — bloco 6a CONCLUÍDO** (commit da Fase 6a): `Process` completo,
-> com unitários em memória e integração contra o Postgres real. Próximo bloco: 6b
-> (`OpenWallet`), depois 6c (leituras + `Reconcile`).
+> **Em andamento — blocos 6a e 6b CONCLUÍDOS** (`Process` e `OpenWallet`), com
+> unitários em memória e integração contra o Postgres real. Próximo bloco: 6c
+> (leituras + `Reconcile`).
 - [x] `Process(ctx, Request) (Result, error)`: **1 transação** para idempotência + domínio + ledger + outbox (+ inbox, quando o consumo existir)
   1. [x] normaliza, valida `Idempotency-Key`; calcula o hash canônico dos campos de negócio (exclui chave e metadados de transporte)
   2. [x] replay (hash igual) → resultado persistido; conflito (hash diferente / externalID com outra chave) → `409`
@@ -414,12 +414,12 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` feito e **validado por te
   6. [x] `INSERT` transação + `Save` com `PROCESSED`/`REJECTED`/`PENDING_REFERENCE` + resultado + `failureCode`
   7. [x] `INSERT` outbox (`Processed`/`Rejected`/`BalanceChanged`/`PendingReference`)
   8. [x] commit → só então o chamador pode publicar (publisher lê a outbox; **nunca** publicamos inline)
-- [ ] `OpenWallet(ctx, req)` (interno): cria carteira + `OPENING PROCESSED` + crédito + 2 eventos **no mesmo commit**; zero ⇒ sem `OPENING`/ledger/eventos
+- [x] `OpenWallet(ctx, req)` (interno): cria carteira + `OPENING PROCESSED` + crédito + 2 eventos **no mesmo commit**; zero ⇒ sem `OPENING`/ledger/eventos. Version da carteira = **1** (o lançamento de abertura parte de `0.00`; **não** se chama `Credit`). Migration 000002 tirou a exigência de jogo/rodada de `OPENING`
 - [ ] `GetTransaction`, `GetByProviderExternalID` (com checagem de provedor), `GetWallet`, `ListLedger(cursor)`, `Reconcile(walletID)`
 - [ ] `Reconcile`: soma do ledger (incluindo `OPENING`) vs. saldo armazenado em **visão consistente** (`REPEATABLE READ`/snapshot único) → `difference = stored - calculated`, `checkedEntries`; divergência ⇒ log + métrica + resposta; **não altera saldo**
 - [x] Política de retry para transitório **e conflito** (máx 3 tentativas, backoff curto, envolvendo a transação inteira) → **esgotou = erro transitório (503), sem linha `FAILED`** (decisão revista: sem commit não existe linha para marcar; `MarkFailed` fica para onde a linha já existe — worker de referências)
-- [x] Testes unitários com **fakes em memória** (ports) com semântica real de transação: cada tipo de operação, replay (com o saldo original), conflito, referência ausente/rejeitada/divergente, dupla reversão, `ROLLBACK_INSUFFICIENT_FUNDS`, `LOSS` sem ledger, atomicidade e retentativa
-- [x] Testes de integração: mesmo `Process` contra Postgres real — cenário do README, 12 disparos da mesma aposta, rollback real com a outbox quebrada, idempotência sobrevivendo a serviço novo
+- [x] Testes unitários com **fakes em memória** (ports) com semântica real de transação: cada tipo de operação, replay (com o saldo original), conflito, referência ausente/rejeitada/divergente, dupla reversão, `ROLLBACK_INSUFFICIENT_FUNDS`, `LOSS` sem ledger, abertura com/sem saldo, duplicada, atomicidade e retentativa
+- [x] Testes de integração: mesmo `Process` contra Postgres real — cenário do README, 12 disparos da mesma aposta, rollback real com a outbox quebrada, idempotência sobrevivendo a serviço novo, abertura com e sem saldo, carteira duplicada
 
 ### FASE 7 — HTTP + Auth (D1 noite → D2 manhã, ~4h)
 - [ ] `chi` router + middlewares: `Recoverer`, `correlationID`, `logging` (slog JSON), `metrics`, `timeout`, `auth`

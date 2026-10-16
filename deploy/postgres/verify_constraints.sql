@@ -103,6 +103,7 @@ END $$;
 DO $$
 DECLARE
     w UUID := '11111111-1111-1111-1111-111111111111';
+    id_open UUID := gen_random_uuid();
 BEGIN
     BEGIN
         INSERT INTO wager_transactions (id, wallet_id, player_id, kind, amount_minor, currency,
@@ -165,6 +166,31 @@ BEGIN
         RAISE EXCEPTION 'FALHOU: OPENING com provider_id foi aceita';
     EXCEPTION WHEN check_violation THEN
         RAISE NOTICE 'OPENING nao aceita metadados de provedor: RECUSADO (ok)';
+    END;
+
+    -- OPENING com jogo e rodada VAZIOS é o caso LEGÍTIMO (README §6.3: rodada e
+    -- jogo não se aplicam a essa origem; migration 000002). Este é o único caso
+    -- positivo do script: ele confirma que a constraint afrouxou só para OPENING.
+    BEGIN
+        INSERT INTO wager_transactions (id, wallet_id, player_id, kind, status, amount_minor, currency,
+            game_id, round_id, idempotency_key, payload_hash)
+        VALUES (id_open, w, 'player-1', 'OPENING', 'PROCESSED', 100000, 'BRL', '', '', 'k-open-vazio', 'h');
+        RAISE NOTICE 'OPENING sem jogo e sem rodada: ACEITO (ok)';
+        DELETE FROM wager_transactions WHERE id = id_open;
+    EXCEPTION WHEN check_violation THEN
+        RAISE EXCEPTION 'FALHOU: OPENING sem jogo e sem rodada foi recusada';
+    END;
+
+    -- ...e continua RECUSANDO para as operações externas, que são as que têm
+    -- jogo e rodada. Sem este caso, o afrouxamento acima poderia ter aberto a
+    -- porteira sem ninguém perceber.
+    BEGIN
+        INSERT INTO wager_transactions (id, wallet_id, player_id, kind, amount_minor, currency,
+            game_id, round_id, idempotency_key, payload_hash, provider_id, external_transaction_id)
+        VALUES (gen_random_uuid(), w, 'player-1', 'BET', 100, 'BRL', '', 'r', 'k-sem-jogo', 'h', 'p', 'e');
+        RAISE EXCEPTION 'FALHOU: BET sem game_id foi aceita';
+    EXCEPTION WHEN check_violation THEN
+        RAISE NOTICE 'operacao externa exige game_id e round_id: RECUSADO (ok)';
     END;
 
     BEGIN

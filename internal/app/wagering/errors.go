@@ -36,6 +36,11 @@ var (
 	// a linha da transação tem chave estrangeira para a carteira, então não há
 	// onde gravá-la.
 	ErrWalletNotFound = domainerrors.New(CodeWalletNotFound, "carteira não encontrada")
+
+	// ErrWalletAlreadyExists é a segunda abertura de carteira para o mesmo
+	// (jogador, moeda). A unicidade é do banco; este erro existe para o cliente
+	// receber a explicação, em vez de um 23505 cru.
+	ErrWalletAlreadyExists = domainerrors.New(CodeWalletConflict, "já existe carteira para este jogador nesta moeda")
 )
 
 // invalid marca requisição que o cliente corrige e reenvia com a mesma chave.

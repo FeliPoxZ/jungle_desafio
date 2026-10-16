@@ -302,8 +302,27 @@ Cinco tabelas: `wallets`, `wager_transactions`, `wallet_ledger_entries`,
 | Índice | 17 | leitura por provedor, por carteira, fila da outbox, pendências |
 | Trigger | 5 | `updated_at` automático e imutabilidade do ledger |
 
-**30 operações inválidas foram testadas e todas recusadas pelo banco**
+**31 operações inválidas foram testadas e todas recusadas pelo banco**, mais um
+caso POSITIVO que confirma que o afrouxamento vale só para `OPENING`
 (`deploy/postgres/verify_constraints.sql`).
+
+### [DECISÃO] `OPENING` não pertence a jogo nem a rodada (migration 000002)
+
+O schema inicial exigia `game_id` e `round_id` não vazios para **toda** linha. Isso
+contradizia o README §6.3 — "rodada, jogo e referência não se aplicam a essa
+origem" — e a consequência não era teórica: abrir carteira exigiria **inventar**
+um jogo e uma rodada para caber no contrato, gravando dado falso no histórico
+financeiro.
+
+A migration 000002 troca a constraint: as operações **externas** continuam
+obrigadas a ter os dois, e `OPENING` não. O domínio acompanha (a exigência virou
+condicional a `kind.IsInternal()`, e `OPENING` com jogo ou rodada é recusado).
+O que o README pede do schema — "distinguir operações internas e externas" —
+passou a valer também para esses dois campos.
+
+A reversão da migration pressupõe que não exista `OPENING` com jogo/rodada vazios;
+se existir, o `ADD CONSTRAINT` falha, e isso é proposital: recusar é melhor do que
+apagar ou inventar dado financeiro para a constraint antiga voltar a valer.
 
 ### [DECISÃO] Imutabilidade do ledger por trigger, não por convenção
 
@@ -554,13 +573,11 @@ da mesma carteira precisam ser processados em ordem.
 
 ---
 
-## 9. Caso de uso da aplicação `[PARCIAL]` — Fase 6a (`Process`)
+## 9. Caso de uso da aplicação `[PARCIAL]` — Fase 6 (`Process` e `OpenWallet`)
 
-### O que existe hoje
-
-`internal/app/wagering`: `Process(ctx, Request) (Result, error)` — a operação
-externa ponta a ponta, em UMA transação. `OpenWallet`, as consultas e o
-`Reconcile` entram nos blocos 6b/6c.
+`internal/app/wagering`: `Process(ctx, Request)` — a operação externa ponta a
+ponta, em UMA transação — e `OpenWallet(ctx, OpenWalletRequest)` — a abertura
+interna de carteira. As consultas e o `Reconcile` entram no bloco 6c.
 
 **Rejeição de negócio é desfecho, não erro.** `Result` carrega `Status`,
 `FailureCode` e o saldo (quando existe); `error` fica para o que impede a
@@ -653,12 +670,56 @@ com um Unit of Work em memória — com semântica real de transação (cópia d
 e troca só no fim sem erro), porque senão "falha no meio não deixa resíduo" seria
 uma afirmação vazia.
 
+### Abertura de carteira (`OpenWallet`)
+
+A carteira e a abertura financeira entram no **mesmo commit**: `wallets`,
+`wager_transactions` (a `OPENING`), `wallet_ledger_entries` e `outbox_events`. Uma
+falha no evento desfaz a carteira também — provado por teste de integração com a
+transação real e só o adaptador da outbox quebrado.
+
+```
+1. chave de idempotência → GetOpeningByIdempotencyKey (unicidade é da CHAVE, não do par provedor+chave)
+2. (jogador, moeda) já tem carteira? → WALLET_CONFLICT
+3. NewWallet com o saldo inicial e versão 1 → INSERT
+4. saldo zero? → acabou aqui: sem OPENING, sem ledger, sem eventos
+5. OPENING: wagering.New (sem provedor, sem ID externo, sem jogo, sem rodada) → INSERT
+6. lançamento de crédito partindo de ZERO → Ledger.Insert
+7. MarkProcessed(saldo inicial) + Save
+8. dois eventos: Processed + WalletBalanceChanged (walletVersion = 1)
+9. COMMIT
+```
+
+### [DECISÃO] A abertura NÃO chama `credit` na carteira
+
+`wallet.NewWallet` já nasce com o saldo inicial. Chamar `Credit` faria o saldo
+virar o **dobro** e a versão ir para **2** — contrariando o README §9, que fixa a
+versão da carteira nessa abertura em `1`.
+
+O que faltava não era movimentar a carteira, era **registrar de onde o saldo
+veio**: `ledger.NewEntry(..., CREDIT, inicial, balanceBefore = 0.00, ...)`. A
+reconciliação do enunciado (abertura `1000.00` + `BET` `25.00` → `975.00` com
+`checkedEntries: 2`) só fecha assim.
+
+### [DECISÃO] O replay da abertura devolve a carteira como ela está
+
+O replay de uma **operação** devolve o resultado daquela operação (um fato
+imutável: "aquela aposta debitou 25.00 e deixou 975.00"). O replay da **abertura**
+devolve a carteira com o saldo e a versão de AGORA, com `IdempotentReplay: true`.
+
+O motivo é a natureza do recurso: a carteira é mutável, e representá-la com o
+saldo de ontem mentiria sobre o recurso que o cliente foi consultar. O que o
+`IdempotentReplay` diz é que nada foi criado desta vez.
+
+**Consequência conhecida:** abrir com saldo **zero** não cria `OPENING` (o README
+manda não criar), então não há registro de idempotência para essa abertura. O
+reenvio da mesma chave cai na unicidade da carteira e recebe `WALLET_CONFLICT` —
+que é exatamente a resposta prescrita para carteira duplicada.
+
 ### O que falta na Fase 6
 
-`OpenWallet` (6b: carteira + `OPENING` + crédito + dois eventos no mesmo commit;
-saldo zero não cria `OPENING`), e as leituras + `Reconcile` (6c: `GetTransaction`,
-`GetByProviderExternalID`, `GetWallet`, `ListLedger` com cursor, reconciliação em
-visão consistente, sem alterar saldo).
+As leituras e a reconciliação (6c): `GetTransaction`, `GetByProviderExternalID`
+(com isolamento de provedor), `GetWallet`, `ListLedger` com cursor, e `Reconcile`
+em visão consistente — sem alterar saldo.
 
 ---
 
@@ -794,10 +855,14 @@ docker exec -i jungleg-postgres psql -U jungleg -d jungleg < deploy/postgres/ver
 
 **Números atuais:** 574 casos no domínio (Fases 1–3) + **38** testes de
 persistência (Fase 5: 13 de unidade, incluindo os 3 de contrato e classificação, e
-25 de integração) + 3 de `idgen` + **32 casos** do caso de uso (Fase 6a) + **15
-casos** de integração do caminho completo. `go test -race` verde nos **13 pacotes**
-de unidade e nos 2 de integração. Cobertura: `money` 97,9%, `wallet` 99,0%,
-`wagering` 100,0%.
+25 de integração) + 3 de `idgen` + o caso de uso (Fase 6) + integração do caminho
+completo. `go test -race` verde nos **13 pacotes** de unidade e nos 2 de
+integração. Cobertura: `money` 97,9%, `wallet` 99,0%, `wagering` 100,0%.
+
+**Migrations:** duas (`000001_init`, `000002_opening_sem_jogo_e_rodada`). O binário
+`bin/migrate.exe` carrega as migrations **embutidas** (`go:embed`): depois de criar
+uma migration nova, é preciso **rebuidá-lo** (`go build -o bin/migrate.exe ./cmd/migrate`)
+— um binário velho responde "schema já está atualizado" e não aplica nada.
 
 Os dois pacotes de integração usam o MESMO banco de teste e truncam tabelas.
 Como `go test ./...` roda pacotes em processos paralelos, cada `TestMain` toma um

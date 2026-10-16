@@ -28,7 +28,7 @@ func (s *Service) rejeitar(
 	if err := r.Transactions.Save(ctx, tx); err != nil {
 		return Result{}, err
 	}
-	if err := s.emitirRejeicao(ctx, r, tx, req, now); err != nil {
+	if err := s.emitirRejeicao(ctx, r, tx, req.CorrelationID, req.CausationID, now); err != nil {
 		return Result{}, err
 	}
 	return Result{TransactionID: tx.ID(), Status: tx.Status(), FailureCode: failureCode}, nil
@@ -52,7 +52,7 @@ func (s *Service) marcarPendente(
 	if err := r.Transactions.Save(ctx, tx); err != nil {
 		return Result{}, err
 	}
-	if err := s.emitirPendencia(ctx, r, tx, req, now); err != nil {
+	if err := s.emitirPendencia(ctx, r, tx, req.CorrelationID, req.CausationID, now); err != nil {
 		return Result{}, err
 	}
 	return Result{TransactionID: tx.ID(), Status: tx.Status()}, nil

@@ -334,36 +334,48 @@ func TestNewRegrasDeOrigem(t *testing.T) {
 		payload   any
 		encode    PayloadEncoder
 		amount    string
-		queroEr   bool
-		code      string
+		// comJogoERodada força jogo e rodada preenchidos mesmo em OPENING, para
+		// os casos que testam justamente a recusa (OPENING não pertence a jogo).
+		comJogoERodada bool
+		queroEr        bool
+		code           string
 	}{
-		{"BET valida", KindBet, opProviderID, opExternalID, opKey, "", payloadTeste{"25.00", "BRL"}, encodeCanonical, "25.00", false, ""},
-		{"WIN valida", KindWin, opProviderID, opExternalID, opKey, "", payloadTeste{"25.00", "BRL"}, encodeCanonical, "25.00", false, ""},
-		{"LOSS com zero", KindLoss, opProviderID, opExternalID, opKey, "", payloadTeste{"0.00", "BRL"}, encodeCanonical, "0.00", false, ""},
-		{"REFUND com referencia", KindRefund, opProviderID, opExternalID, opKey, "ext-bet", payloadTeste{"25.00", "BRL"}, encodeCanonical, "25.00", false, ""},
-		{"ROLLBACK com referencia", KindRollback, opProviderID, opExternalID, opKey, "ext-bet", payloadTeste{"25.00", "BRL"}, encodeCanonical, "25.00", false, ""},
-		{"OPENING interna valida", KindOpening, "", "", opKey, "", nil, nil, "1000.00", false, ""},
+		{"BET valida", KindBet, opProviderID, opExternalID, opKey, "", payloadTeste{"25.00", "BRL"}, encodeCanonical, "25.00", false, false, ""},
+		{"WIN valida", KindWin, opProviderID, opExternalID, opKey, "", payloadTeste{"25.00", "BRL"}, encodeCanonical, "25.00", false, false, ""},
+		{"LOSS com zero", KindLoss, opProviderID, opExternalID, opKey, "", payloadTeste{"0.00", "BRL"}, encodeCanonical, "0.00", false, false, ""},
+		{"REFUND com referencia", KindRefund, opProviderID, opExternalID, opKey, "ext-bet", payloadTeste{"25.00", "BRL"}, encodeCanonical, "25.00", false, false, ""},
+		{"ROLLBACK com referencia", KindRollback, opProviderID, opExternalID, opKey, "ext-bet", payloadTeste{"25.00", "BRL"}, encodeCanonical, "25.00", false, false, ""},
+		{"OPENING interna valida", KindOpening, "", "", opKey, "", nil, nil, "1000.00", false, false, ""},
 
-		{"BET sem providerID", KindBet, "", opExternalID, opKey, "", payloadTeste{}, encodeCanonical, "25.00", true, CodeInvalidTransaction},
-		{"BET sem externalID", KindBet, opProviderID, "", opKey, "", payloadTeste{}, encodeCanonical, "25.00", true, CodeInvalidTransaction},
-		{"BET sem idempotencyKey", KindBet, opProviderID, opExternalID, "", "", payloadTeste{}, encodeCanonical, "25.00", true, CodeInvalidTransaction},
-		{"BET sem payload", KindBet, opProviderID, opExternalID, opKey, "", nil, encodeCanonical, "25.00", true, CodeInvalidTransaction},
-		{"BET sem encoder", KindBet, opProviderID, opExternalID, opKey, "", payloadTeste{}, nil, "25.00", true, CodeInvalidTransaction},
-		{"REFUND sem referencia", KindRefund, opProviderID, opExternalID, opKey, "", payloadTeste{}, encodeCanonical, "25.00", true, CodeMissingReference},
-		{"ROLLBACK sem referencia", KindRollback, opProviderID, opExternalID, opKey, "", payloadTeste{}, encodeCanonical, "25.00", true, CodeMissingReference},
-		{"OPENING com providerID", KindOpening, opProviderID, "", opKey, "", nil, nil, "1000.00", true, CodeInternalKind},
-		{"OPENING com externalID", KindOpening, "", opExternalID, opKey, "", nil, nil, "1000.00", true, CodeInternalKind},
-		{"OPENING sem chave", KindOpening, "", "", "", "", nil, nil, "1000.00", true, CodeInvalidTransaction},
-		{"tipo desconhecido", Kind("DEPOSIT"), opProviderID, opExternalID, opKey, "", payloadTeste{}, encodeCanonical, "25.00", true, CodeInvalidTransaction},
-		{"BET com zero", KindBet, opProviderID, opExternalID, opKey, "", payloadTeste{}, encodeCanonical, "0.00", true, FailureCodeZeroAmount},
-		{"LOSS com valor", KindLoss, opProviderID, opExternalID, opKey, "", payloadTeste{}, encodeCanonical, "0.01", true, FailureCodeZeroAmount},
+		{"BET sem providerID", KindBet, "", opExternalID, opKey, "", payloadTeste{}, encodeCanonical, "25.00", false, true, CodeInvalidTransaction},
+		{"BET sem externalID", KindBet, opProviderID, "", opKey, "", payloadTeste{}, encodeCanonical, "25.00", false, true, CodeInvalidTransaction},
+		{"BET sem idempotencyKey", KindBet, opProviderID, opExternalID, "", "", payloadTeste{}, encodeCanonical, "25.00", false, true, CodeInvalidTransaction},
+		{"BET sem payload", KindBet, opProviderID, opExternalID, opKey, "", nil, encodeCanonical, "25.00", false, true, CodeInvalidTransaction},
+		{"BET sem encoder", KindBet, opProviderID, opExternalID, opKey, "", payloadTeste{}, nil, "25.00", false, true, CodeInvalidTransaction},
+		{"REFUND sem referencia", KindRefund, opProviderID, opExternalID, opKey, "", payloadTeste{}, encodeCanonical, "25.00", false, true, CodeMissingReference},
+		{"ROLLBACK sem referencia", KindRollback, opProviderID, opExternalID, opKey, "", payloadTeste{}, encodeCanonical, "25.00", false, true, CodeMissingReference},
+		{"OPENING com providerID", KindOpening, opProviderID, "", opKey, "", nil, nil, "1000.00", false, true, CodeInternalKind},
+		{"OPENING com externalID", KindOpening, "", opExternalID, opKey, "", nil, nil, "1000.00", false, true, CodeInternalKind},
+		{"OPENING com jogo e rodada", KindOpening, "", "", opKey, "", nil, nil, "1000.00", true, true, CodeInternalKind},
+		{"OPENING sem chave", KindOpening, "", "", "", "", nil, nil, "1000.00", false, true, CodeInvalidTransaction},
+		{"tipo desconhecido", Kind("DEPOSIT"), opProviderID, opExternalID, opKey, "", payloadTeste{}, encodeCanonical, "25.00", false, true, CodeInvalidTransaction},
+		{"BET com zero", KindBet, opProviderID, opExternalID, opKey, "", payloadTeste{}, encodeCanonical, "0.00", false, true, FailureCodeZeroAmount},
+		{"LOSS com valor", KindLoss, opProviderID, opExternalID, opKey, "", payloadTeste{}, encodeCanonical, "0.01", false, true, FailureCodeZeroAmount},
 	}
 
 	for _, c := range casos {
 		t.Run(c.nome, func(t *testing.T) {
+			// OPENING é abertura de carteira: jogo e rodada vão VAZIOS, como a
+			// aplicação faz. Os casos que passam jogo e rodada de propósito
+			// (comJogoERodada) existem para provar que a recusa acontece.
+			game, round := opGameID, opRoundID
+			if c.kind.IsInternal() && !c.comJogoERodada {
+				game, round = "", ""
+			}
+
 			tx, err := New(
 				"txn-1", "w-1", "p-1", c.kind, dinheiro(t, c.amount, "BRL"),
-				opGameID, opRoundID, c.key, c.provider, c.external, c.reference,
+				game, round, c.key, c.provider, c.external, c.reference,
 				c.payload, c.encode, opNow,
 			)
 			if c.queroEr {

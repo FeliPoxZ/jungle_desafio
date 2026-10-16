@@ -41,6 +41,10 @@ const (
 	// divergente é requisição incoerente.
 	CodeWalletPlayerMismatch = "WALLET_PLAYER_MISMATCH"
 
+	// CodeWalletConflict é a tentativa de abrir uma segunda carteira para o mesmo
+	// par (jogador, moeda). Não é erro de entrada: é a unicidade funcionando.
+	CodeWalletConflict = "WALLET_CONFLICT"
+
 	// CodeReferenceNotFound é a referência que nunca chegou, com o TTL de
 	// tentativas esgotado. Produzido pelo worker de referências (Fase 9).
 	CodeReferenceNotFound = "REFERENCE_NOT_FOUND"

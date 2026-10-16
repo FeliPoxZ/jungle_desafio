@@ -613,9 +613,11 @@ func TestTxnOpeningIdempotencia(t *testing.T) {
 	w := carteiraNova(t, "player-1", "1000.00")
 
 	novaOpening := func(chave string) *wagering.WagerTransaction {
+		// OPENING não pertence a jogo nem a rodada (README §6.3): jogo e rodada
+		// vão vazios, e o schema acompanha desde a migration 000002.
 		tx, err := wagering.New(
 			wagering.TransactionID(uuid.NewString()), w.ID(), w.PlayerID(),
-			wagering.KindOpening, brl(t, "1000.00"), "game-1", "round-1",
+			wagering.KindOpening, brl(t, "1000.00"), "", "",
 			chave, "", "", "", nil, nil, time.Now().UTC(),
 		)
 		if err != nil {

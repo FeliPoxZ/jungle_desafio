@@ -65,7 +65,7 @@ func (s *Service) Process(ctx context.Context, req Request) (Result, error) {
 		return Result{}, err
 	}
 
-	hash, err := s.hashDe(req)
+	hash, err := s.hashDe(req.payload())
 	if err != nil {
 		return Result{}, err
 	}
@@ -83,8 +83,12 @@ func (s *Service) Process(ctx context.Context, req Request) (Result, error) {
 }
 
 // hashDe calcula o hash canônico do payload de negócio.
-func (s *Service) hashDe(req Request) (wagerdomain.Hash, error) {
-	bruto, err := canonicaljson.Hash(req.payload())
+//
+// Recebe o payload já projetado (e não a requisição) porque as duas origens —
+// operação externa e abertura de carteira — têm projeções diferentes, e o hash
+// precisa ser do MESMO conteúdo sempre.
+func (s *Service) hashDe(payload any) (wagerdomain.Hash, error) {
+	bruto, err := canonicaljson.Hash(payload)
 	if err != nil {
 		return "", fmt.Errorf("wagering: calculando o hash do payload: %w", err)
 	}
@@ -270,7 +274,17 @@ func (s *Service) executar(ctx context.Context, r ports.Repos, req Request, hash
 	}
 
 	// 11. Eventos na outbox, na MESMA transação.
-	if err := s.emitirProcessado(ctx, r, tx, req, saldo, mov, now); err != nil {
+	//
+	// Sem movimentação (LOSS) não há lançamento, e sem lançamento não há
+	// WalletBalanceChanged: a entrada é nil, e não um Movement zerado.
+	var entrada *ledger.Entry
+	versaoDaCarteira := carteira.Version()
+	if req.Kind.MovesMoney() {
+		e := mov.Entry()
+		entrada = &e
+		versaoDaCarteira = mov.Wallet().Version()
+	}
+	if err := s.emitirProcessado(ctx, r, tx, req.CorrelationID, req.CausationID, saldo, entrada, versaoDaCarteira, now); err != nil {
 		return Result{}, err
 	}
 

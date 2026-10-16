@@ -138,7 +138,7 @@ func validateNew(
 	if err := kind.ValidateAmount(amount.Minor()); err != nil {
 		return err
 	}
-	if err := validateOrigin(kind, providerID, externalTransactionID, idempotencyKey, payload, encode); err != nil {
+	if err := validateOrigin(kind, providerID, externalTransactionID, gameID, roundID, idempotencyKey, payload, encode); err != nil {
 		return err
 	}
 	if kind.RequiresReference() {
@@ -149,11 +149,18 @@ func validateNew(
 			}
 		}
 	}
-	if strings.TrimSpace(gameID) == "" {
-		return invalid("gameID é obrigatório")
-	}
-	if strings.TrimSpace(roundID) == "" {
-		return invalid("roundID é obrigatório")
+	// Jogo e rodada são da operação EXTERNA. `OPENING` é abertura de carteira:
+	// não pertence a jogo nem a rodada nenhuma (README §6.3), e exigi-los aqui
+	// obrigava a inventar um valor para caber no contrato. O schema acompanha:
+	// `wager_transactions_ids_not_blank` (migration 000002) só cobra os dois das
+	// operações externas.
+	if !kind.IsInternal() {
+		if strings.TrimSpace(gameID) == "" {
+			return invalid("gameID é obrigatório")
+		}
+		if strings.TrimSpace(roundID) == "" {
+			return invalid("roundID é obrigatório")
+		}
 	}
 	if now.IsZero() {
 		return invalid("instante de criação é obrigatório")
@@ -162,12 +169,18 @@ func validateNew(
 }
 
 // validateOrigin aplica as regras que distinguem operação interna de externa.
-func validateOrigin(kind Kind, providerID, externalTransactionID, idempotencyKey string, payload any, encode PayloadEncoder) error {
+func validateOrigin(kind Kind, providerID, externalTransactionID, gameID, roundID, idempotencyKey string, payload any, encode PayloadEncoder) error {
 	if kind.IsInternal() {
 		if strings.TrimSpace(providerID) != "" || strings.TrimSpace(externalTransactionID) != "" {
 			return &Error{
 				Code:    CodeInternalKind,
 				Message: "OPENING é operação interna e não aceita provedor nem identificador externo",
+			}
+		}
+		if strings.TrimSpace(gameID) != "" || strings.TrimSpace(roundID) != "" {
+			return &Error{
+				Code:    CodeInternalKind,
+				Message: "OPENING é abertura de carteira e não pertence a jogo nem a rodada",
 			}
 		}
 		// A chave de idempotência continua obrigatória: é ela que impede
