@@ -6,12 +6,11 @@
 >
 > Antes de responder qualquer coisa, leia também, nesta ordem:
 > 1. `CONTEXTO.md` (raiz) — estado geral, ambiente, decisões congeladas, pendências
-> 2. `PLANO.md` §3 — checklist por fase, com a Fase 2 detalhada
-> 3. `docs/evidencias/FASE_1.md` — provas da fase recém-concluída
-> 4. `docs/INFRAESTRUTURA.md` — o que são Postgres/Keycloak/SQS/LocalStack/Docker
+> 2. `PLANO.md` §3 — checklist por fase, com a Fase 4 detalhada
+> 3. `docs/evidencias/FASE_1.md`, `FASE_2.md` e `FASE_3.md` — provas do que já funciona
+> 4. `docs/LEDGER_VS_WALLET.md` — a distinção central do domínio financeiro
 >
-> **Não comece a codar sem ler o método de trabalho (seção 3). Ele foi ajustado depois de
-> várias correções do usuário e desrespeitá-lo quebra a confiança da sessão.**
+> **Não comece a codar sem ler o método de trabalho (seção 3).**
 
 ---
 
@@ -41,81 +40,62 @@ solução + `ARCHITECTURE.md`.
 | Fase 0 (fundação + infraestrutura) | ✅ **CONCLUÍDA E VALIDADA** com containers reais |
 | Fase 1 (`Money`) | ✅ **CONCLUÍDA E VALIDADA** — 384 casos, 97,9% de cobertura, 10/10 no README |
 | Fase 2 (`Wallet` + `LedgerEntry`) | ✅ **CONCLUÍDA E VALIDADA** — 63 casos, 99,0% de cobertura |
-| Fase 3 (`WagerTransaction`) | ⬅ **PRÓXIMA** |
-| Fases 4–12 | ⬜ Não iniciadas (ver checklist no `PLANO.md` §3) |
+| Fase 3 (`WagerTransaction`) | ✅ **CONCLUÍDA E VALIDADA** — 127 casos, **100,0%** de cobertura |
+| Fase 4 (schema + migrations) | ⬅ **PRÓXIMA** |
+| Fases 5–12 | ⬜ Não iniciadas (ver checklist no `PLANO.md` §3) |
 
-### Já funciona e está provado
+**Total do domínio: 574 casos verdes, `go test -race ./...` verde nos 7 pacotes.**
 
-- **Fase 0:** `go test -race ./...` verde; API sobe (`/health/live` → `{"status":"UP"}`,
-  `/health/ready`, `/metrics` com 13 métricas); 3 containers `healthy`
-  (`jungleg-postgres`, `jungleg-keycloak`, `jungleg-localstack`); 4 filas SQS com redrive
-  `maxReceiveCount=5`; realm do Keycloak importado e **token real emitido** com
-  `iss`/`aud`/`provider_id`/`roles` corretos. Evidências: `docs/evidencias/FASE_0.md`
-- **Fase 1:** `internal/domain/money` completo — `Currency`, `Money`, `Parse`, `Zero`,
-  `Add`, `Sub`, `Neg`, `Cmp`, `Equal`, `Sign`, `IsZero/IsNegative/IsPositive`, `String`,
-  `MarshalJSON`/`UnmarshalJSON` e erros de domínio com `Code` estável. **384 casos verdes**
-  (65 testes + 319 subtests), cobertura **97,9%** (24 de 27 funções em 100%),
-  `go build`/`go vet`/`gofmt` limpos, `go test -race ./...` verde nos 5 pacotes.
-  **10 de 10 itens conformes** no README §6.1 + §Encapsulamento. O item eliminatório
-  "sem ponto flutuante" virou teste automatizado de AST. Evidências:
-  `docs/evidencias/FASE_1.md`
+### O domínio está completo (Fases 1–3)
 
-### Histórico de commits (mais recente primeiro)
+| Pacote | O que oferece |
+| --- | --- |
+| `internal/domain/money` | Value object monetário: `int64` em unidades mínimas, escala 2, sem float, limite `9_000_000_000_000_000`, aritmética com guarda de overflow nos dois sentidos, comparação, JSON |
+| `internal/domain/wallet` | Carteira (saldo, versão, instantes) + ledger append-only. `apply` é o único ponto que muda saldo; valor zero não gera lançamento |
+| `internal/domain/wagering` | Transação de aposta: 6 tipos, 5 estados com máquina de transições, validação por origem (interna × externa), `failureCode`, eventos de domínio |
 
-```
-98fbee6 feat(wallet): adiciona carteira com debito/credito e ledger append-only   ← FASE 2
-442a025 docs: registra o hash do commit da Fase 1 no plano e no handoff
-b046e6a feat(money): completa o value object com aritmetica, comparacao e serializacao  ← FASE 1 (Blocos 3–7)
-3172772 bloco 2 monet incompleto                       ← Bloco 2 (mensagem a rever)
-b1bd10d docs(handoff): atualiza PROXIMO_PASSO para o Bloco 2 da Fase 1
-3a36aec feat(money): adiciona o value object Currency com erro de dominio tipado   ← Bloco 1
-7e43206 docs: adiciona PROXIMO_PASSO.md (handoff para continuar na Fase 1)
-f1ec2da docs(plano): marca a Fase 0 como concluida e validada com infraestrutura real
-1eef5b2 chore(setup): fundacao do projeto com Fx, config validada, HTTP e observabilidade
-```
-
-> ✅ **As Fases 1 e 2 estão commitadas e validadas. Não revalide nem recommite.** Vá direto
-> para a **Fase 3** (seção 6).
+**O que o domínio NÃO faz (e é Fase 5/6):** movimentar dinheiro por operação, consultar
+idempotência existente, comparar metadados com a referência carregada, publicar evento.
 
 ---
 
 ## 3. ⭐ MÉTODO DE TRABALHO (NÃO NEGOCIÁVEL)
 
-O usuário pediu explicitamente e **várias vezes** corrigiu a IA por ir rápido demais, jogar
-configuração/código sem explicar, ou escrever código questionável. O ritmo combinado é:
-
 | Regra | Como aplicar |
 | --- | --- |
-| **MODO B: linha a linha, juntos** | A IA explica um **bloco pequeno** (~10–25 linhas), **o usuário digita**, e só então vem o próximo bloco. A IA **não escreve o código do núcleo no arquivo** — o usuário escreve |
+| **MODO B: linha a linha, juntos** | A IA explica um **bloco pequeno**, o usuário digita, e só então vem o próximo. A IA **não escreve o código do núcleo no arquivo** |
 | **Explicar ANTES de escrever** | Regra, conceito, exigência do enunciado e o "porquê" vêm **antes** do código |
-| **Um bloco por vez, com checkpoint** | Nunca entregar vários arquivos ou fases de uma vez. Esperar o usuário dizer "bloco N pronto" |
+| **Um bloco por vez, com checkpoint** | Esperar o usuário dizer "bloco N pronto" |
 | **O núcleo é do usuário** | `Money`, `Wallet`, `LedgerEntry`, `WagerTransaction` são escritos por ELE. Infraestrutura (compose, migrations, repos, workers, testes de integração) a IA pode escrever |
-| **Perguntar antes de avançar** | Se o usuário não entendeu, PARAR e explicar de novo |
-| **Linguagem** | Português do Brasil, tom de mentor sênior, analogias concretas, tabelas comparativas |
-| **Aceitar contestação** | ⭐ O usuário **questiona o código** e isso é bom. Quando ele contestar, avaliar com honestidade: se ele estiver certo, **admitir e corrigir**, explicando o motivo do erro. Nunca defender código ruim |
-| **Quando usar `write`/`edit`** | Preferir que o usuário digite. Usar `write` apenas quando ele pedir explicitamente. Nunca "corrigir" o arquivo dele em silêncio |
-| **Formato da entrega de bloco** | 1) objetivo em uma frase 2) o problema antes do código 3) decisões de design e o porquê (tabela) 4) o código para digitar 5) tabela explicando cada parte 6) checkpoint |
+| **Aceitar contestação** | ⭐ O usuário questiona e isso é bom. Se ele estiver certo, **admitir e corrigir** |
+| **Quando usar `write`/`edit`** | Preferir que o usuário digite. Nunca "corrigir" o arquivo dele em silêncio |
+| **Formato da entrega de bloco** | 1) objetivo 2) o problema antes do código 3) decisões e o porquê (tabela) 4) código para digitar 5) tabela explicando cada parte 6) checkpoint |
 
-**⭐ Princípios de qualidade que o usuário já cobrou:**
+**⭐ Princípios de qualidade já cobrados:**
 
-> **1. Antes de escrever qualquer helper, verificar se já existe na biblioteca padrão.**
-> Se existir, usar a stdlib. "Evitar um import" **nunca** é justificativa — `errors`,
-> `strings`, `time` são gratuitos. Reimplementar `errors.As` à mão foi um erro já corrigido.
+> **1. Antes de escrever helper, verificar se já existe na stdlib.** "Evitar um import" nunca
+> é justificativa.
 
 > **2. Antes de afirmar que uma guarda é necessária (ou suficiente), provar com teste.**
-> Na Fase 1 a IA afirmou duas vezes "uma guarda basta" e as duas estavam erradas. Uma
+> Na Fase 1 a IA afirmou duas vezes "uma guarda basta" e as duas estavam erradas — a
 > varredura exaustiva de 81 combinações achou 10 furos no `Add`. **Varredura > raciocínio**
-> quando o assunto é sinal, limite ou overflow.
+> em sinal, limite e overflow.
 
-> **3. Comentário só onde explica decisão.** O usuário enxugou os comentários do Bloco 1 e
-> prefere código enxuto. Não encher de doc comment onde o nome da função já diz o que faz.
+> **3. Comentário só onde explica decisão.** Código enxuto.
 
 > **4. Quando um teste falhar, verificar se a régua está certa antes de acusar o código.**
-> Na Fase 1 a IA quase acusou o código do usuário três vezes por expectativa errada do
-> próprio teste. Conferir a premissa primeiro.
+> A IA quase acusou o código do usuário três vezes por expectativa errada do próprio teste.
+
+> **5. Cuidado com `Set-Content` no PowerShell 5.1:** grava em ANSI e **corrompe acentos**.
+> Usar a ferramenta de edição ou `[System.IO.File]::WriteAllLines` com `UTF8Encoding($false)`.
+> Já aconteceu uma vez neste projeto.
+
+> **6. Não confie em contagem de falha tirada de pipeline do PowerShell.** Um
+> `Select-String` sem `-Pattern` já produziu um "24 falhas" falso neste projeto. Ler o
+> output real do `go test`.
 
 **Alternativa se o relógio apertar:** o usuário autorizou que a IA complete o código sozinha
-**se o tempo estiver acabando**, seguindo o padrão já construído. Avisar antes e explicar.
+se o tempo estiver acabando. Avisar antes e explicar. **Foi o que aconteceu nas Fases 2 e 3.**
 
 ---
 
@@ -123,17 +103,15 @@ configuração/código sem explicar, ou escrever código questionável. O ritmo 
 
 ### 4.1. Cache do Go (OBRIGATÓRIO)
 
-O cache global `C:\Users\PoxZe\go` **não é gravável** nesta máquina. Todo comando Go precisa:
-
 ```powershell
 $env:GOMODCACHE='E:\jungleg\.gocache\mod'
 $env:GOCACHE='E:\jungleg\.gocache\build'
 $env:GOPATH='E:\jungleg\.gocache\gopath'
 ```
 
-O `Makefile` já faz isso. `/.gocache/` está no `.gitignore`.
+O cache global `C:\Users\PoxZe\go` **não é gravável**. O `Makefile` já faz isso.
 
-### 4.2. Docker (funciona, com duas particularidades)
+### 4.2. Docker ( **obrigatório a partir da Fase 4** )
 
 ```powershell
 $env:Path = "C:\Users\PoxZe\AppData\Local\Programs\DockerDesktop\resources\bin;$env:Path"
@@ -141,151 +119,148 @@ $env:Path = "C:\Users\PoxZe\AppData\Local\Programs\DockerDesktop\resources\bin;$
 
 | Particularidade | Detalhe |
 | --- | --- |
-| Sandbox × Docker | O sandbox do harness **não abre o named pipe** do Docker. Comandos Docker exigem `sandbox_permissions: danger-full-access` (com `justification` em português) |
-| Docker Desktop | **Não inicia sozinho** (`autoStart: False`). Se o pipe não existir: `Start-Process 'C:\Users\PoxZe\AppData\Local\Programs\DockerDesktop\Docker Desktop.exe'` e aguardar ~5–30s |
+| Sandbox × Docker | O sandbox do harness **não abre o named pipe**. Comandos Docker exigem `sandbox_permissions: danger-full-access` com `justification` em português |
+| Docker Desktop | **Não inicia sozinho**. Se o pipe não existir: `Start-Process 'C:\Users\PoxZe\AppData\Local\Programs\DockerDesktop\Docker Desktop.exe'` e aguardar ~5–30s |
 | LocalStack | **SÓ** `localstack/localstack:4.0.3`. Tags `stable`/`latest` são **Pro** e morrem com *"License activation failed"* |
+| Containers esperados | `jungleg-postgres`, `jungleg-keycloak`, `jungleg-localstack` — todos `healthy` na Fase 0 |
 
 ### 4.3. Line endings
 
-Scripts shell, SQL e Dockerfile rodam em Linux dentro dos containers. Ao editá-los pelo
-Windows, garantir **LF** (não CRLF), senão: `syntax error: unexpected end of file`.
-O `.gitattributes` já normaliza.
+Scripts shell, SQL e Dockerfile rodam em Linux nos containers: garantir **LF**, senão
+`syntax error: unexpected end of file`. O `.gitattributes` já normaliza.
 
 ### 4.4. Outras ferramentas
 
-- Go **1.26.5** (módulo declara `go 1.25.0` + `toolchain go1.26.5`)
-- PowerShell **5.1** (não 7! sem `&&`, sem ternário `? :`)
-- **`make` NÃO está instalado** — os alvos do Makefile servem de documentação executável
-- git 2.52.0
+- Go **1.26.5** · PowerShell **5.1** (sem `&&`, sem ternário) · git 2.52.0
+- **`make` NÃO está instalado** — os alvos do Makefile são documentação executável
 - **`package main` não pode ser importado nem testado** → toda lógica em `internal/`
 
 ---
 
 ## 5. DECISÕES TÉCNICAS JÁ CONGELADAS
 
-Detalhamento completo em `PLANO.md` §1 (A1–A14). Resumo do que afeta as Fases 1–2:
+Detalhamento completo em `PLANO.md` §1 (A1–A14). O que afeta a Fase 4:
 
 | ID | Decisão |
 | --- | --- |
-| **A2** | `Money` = **`int64` em unidades mínimas** (centavos) + `Currency` ISO 4217. Escala fixa **2**. **Nunca `float32`/`float64`** |
-| A2 | Contrato externo: `{"amount":"25.00","currency":"BRL"}` — `amount` é **string** |
-| A2 | Limite: `\|minor\| <= 9_000_000_000_000_000` com tratamento de overflow no parse, soma, subtração e negação |
-| A2 | **Revisado na Fase 1:** `New` (criação) valida moeda **e faixa**; `FromMinor` (reidratação) não valida |
-| A2 | **Revisado na Fase 1:** serialização é assimétrica para negativos — `MarshalJSON` emite sinal, `UnmarshalJSON` recusa |
-| A2 | **Revisado na Fase 1:** `UnmarshalJSON` rejeita campo desconhecido e chave repetida (o `encoding/json` normal ignoraria os dois) |
-| A6 | Erros de domínio: tipo + `errors.Is`/`errors.As`. **`panic` nunca representa rejeição de negócio** |
-| A1 | Roteador `chi`, driver `pgx/v5`, migrations `golang-migrate`, SQS `aws-sdk-go-v2`, OIDC `go-oidc`, IDs `google/uuid` (v7), métricas Prometheus, testes com a **lib padrão** |
+| **A2** | `Money` = `int64` em unidades mínimas + `Currency` ISO 4217. Persistência: **`BIGINT`** para valor + **`CHAR(3)`** para moeda. **Nunca `NUMERIC`/`FLOAT`** para dinheiro no nosso modelo |
+| A2 | Limite do domínio: `\|minor\| <= 9_000_000_000_000_000` → **`CHECK`** na coluna |
+| A3 | Uma **Unit of Work** (`internal/infra/postgres/uow.go`): toda operação de negócio em **uma** transação: `wager_transactions` + `wallets` + `wallet_ledger_entries` + `inbox_messages` + `outbox_events` |
+| A4 | Concorrência por carteira: `SELECT ... FOR UPDATE` + `version` (controle otimista). Documentar em `ARCHITECTURE.md` |
+| A5 | Idempotência **persistente**: `UNIQUE (provider_id, idempotency_key)` e comparação de hash de payload |
 | A8 | Tabela de `failureCode` estáveis (o `Code` do erro de domínio vira `failureCode` no HTTP) |
+| A12 | Eventos: envelope com `eventId`, `eventType`, `aggregateId`, `correlationId`, `causationId?`, `occurredAt`, `version`, `data` |
 
 ---
 
-## 6. 🎯 A TAREFA PONTUAL: FASE 3 (`WagerTransaction`)
+## 6. 🎯 A TAREFA PONTUAL: FASE 4 (schema, migrations e constraints)
 
-### 6.1. O que as Fases 1 e 2 deixaram pronto para reusar
+**Esta é a fase em que as regras do domínio passam a ser impostas pelo banco.** Tudo que as
+Fases 2 e 3 validam em memória precisa de uma constraint correspondente — é a segunda
+barreira, e a única que sobrevive a um bug de aplicação.
 
-O pacote `internal/domain/money` e o `internal/domain/wallet` já resolvem quase tudo —
-**use, não reimplemente**:
+### 6.1. Pré-requisito: Docker
 
-| Necessidade da `WagerTransaction` | O que usar |
+A Fase 4 **exige Docker rodando** para validar as migrations de verdade (subir, aplicar,
+testar as constraints com `INSERT` inválido, reverter). Se o pipe não existir, subir o
+Docker Desktop e aguardar.
+
+### 6.2. Entregáveis
+
+| Artefato | Conteúdo |
 | --- | --- |
-| Valor da operação | `money.Money` — validar sinal/zero conforme o tipo (ver 6.2) |
-| Conferir o `"0.00"` exato do `LOSS` | `money.IsZero()` |
-| Valor maior que zero em `BET`/`WIN`/`REFUND`/`ROLLBACK` | `money.IsPositive()` |
-| Erro tipado com `failureCode` | **Mesmo padrão** de `money` e `wallet`: `Error{Code, Message}` + sentinelas + `Is()` por `Code` |
-| ID da operação no ledger | `wallet.TransactionID` já é `string` e aceita o ID da transação |
-| Referência à carteira no lançamento | `wallet.WalletID` |
+| `migrations/000001_init.up.sql` | `players` (se necessário), `wallets`, `wager_transactions`, `wallet_ledger_entries`, `inbox_messages`, `outbox_events` |
+| `migrations/000001_init.down.sql` | drop na ordem inversa |
+| Trigger de imutabilidade | `BEFORE UPDATE OR DELETE` no ledger com `RAISE EXCEPTION` |
+| `cmd/migrate` | **não existe ainda** (pendência P6) e o compose o referencia |
+| Teste das constraints | `INSERT`/`UPDATE` inválidos devem falhar de verdade |
 
-### 6.2. Regras que o enunciado exige (§6.3 e §7 do README)
+### 6.3. Constraints obrigatórias (`PLANO.md` §3, Fase 4)
 
-Transcrevendo o que é verificável, porque são **estas** linhas que os testes têm que travar:
+**`wallets`**
+- `UNIQUE (player_id, currency)` — o par identifica uma única carteira
+- `CHECK (balance_minor >= 0)` — saldo nunca negativo
+- `CHECK (version >= 1)`
+- `CHECK (balance_minor BETWEEN -9000000000000000 AND 9000000000000000)` — o limite do domínio
 
-| Fonte | Regra |
-| --- | --- |
-| §6.3 | Tipos: `OPENING`, `BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK` |
-| §6.3 | Operação externa registra: identificadores interno e externo, provedor, chave de idempotência, hash do payload, carteira, jogador, rodada, jogo, tipo, `Money`, referência externa opcional, estado e timestamps |
-| §6.3 | Quando aplicável: referência interna resolvida, código de falha e resultado financeiro devolvido ao provedor |
-| §6.3 | A transação inicia em `PENDING`; transições para processamento, espera por referência, rejeição e falha permanente são validadas pelo domínio |
-| §7 | `BET`, `WIN`, `REFUND` e `ROLLBACK` exigem valor **maior que zero**; `LOSS` exige **exatamente** `"0.00"` |
-| §7 | Saldo inicial zero em `OPENING` ⇒ sem `OPENING`, sem ledger e sem eventos financeiros |
-| §7 | `OPENING` é operação **interna**: não pode ser aceita vinda do provedor |
-| §7 | `REFUND` e `ROLLBACK` exigem referência à transação original, e o valor da reversão tem que ser **igual** ao referenciado (sem reversão parcial) |
-| §7 | O valor da reversão precisa concordar em provedor, jogador, carteira, moeda e rodada com a operação referenciada |
+**`wallet_ledger_entries`**
+- `CHECK (balance_after_minor = balance_before_minor + CASE direction WHEN 'CREDIT' THEN amount_minor ELSE -amount_minor END)` — **a aritmética do ledger no banco**
+- `CHECK (amount_minor > 0)` — lançamento de valor zero não existe
+- `CHECK (direction IN ('DEBIT','CREDIT'))`
+- `UNIQUE (wallet_id, transaction_id)` — um lançamento por operação
+- **imutabilidade:** trigger `BEFORE UPDATE OR DELETE ... RAISE EXCEPTION`
 
-### 6.3. Pontos que o avaliador vai cobrar na entrevista
+**`wager_transactions`**
+- `UNIQUE (provider_id, idempotency_key)` — **idempotência persistente**
+- `UNIQUE (provider_id, external_transaction_id)`
+- `UNIQUE (reference_transaction_id, kind) WHERE reference_transaction_id IS NOT NULL` — impede dupla reversão do mesmo tipo
+- `UNIQUE (idempotency_key) WHERE kind = 'OPENING'` — **impede crédito inicial duplicado**
+- `CHECK (kind <> 'OPENING' OR provider_id IS NULL)` — `OPENING` é interna
+- `CHECK (kind IN (...))` e `CHECK (status IN (...))`
+- `CHECK (kind <> 'LOSS' OR amount_minor = 0)` e `CHECK (kind = 'LOSS' OR amount_minor > 0)`
+- `CHECK (kind NOT IN ('REFUND','ROLLBACK') OR reference_external_transaction_id IS NOT NULL)`
 
-1. **`LOSS` não movimenta dinheiro.** Registra a perda e produz evento, **sem** criar lançamento no ledger e **sem** incrementar versão da carteira. É o caso mais fácil de errar, e é a razão de o `wallet` ter a regra de valor zero.
-2. **`OPENING` interna × externa.** O construtor tem que exigir campos **diferentes** por origem: a externa exige provedor, chave de idempotência e hash do payload; a `OPENING` não tem esses metadados e não pode ser aceita de fora.
-3. **`failureCode` é separado do `Status`.** `REJECTED` diz o que aconteceu com a operação; `failureCode` diz **por quê**. Precisa ser estável e documentado, para o cliente distinguir entrada corrigível de resultado definitivo (README item 13).
-4. **Referência obrigatória na reversão.** Sem `referenceExternalTransactionId`, `REFUND`/`ROLLBACK` não têm como achar a operação original nem provar que o valor bate. E a reversão precisa ser de **valor igual**, não parcial.
-5. **Estado terminal não volta.** `PROCESSED`, `REJECTED` e `FAILED` são finais; qualquer transição a partir deles é `ErrTerminalState`.
-6. **Idempotência é chave, não comparação.** A chave é `(provider_id, idempotency_key)` e o hash do payload serve para detectar **conflito** (mesma chave, corpo diferente). Isso é Fase 4/6, mas o domínio precisa carregar os dois campos.
+**`inbox_messages`** — `UNIQUE (consumer_name, message_id)`
+**`outbox_events`** — `UNIQUE (event_id)`, `CHECK (attempts >= 0)`
 
-### 6.4. Blocos previstos (mesmo ritmo: um bloco por vez)
+### 6.4. Pontos que o avaliador vai cobrar
 
-| Bloco | Conteúdo |
-| --- | --- |
-| **1** | `errors.go`: `Error`, `Code` estáveis, sentinelas `ErrInvalidTransaction`, `ErrInvalidTransition`, `ErrTerminalState`, `ErrMissingReference`, `ErrInternalKind` + `Is()` por `Code` |
-| **2** | `Kind` (`OPENING/BET/WIN/LOSS/REFUND/ROLLBACK`) com `ParseKind`, `Validate`, `String`, `IsExternal()`, `RequiresReference()`, `AllowsZeroAmount()` |
-| **3** | `Status` (`PENDING/PENDING_REFERENCE/PROCESSED/REJECTED/FAILED`) com `ParseStatus`, `IsTerminal()` e a **tabela de transições permitidas** |
-| **4** | `type WagerTransaction` (campos privados) + `New(...)` validando obrigatórios por origem + `Rehydrate(...)` + acessores |
-| **5** | Métodos de transição (`MarkProcessed`, `MarkRejected`, `AwaitReference`, `MarkFailed`) — **únicos** que mudam estado, cada um validando a transição |
-| **6** | Eventos de domínio (A12): structs tipadas + envelope com `type` e `version` |
-| **7** | Testes: todos os tipos, política de zero por tipo, transições válidas/inválidas, terminal, `OPENING` rejeitado de fora, referência obrigatória |
+1. **A aritmética do ledger no banco.** O `CHECK` que compara `balance_after` com `before ± amount` é o que impede um lançamento incoerente entrar, mesmo com bug na aplicação.
+2. **Imutabilidade do ledger é trigger, não convenção.** `UPDATE`/`DELETE` levantam exceção.
+3. **Idempotência é índice único, não `SELECT` antes de `INSERT`.** `SELECT` seguido de `INSERT` tem corrida; o índice único não tem.
+4. **`OPENING` com `UNIQUE` parcial em `idempotency_key`.** É o que impede dois créditos iniciais para o mesmo jogador.
+5. **Índices para as consultas reais:** `(wallet_id, created_at, id)` para paginação de ledger, `(status, next_attempt_at)` para o worker de referências pendentes.
+6. **`down.sql` que realmente reverte.** Migration sem rollback testado é migration que não existe.
 
-### 6.5. Casos de teste que a suíte PRECISA cobrir
-
-**Kind:** os 6 tipos aceitos; string vazia/minúscula/desconhecida rejeitada; `IsExternal()` verdadeiro só para os 5 externos; `OPENING` com `IsExternal()` falso
-**Política de zero por tipo:** `LOSS` exige `0.00` e rejeita `0.01`; `BET`/`WIN`/`REFUND`/`ROLLBACK` rejeitam `0.00` e aceitam `0.01`
-**Origem:** `OPENING` sem provedor/chave/hash é válida; `OPENING` **com** provedor é rejeitada; operação externa sem provedor, sem chave de idempotência ou sem hash é rejeitada
-**Referência:** `REFUND` e `ROLLBACK` sem `referenceExternalTransactionId` → `ErrMissingReference`; `BET`/`WIN`/`LOSS` sem referência são válidas
-**Estado:** nasce `PENDING`; transições válidas por tipo; transição inválida → `ErrInvalidTransition`; transição a partir de terminal → `ErrTerminalState`
-**Reidratação:** `Rehydrate` reconstrói estado e timestamps **sem** reaplicar transição e **sem** emitir evento (README §Encaps. L89)
-**Erros:** `errors.Is` por `Code`, erro atravessa `errors.Join`, sentinelas não se confundem, `Error()` com o `Code` na frente
-
-### 6.6. Checkpoint esperado de cada bloco
+### 6.5. Checkpoint esperado
 
 ```powershell
 $env:GOMODCACHE='E:\jungleg\.gocache\mod'; $env:GOCACHE='E:\jungleg\.gocache\build'; $env:GOPATH='E:\jungleg\.gocache\gopath'
-gofmt -l ./internal/domain/
+# 1) docker rodando
+docker compose up -d postgres
+# 2) aplicar migrations
+$env:PGPASSWORD='...'; psql -h localhost -U jungleg -d jungleg -f migrations/000001_init.up.sql
+# 3) testar as constraints com INSERT invalido (deve falhar)
+# 4) reverter
+psql -h localhost -U jungleg -d jungleg -f migrations/000001_init.down.sql
 go build ./...
 go vet ./...
-go test -race ./internal/domain/wagering/
+go test -race ./...
 ```
 
-Depois do último bloco aprovado, commitar:
+Commit ao final:
 ```
-feat(wagering): adiciona transacao de aposta com tipos, estados e eventos de dominio
+feat(db): adiciona schema inicial com constraints de saldo, ledger imutavel e idempotencia
 ```
+
 ---
 
-## 7. PENDÊNCIAS CONHECIDAS (não são da Fase 3, mas estão anotadas)
+## 7. PENDÊNCIAS CONHECIDAS
 
 Do `CONTEXTO.md` §4: P1 (healthcheck do `api` no compose usa flag inexistente), P2 (ordem
 `AccessLog` × `Recoverer`), P3 (`net.Listen` em vez de `select`+`time.After`), P4 (path
 `/internal/wallets` — o enunciado pede `POST /wallets`), P5 (registrar Postgres/SQS no grupo
-`health_checkers`), P6 (`cmd/migrate` não existe ainda — o compose o referencia),
-P7 (`StopTimeout` deve vir da config), P8 (testar SIGTERM real). P9/P10 **resolvidas**.
+`health_checkers`), **P6 (`cmd/migrate` não existe — o compose o referencia: resolver na
+Fase 4)**, P7 (`StopTimeout` deve vir da config), P8 (testar SIGTERM real). P9/P10 resolvidas.
 
-Das Fases 1 e 2: o helper `CodeOf` existe **duplicado** em `money_test.go` e
-`wallet_test.go`. Quando a Fase 7 montar o handler HTTP, ele precisa virar função de
-produção no pacote de erros (é ele que traduz `Code` em `failureCode`). Está comentado nos
-dois arquivos.
+Das Fases 1–3: o helper `CodeOf` está **duplicado** em três arquivos de teste
+(`money_test.go`, `wallet_test.go`, `wagering_test.go`). Quando a Fase 7 montar o handler,
+ele vira função de produção no pacote de erros — é ele que traduz `Code` em `failureCode`.
 
-Da Fase 2: a unicidade de `(playerID, currency)` ainda **não** é imposta — é decisão de
-schema, e vai para a `constraint UNIQUE` da Fase 4.
+Da Fase 3: o `PayloadEncoder` está injetado e o JSON canônico **ainda não existe** — precisa
+ser criado em `internal/platform/canonicaljson` antes ou durante a Fase 5/6.
 
 ---
 
 ## 8. CHECKLIST DE ARRANQUE PARA A NOVA CONVERSA
 
-- [ ] Ler `CONTEXTO.md`, `PLANO.md` §3 (Fase 3) e `docs/evidencias/FASE_2.md`
-- [ ] Entregar o **Bloco 1 da Fase 3** no formato da seção 3: objetivo → problema → decisões → código → tabela → checkpoint
-- [ ] Manter o cadence: **um bloco por vez**, explicar antes, perguntar se entendeu
-- [ ] Reusar o padrão de erro já validado (`Error{Code, Message}` + sentinelas + `Is()` por `Code`) em vez de inventar outro
-- [ ] Reusar o `money` para validar valor por tipo (`IsZero`, `IsPositive`) em vez de comparar `Minor()` à mão
+- [ ] Ler `CONTEXTO.md`, `PLANO.md` §3 (Fase 4) e `docs/evidencias/FASE_3.md`
+- [ ] Subir o Docker Desktop (a Fase 4 depende dele) e confirmar os 3 containers
+- [ ] Criar `migrations/000001_init.up.sql` e `.down.sql` seguindo a lista da seção 6.3
+- [ ] **Testar cada constraint com um `INSERT` inválido de verdade**, não só aplicar a migration
+- [ ] Testar o `down.sql` revertendo e reaplicando
+- [ ] Resolver a pendência P6 (`cmd/migrate`) para o compose ficar coerente
 - [ ] Aceitar contestação do usuário: se ele questionar e estiver certo, **admitir e corrigir**
-- [ ] Comentários **curtos**: só o que explica decisão
-- [ ] Provar com teste antes de afirmar que uma guarda basta (lição da Fase 1)
-- [ ] Depois do último bloco aprovado, commitar: `feat(wagering): adiciona transacao de aposta com tipos, estados e eventos de dominio`
+- [ ] Depois de aprovado, commitar: `feat(db): adiciona schema inicial com constraints de saldo, ledger imutavel e idempotencia`
 
-**Não é necessário:** revalidar as Fases 0, 1 e 2, nem rodar Docker (a Fase 3 continua puro Go).
+**As Fases 0 a 3 estão commitadas e validadas. Não revalide nem recommite.**
