@@ -469,6 +469,19 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` feito e **validado por te
 - [ ] `README.md`: pré-requisitos, variáveis de ambiente, **inicialização das filas**, migrations (aplicar e reverter), execução, exemplos `curl` autenticados, comandos de teste, provisionamento do IdP + identidades de teste, execução de integração/múltiplas instâncias/simulações de falha, build tags
 - [ ] `.env.example`
 - [ ] `ARCHITECTURE.md`: dinheiro, transações, idempotência (hash/algoritmo/campos/normalizações), locks/concorrência, referências pendentes, reversões (matriz REFUND/ROLLBACK), inbox/outbox, autenticação/autorização, Fx/ciclo de vida/shutdown, máquina de estados + transitório×permanente, HTTP (status/corpos), SQS (MessageGroupId/DeduplicationId/visibility/limites/DLQ), **limitações, interpretações e trabalho não concluído**
+
+**⭐ COMPROMISSO DE ENTREGA ASSUMIDO COM O USUÁRIO (estratégia mudou na Fase 6):**
+- [ ] **`docs/SISTEMA_EXPLICADO.md`** — explicação do sistema completo: o fluxo de uma
+      requisição do HTTP ao commit e à publicação, cada componente e por que existe, **as
+      lógicas pensadas e seguidas**, e **a lista de problemas resolvidos** em todas as fases
+      (as guardas de overflow do `Money`, o `Neg` invertido, o `CHAR(3)` com padding, o
+      `55P03` mal classificado, o tipo `Movement`, o `newEntryID` que não era UUID...), com
+      sintoma e correção. Mais os limites conhecidos e o que ficou de fora conscientemente.
+- [ ] **`docs/ENTREVISTA.md`** — preparação para a entrevista em **formato de perguntas e
+      respostas**, cobrindo arquitetura, decisões, garantias financeiras e as perguntas de
+      erro/aprendizado. As respostas devem deixar **arquitetura e lógica bem visíveis**, com
+      motivo e consequência — não só o "o quê". Incluir as perguntas difíceis (as que expõem
+      limitação) com resposta honesta.
 - [ ] `docs/evidencias/`: saídas de `go test -race`, curls, `/metrics` (prova para o avaliador)
 - [ ] `docker compose up --build` do zero em clone limpo funciona (teste real!)
 
@@ -576,11 +589,25 @@ Formato: `[data] [fase] status — o que foi feito / decisão / bloqueio`.
   - **Três defeitos estruturais corrigidos:** (1) `Dockerfile` em `golang:1.25-alpine` com `go.mod` exigindo 1.26 → build falhava; (2) estágio `build` não copiava o código-fonte → build falhava; (3) sem `.dockerignore`, o contexto levava 675 MB de cache. Os dois primeiros significavam que `docker compose up --build` **nunca funcionaria**.
   - **Validação:** 30 operações inválidas testadas e recusadas pelo banco (29 CHECK + 4 FK + 6 PK + 2 UNIQUE, 17 índices, 5 triggers); `up`/`down`/`up` testados pelo binário local e pela imagem Docker na rede do compose.
   - **Pendência resolvida:** P6 (`cmd/migrate` não existia e o compose o referenciava).
+- **D0** — **Fase 5 CONCLUÍDA** (commit `756bed2`) — persistência em `internal/infra/postgres` + `internal/platform/canonicaljson`.
+  - **Decisão de isolamento justificada:** `READ COMMITTED` + `SELECT ... FOR UPDATE`, não `SERIALIZABLE`. O conflito real do domínio é "duas operações na mesma carteira", e o lock de linha serializa exatamente esse caso sem serializar o banco inteiro nem exigir retry em todo caminho de escrita.
+  - **Decisão de design:** `23505` vira `ErrConflict`, não "erro de banco" — no nosso schema o índice único **é** a idempotência funcionando. O serviço decide entre replay e conflito comparando o hash.
+  - **Decisão de design:** os repositórios são criados **por transação** e compartilham uma interface `querier` mínima, satisfeita tanto por `*pgxpool.Pool` quanto por `pgx.Tx`.
+  - **Quatro defeitos reais encontrados e corrigidos** (nenhum era conhecido; dois impediam a fase de funcionar):
+    1. `55P03` (lock timeout) classificado como `ErrPermanent` → uma disputa momentânea faria o serviço **rejeitar uma operação legítima** em vez de repetir;
+    2. `wallet.Debit` não recebia o `transactionID` → o lançamento do ledger ficava **órfão**;
+    3. `wallet.Debit` devolvia só o `Entry`, mas incrementa a versão em memória → o `UPDATE` condicional casava com zero linhas. **Corrigido no domínio** com o tipo `Movement`, que carrega o `Entry` e a `versionBefore`;
+    4. `newEntryID` gerava string composta, mas a coluna é `UUID` → **nenhum lançamento conseguiria ser gravado**.
+  - **Números:** 38 testes (25 de integração), `-race` verde nos dois modos. Lost update não acontece (saldo 700 e versão 3 após dois débitos concorrentes), o lock bloqueia (B esperou 1,59s por A), rollback não deixa resíduo, `SKIP LOCKED` distribui 4 eventos entre 2 publishers sem repetir.
+- **D0** — **MUDANÇA DE ESTRATÉGIA acordada com o usuário** (a partir da Fase 6) — até aqui o ritmo era "MODO B" (a IA explicava um bloco e **o usuário digitava**). Da Fase 6 em diante **a IA escreve o código** e explica as partes importantes depois, mantendo um bloco coerente por vez com commit ao final.
+  - **Motivo:** o tempo é curto e as fases restantes são de integração. O valor está em fechar o sistema funcionando.
+  - **Contrapartida obrigatória:** explicar faz parte da entrega. Código sem explicação das decisões é entrega incompleta.
+  - **⭐ Compromisso final assumido:** ao fechar o sistema, gerar **dois documentos** — `docs/SISTEMA_EXPLICADO.md` (o sistema inteiro, as lógicas seguidas e os problemas resolvidos) e `docs/ENTREVISTA.md` (perguntas e respostas para a entrevista, com arquitetura e lógica visíveis). Registrado na Fase 12 do checklist.
 
 ### Próximos 3 passos imediatos
-1. **Nós:** Fase 5 — persistência com `pgx` + Unit of Work: pool, `uow.Run`, repositórios (wallet, txn, ledger, inbox, outbox) e classificação de erro do `pgx` em `ErrConflict`/`ErrTransient`/`ErrPermanent`.
-2. **Nós:** criar `internal/platform/canonicaljson` — pendência deixada pela Fase 3 (o `PayloadEncoder` está injetado e ainda não tem implementação canônica).
-3. **Usuário:** checkpoint das Fases 1–4 antes da Fase 6 (serviço), que é o coração do desafio.
+1. **Nós:** Fase 6 — caso de uso `wagering.Service`: `Process(ctx, Request)` com a ordem exata das 12 etapas (o lock da carteira **antes** de qualquer cálculo de saldo), idempotência com hash canônico, resolução de referência e outbox na mesma transação.
+2. **Nós:** decidir onde ficam as interfaces de repositório (`internal/app/ports` é a recomendação) para a aplicação não importar infraestrutura.
+3. **Nós (prioridade alta):** escrever o `ARCHITECTURE.md` — é entrega obrigatória do enunciado e ainda não existe. É o maior risco de reprovação hoje.
 
 ---
 
