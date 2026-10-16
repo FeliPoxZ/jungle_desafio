@@ -27,11 +27,25 @@ type Routes struct {
 
 // Autenticador é a porta usada pelos módulos para proteger as rotas.
 // Fica aqui (no consumidor) e é implementada em internal/infra/auth.
+//
+// Três métodos, e não um só, porque autenticar e autorizar são decisões
+// diferentes:
+//
+//   - `Middleware` valida o token e põe a identidade no contexto (401 ou 503);
+//   - `RequireRole` exige uma role da identidade já autenticada (403);
+//   - `RequireProvider` exige que a identidade seja de um PROVEDOR — ou seja,
+//     que o token carregue `provider_id` (403 sem ele).
+//
+// A separação é o que faz um token ausente responder 401 e um token sem
+// permissão responder 403. Com um método só, os dois casos virariam o mesmo
+// código, e o cliente não saberia se deve trocar o token ou pedir acesso.
 type Autenticador interface {
 	// Middleware exige um token válido e coloca a identidade no contexto.
 	Middleware(next http.Handler) http.Handler
 	// RequireRole exige que a identidade tenha uma das roles informadas.
 	RequireRole(roles ...string) func(http.Handler) http.Handler
+	// RequireProvider exige uma identidade de provedor (com provider_id).
+	RequireProvider() func(http.Handler) http.Handler
 }
 
 // NewRouter monta o roteador com os middlewares e as rotas base.
@@ -42,19 +56,32 @@ func NewRouter(
 	healthCheckers []HealthChecker,
 ) *Routes {
 	r := chi.NewRouter()
-
-	// Ordem dos middlewares importa:
-	//   RequestID   -> todo log abaixo já tem correlação
-	//   RealIP      -> resolve o IP real atrás de proxy
-	//   Recoverer   -> converte panic em 500 sem derrubar o processo
-	//   AccessLog   -> registra status e duração, inclusive de panics
-	//   Timeout     -> prazo por requisição
-	//   MaxBody     -> limita memória por payload
-	r.Use(chimw.RequestSize(0)) // no-op explícito: tamanho é controlado abaixo
+	// Ordem dos middlewares importa — e a de `AccessLog` × `Recoverer` foi
+	// corrigida nesta fase (pendência P2):
+	//
+	//   RequestID -> todo log abaixo já tem correlação
+	//   RealIP    -> resolve o IP real atrás de proxy
+	//   AccessLog -> registra status e duração de TUDO, inclusive do que o
+	//                Recoverer transformar em 500
+	//   Recoverer -> converte panic em 500 sem derrubar o processo
+	//   Timeout   -> prazo por requisição
+	//   MaxBody   -> limita memória por payload
+	//
+	// Por que `AccessLog` ANTES (mais externo) que o `Recoverer`: o log de
+	// acesso é dono do `statusRecorder`, e o `Recoverer` escreve a resposta de
+	// 500 DEPOIS que o handler entrou em pânico. Com a ordem invertida, o
+	// `statusRecorder` do log já estaria fora do caminho e o log registraria
+	// **200** para uma requisição que respondeu **500** — o log passaria a
+	// mentir exatamente no caso em que ele é mais necessário.
+	//
+	// NOTA sobre `chimw.RequestSize`: ele NÃO é usado aqui. Com limite 0 ele
+	// recusa QUALQUER corpo com "request body too large" — o oposto do que se
+	// quer —, e o limite de verdade é o `MaxBodyMiddleware`, que vem da
+	// configuração (`HTTP_MAX_BODY_BYTES`) e produz um erro claro no `decodeJSON`.
 	r.Use(RequestIDMiddleware)
 	r.Use(chimw.RealIP)
-	r.Use(RecovererMiddleware(logger))
 	r.Use(AccessLogMiddleware(logger))
+	r.Use(RecovererMiddleware(logger))
 	r.Use(TimeoutMiddleware(cfg.HTTP.RequestTimeout))
 	r.Use(MaxBodyMiddleware(cfg.HTTP.MaxBodyBytes))
 
