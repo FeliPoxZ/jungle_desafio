@@ -422,16 +422,24 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` feito e **validado por te
 - [x] Testes unitários com **fakes em memória** (ports) com semântica real de transação: cada tipo de operação, replay (com o saldo original), conflito, referência ausente/rejeitada/divergente, dupla reversão, `ROLLBACK_INSUFFICIENT_FUNDS`, `LOSS` sem ledger, abertura com/sem saldo, duplicada, paginação com cursor, reconciliação nos dois sentidos, atomicidade e retentativa
 - [x] Testes de integração: mesmo `Process` contra Postgres real — cenário do README, 12 disparos da mesma aposta, rollback real com a outbox quebrada, idempotência sobrevivendo a serviço novo, abertura com e sem saldo, carteira duplicada, isolamento entre provedores, paginação do ledger, reconciliação do exemplo do README e divergência forçada no banco
 
-### FASE 7 — HTTP + Auth (D1 noite → D2 manhã, ~4h)
-- [ ] `chi` router + middlewares: `Recoverer`, `correlationID`, `logging` (slog JSON), `metrics`, `timeout`, `auth`
-- [ ] `problem.go`: mapeamento erro→status conforme A9 (nunca vazar stack/erro de driver)
-- [ ] `POST /wallets` (role `internal`), `GET /wallets/:id`, `GET /wallets/:id/ledger?cursor&limit`, `POST /wallets/:id/reconciliation` (role `internal`)
-- [ ] `POST /wagering/transactions` (+ header `Idempotency-Key` obrigatório) e `GET /wagering/transactions/:id`
-- [ ] `GET /providers/:providerId/wagering/transactions/:externalTransactionId` com isolamento por token
-- [ ] `GET /health/live`, `GET /health/ready`, `GET /metrics`
-- [ ] DTOs com validação estrita (`DisallowUnknownFields`, limites de tamanho de corpo, `Content-Type` obrigatório)
-- [ ] Auth: OIDC discovery + JWKS cache/rotação; valida `iss/aud/exp/nbf/alg`; roles e `provider_id` do token; `401/403` conforme A9; **IdP fora ⇒ 503 sem efeito financeiro**
-- [ ] Testes: httptest com servidor OIDC de teste (assinatura real) — token ausente/inválido/expirado/role errada/provedor errado; isolamento em replay e leitura; nenhum efeito financeiro em acesso negado
+### FASE 7 — HTTP + Auth (D1 noite → D2 manhã, ~4h) — ✅ CONCLUÍDA E VALIDADA
+> Cinco blocos, um commit cada: composição Fx (`ec6c014`), **7a** autenticação
+> (`1d43174`), **7b/7d** endpoints + mapeamento (`95e85bb`), **7e** integração com
+> Keycloak real (`343ec51`) e **P1** `-health-check` (`31cf6b5`). **116 casos
+> unitários** (49 em `internal/infra/auth`, 67 em `internal/httpapi`) e **32 de
+> integração** (30 da borda HTTP com token real, 2 do binário real). **8 defeitos
+> reais corrigidos**, dois deles dormentes desde a Fase 0. Evidências em
+> `docs/evidencias/FASE_7.md`.
+- [x] `chi` router + middlewares: `RequestID`, `RealIP`, `AccessLog`, `Recoverer`, `Timeout`, `MaxBody`, `auth` — **com a ordem corrigida (P2): `AccessLog` envolve o `Recoverer`**, senão o log registra 200 para um 500
+- [x] mapeamento desfecho→status e erro→status (`erros.go`): nunca vaza stack/erro de driver, e **falha de infraestrutura nunca vira 4xx** (teste que trava a regra)
+- [x] `POST /wallets` (role `internal`), `GET /wallets/:id`, `GET /wallets/:id/ledger?cursor&limit`, `POST /wallets/:id/reconciliation` (role `internal`)
+- [x] `POST /wagering/transactions` (+ header `Idempotency-Key` obrigatório) e `GET /wagering/transactions/:id` (role `internal`: o id é interno)
+- [x] `GET /providers/:providerId/wagering/transactions/:externalTransactionId` com isolamento por token
+- [x] `GET /health/live`, `GET /health/ready` (Postgres + IdP), `GET /metrics`
+- [x] DTOs com validação estrita (`DisallowUnknownFields`, limite de corpo, `Content-Type`)
+- [x] Auth: OIDC discovery + JWKS **cache e rotação**; valida `iss/aud/exp/nbf/alg` (RS256 fixo, `kid` obrigatório); roles e `provider_id` do token; `401/403` conforme A9; **IdP fora ⇒ 503 sem efeito financeiro** (conferido no banco)
+- [x] Testes: servidor OIDC de teste com **assinatura real** (chave RSA de 2048 bits) **e** o Keycloak do container como prova principal — token ausente/inválido/expirado/role errada/provedor errado; isolamento em replay e leitura; nenhum efeito financeiro em acesso negado (contagem de tabelas)
+- [x] P1 (`-health-check`, provado com o binário real), P4 (`POST /wallets`), P5 (health checkers), P7 (`StopTimeout` da config)
 
 ### FASE 8 — SQS: consumidor, inbox, retry, DLQ (D2, ~4h)
 - [ ] `sqsx.Producer`: `SendMessage` FIFO (`MessageGroupId`, `MessageDeduplicationId`, `MessageAttributes` com `eventType`/`eventId`)
@@ -640,10 +648,26 @@ Formato: `[data] [fase] status — o que foi feito / decisão / bloqueio`.
   - **Evidências:** `docs/evidencias/FASE_6.md`.
   - **Correção pós-fase (bloco 6d) — ordem dos eventos na outbox:** a fase tinha deixado duas limitações registradas (o par de eventos da mesma operação empatando em `occurred_at` e a dependência do relógio). Migration 000003 acrescentou `sequence BIGINT GENERATED ALWAYS AS IDENTITY`, e a fila passou a ser lida por ela. No caminho apareceu um defeito: **`RETURNING` não garante a ordem das linhas que devolve**, então o lote chegava embaralhado — pego por um teste que falhava 1 em 5, corrigido com o `UPDATE` virando CTE e o `SELECT` de fora ordenando por `sequence`. O teste que discrimina insere dois eventos com ordem de inserção e ordem de relógio opostas (56 unitários + 29 de integração ao final).
 
+- **D2** — **FASE 7 CONCLUÍDA** — API HTTP autenticada, em 5 blocos + 1 pendência (6 commits: `ec6c014`, `1d43174`, `95e85bb`, `343ec51`, `31cf6b5`, `cc986df`).
+  - **Bloco 7a — autenticação OIDC:** `internal/infra/auth` com discovery, JWKS com cache e rotação, assinatura RS256 conferida por `crypto/rsa`, `iss`/`aud`/`exp`/`nbf` validados, `alg` **fixo** (nunca o do header), `kid` obrigatório e duas classes de erro (**401** token ruim × **503** IdP fora). **Sem dependência nova.**
+  - **Bloco 7b/7d — a borda:** os 7 endpoints do §9, DTOs estritos, tabela desfecho→status (`201`/`200`/`202`/`422`/`503`) e erro→status; rotas por role (`internal` × `provider`); `providerId` do **token**; operação alheia em **404**. P2 e P4 resolvidas no caminho.
+  - **Bloco 7e — prova com infra real:** 30 casos de integração com token obtido por `client_credentials` no **Keycloak do container** e PostgreSQL real, incluindo a contagem de tabelas provando **zero efeito financeiro** no 401/403/503; e 2 casos subindo o **binário real**.
+  - **Oito defeitos reais encontrados e corrigidos:**
+    1. **`chimw.RequestSize(0)` recusava TODO corpo** com "request body too large" — dormente desde a Fase 0, porque nenhuma rota anterior recebia corpo;
+    2. **`AccessLog` por dentro do `Recoverer`** (P2): o log registrava **200** para uma requisição que respondeu **500**;
+    3. `fx.Provide(clock.System{})` — valor, não construtor; e o caso de uso depende das **interfaces**;
+    4. grupo do Fx usado como opção de `Provide` (é `fx.Annotate` + `ResultTags`), e `group` pertence ao **campo** de uma struct `fx.In`;
+    5. `context.Context` do pool: precisa ser `context.Background()` com prazo, não o contexto de start (que é cancelado no fim do boot);
+    6. `-health-check` inexistente (P1) e, na primeira versão, exigindo a configuração inteira para dar veredito sobre o serviço;
+    7. **três asserções de teste erradas** (régua, não código): envelope de erro na rejeição 422, `cursor=%%%` (texto literal válido) e a mesma identidade externa em dois provedores tratada como conflito — quando a identidade financeira é o PAR `(providerId, externalTransactionId)`.
+    8. a matriz de erros do `erros.go` referenciando `appwagering.CodeInvalidCurrency` (não existe) e código morto (`mensagemDoCodigo` devolvendo sempre o mesmo texto).
+  - **Números:** 116 casos unitários novos (49 de autenticação + 67 da borda) e 32 de integração; `go test -race` verde em **15 pacotes** de unidade e nos **3** de integração.
+  - **Evidências:** `docs/evidencias/FASE_7.md`.
+
 ### Próximos 3 passos imediatos
-1. **Nós:** Fase 7 — HTTP + Auth: `chi` com middlewares, `problem.go` mapeando `Result`/erros para os status do A9 (`201` nova, `200` replay, `202` pendente, `422` rejeição, `409` conflito, `404` não encontrado, `400` entrada inválida, `503` transitório), `Idempotency-Key` obrigatório, Keycloak (OIDC discovery + JWKS) e isolamento por claim `provider_id`.
-2. **Nós:** ligar o caso de uso no grafo do Fx (`fx.Module("usecase")` com `appwagering.New`), incluindo `ports.Clock` → `clock.System` e `idgen.Generator`.
-3. **Nós:** resolver as pendências P1 (`-health-check`), P4 (path `POST /wallets`) e P5 (health checkers) do `CONTEXTO.md` §4 — todas são da Fase 7.
+1. **Nós:** Fase 8 — consumidor de SQS com inbox (`InsertIfAbsent` na MESMA transação do tratamento durável), retry por visibility timeout, DLQ, e `SIGTERM` liberando visibilidade do lote em andamento.
+2. **Nós:** reusar `appwagering.Process` (a mesma função do HTTP) e registrar o SQS no grupo `health_checkers` (fecha a P5).
+3. **Nós:** provar a **equivalência HTTP × SQS** do hash canônico — a mesma operação pelas duas portas gera um débito só — e os cenários de reentrega e DLQ contra o LocalStack real.
 
 ---
 
