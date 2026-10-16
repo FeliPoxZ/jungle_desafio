@@ -181,11 +181,26 @@ services:
       APP_ENV: local
       LOG_LEVEL: ${LOG_LEVEL:-info}
       HTTP_ADDR: ":8080"
+      # O prazo total do shutdown precisa ser MAIOR que o do servidor: o Fx
+      # espera os hooks de parada por StopTimeout, e o hook do HTTP drena as
+      # requisições em andamento por ShutdownTimeout. A config recusa a ordem
+      # invertida (docker stop = 10s por padrão; 25s dá margem).
+      HTTP_STOP_TIMEOUT: "25s"
+      HTTP_SHUTDOWN_TIMEOUT: "20s"
       DATABASE_URL: postgres://${POSTGRES_USER:-jungleg}:${POSTGRES_PASSWORD:-jungleg}@postgres:5432/${POSTGRES_DB:-jungleg}?sslmode=disable
       DB_MAX_CONNS: "20"
+      # O `iss` do token é o endereço PÚBLICO (o que o cliente alcança), enquanto
+      # o serviço busca o discovery pelo hostname interno — com um endereço só,
+      # ou o `iss` não bate (todo token vira 401) ou o serviço não alcança o IdP.
       OIDC_ISSUER: http://localhost:8080/realms/jungleg
       OIDC_DISCOVERY_URL: http://host.docker.internal:8080/realms/jungleg
       OIDC_AUDIENCE: ${OIDC_AUDIENCE:-jungleg-api}
+      OIDC_JWKS_CACHE_TTL: "15m"
+      OIDC_CLOCK_SKEW: "30s"
+      OIDC_HTTP_TIMEOUT: "5s"
+      # Não usado pela aplicação (o serviço nunca emite token): serve às
+      # ferramentas e aos testes que obtêm token por client_credentials.
+      OIDC_TOKEN_URL: http://localhost:8080/realms/jungleg/protocol/openid-connect/token
       SQS_ENDPOINT: http://localstack:4566
       SQS_REGION: ${SQS_REGION:-us-east-1}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}

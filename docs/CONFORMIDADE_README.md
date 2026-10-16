@@ -14,9 +14,10 @@
 > | ⬜ | pendente, com a fase que entrega |
 > | ⚠️ | risco ou decisão aberta que precisa de resposta |
 >
-> **Estado na última verificação:** Fases 0 a 6 concluídas (incluindo o bloco 6d,
-> ordem da outbox). Schema na versão **3**. `go test -race` verde em 13 pacotes de
-> unidade e nos 2 de integração.
+> **Estado na última verificação:** Fases 0 a **7** concluídas (blocos 7a–7e:
+> autenticação OIDC, endpoints do §9, composição Fx, pendências P1/P2/P4/P5/P7 e
+> testes com Keycloak e PostgreSQL reais). Schema na versão **3**. `go test -race`
+> verde em 15 pacotes de unidade e nos 3 de integração.
 
 ---
 
@@ -33,22 +34,26 @@
 | Abertura de carteira (`OPENING`) | ✅ | `internal/app/wagering/opening.go` |
 | Leituras + reconciliação | ✅ | `internal/app/wagering/{query,reconcile}.go` |
 | Outbox (gravação + ordem) | ✅ | `internal/app/wagering/events.go` + `ClaimBatch` |
-| **HTTP (contratos §9)** | ⬜ **Fase 7** | só `/health/*` e `/metrics` respondem hoje |
-| **Autenticação (OIDC)** | ⬜ **Fase 7** — **eliminatório** | infra pronta (Keycloak + realm), middleware não implementado |
+| **HTTP (contratos §9)** | ✅ **Fase 7** | `internal/httpapi` — 7 rotas + health + métricas |
+| **Autenticação (OIDC)** | ✅ **Fase 7** — era **eliminatório** | `internal/infra/auth` (validação real contra o Keycloak) |
 | **Consumidor SQS + inbox** | ⬜ **Fase 8** | filas provisionadas; tabela `inbox_messages` existe |
 | **Publisher da outbox + workers** | ⬜ **Fase 9** | `ClaimBatch`/lease/`MarkRetry` prontos |
 | Prova com 3 instâncias | ⬜ **Fase 10** | |
-| Métricas de negócio alimentadas | ⬜ **Fase 11** | 12 métricas **definidas**, nenhuma emitida ainda |
+| Métricas de negócio alimentadas | 🟡 **Fase 11** | 4 das 12 já emitidas **pela borda HTTP** (Fase 7); o resto é 8–11 |
 | README da solução + `.env.example` | 🟡 **Fase 12** | `.env.example` existe; ver ⚠️ 3 |
 
 ### Os cinco pontos de atenção que valem mais que o resto
 
-1. **⚠️ Autenticação é ELIMINATÓRIO (README §14).** Hoje nenhum endpoint de negócio
-   existe, então nada está exposto — mas a entrega só passa quando os endpoints
-   exigirem token. É a Fase 7, e é o maior risco aberto do projeto.
-2. **⚠️ O healthcheck do `api` no compose usa `/app/api -health-check`, e a flag não
-   existe** (pendência P1). Ou seja: `docker compose up --build` — **exigido no
-   README §15** — sobe o `api` como `unhealthy`. Corrigir na Fase 7.
+1. **⚠️ Autenticação era ELIMINATÓRIO (README §14) e agora está feita.** Todos os
+   endpoints de negócio exigem token validado contra o Keycloak real, o
+   `providerId` vem do token, e há prova de **nenhum efeito financeiro** em acesso
+   negado (contagem de tabelas antes/depois). O risco aberto deixou de ser "não
+   existe autenticação" e passou a ser o de qualquer validação local: token
+   revogado antes do `exp` não é detectado (sem introspecção — limitação
+   registrada no `ARCHITECTURE` §16).
+2. **✅ P1 resolvida:** a flag `-health-check` existe, é testada **subindo o
+   binário real** e `docker compose up --build` deixa de subir o `api` como
+   `unhealthy`.
 3. **⚠️ Onde vive o "README da solução"?** O §15 pede que o `README.md` explique
    pré-requisitos, variáveis, filas, migrations, execução, exemplos de chamadas e
    testes. O `README.md` da raiz **é o enunciado** e não pode ser editado. Decisão a
@@ -59,11 +64,11 @@
    **"carteiras distintas simultaneamente" (§13.3)** ainda não têm prova. As
    garantias existem (lock por carteira + constraints), mas a demonstração é da
    Fase 10.
-5. **⚠️ Testes com o IdP:** o README §13 pede "PostgreSQL, o IdP e LocalStack **em
-   containers reais**". O Keycloak já está no compose, `healthy`, com realm,
-   clients, roles, mapper de `provider_id` e usuários de teste. A Fase 7 deve
-   **preferir o Keycloak do container** (fluxo `client_credentials` de verdade) a um
-   servidor OIDC de teste — ou fazer os dois, com o container como prova principal.
+5. **⚠️ Testes com o IdP:** resolvido na direção certa — a prova principal usa o
+   **Keycloak do container** com tokens de `client_credentials` (⚠️ 5 atendido), e
+   o servidor OIDC de teste assinando de verdade cobre só o que o Keycloak não
+   produz facilmente (assinatura de outra chave, `exp` no passado, `alg` errado,
+   `aud` errado, IdP fora do ar).
 
 ---
 
@@ -79,16 +84,18 @@ com várias instâncias na Fase 10. Enquanto isso, a garantia que o enunciado co
 ("não pode gerar movimentação duplicada, saldo negativo ou perda de evento") já
 está implementada e testada no nível do caso de uso.
 
-## 2. Autenticação e autorização — ⬜ Fase 7 (eliminatório)
+## 2. Autenticação e autorização — ✅ Fase 7 (era eliminatório)
 
 | Exigência | Estado |
 | --- | --- |
-| OAuth 2.0/OIDC com IdP externo, `client_credentials` | ⬜ Fase 7. Infra pronta: `deploy/keycloak/realm.json` (realm `jungleg`, `provider-service`, `internal-service`, mapper de `provider_id`, usuários de teste) e o container `jungleg-keycloak` `healthy` |
-| A identidade autenticada determina o `providerId` | ⬜ Fase 7 — decisão já registrada: **o `providerId` vem do token**, e o corpo da requisição não escolhe o provedor |
-| Provedores acessam só as próprias transações, inclusive em replay | ✅ no caso de uso: `GetProviderTransaction` e `GetByProviderExternalID` respondem **não encontrado** para operação de outro provedor (nunca 403, que confirmaria a existência dela) |
-| Operações de carteira restritas ao serviço interno | ✅ no caso de uso (`OpenWallet` é o caminho interno; `OPENING` é recusado vindo de fora) — a checagem por role é a Fase 7 |
-| Acesso à mensageria controlado por credenciais e políticas do broker | ⬜ Fase 8 |
-| Escolha do IdP e modelo de permissões justificados no `ARCHITECTURE.md` | ⬜ Fase 7 preenche a §10 (hoje `[PLANEJADO]`) |
+| OAuth 2.0/OIDC com IdP externo, `client_credentials` | ✅ **Fase 7.** `internal/infra/auth`: discovery + JWKS com cache/rotação, assinatura RS256 conferida com `crypto/rsa`, `iss`/`aud`/`exp`/`nbf` validados. Prova principal com o **Keycloak do container** (`deploy/keycloak/realm.json`), obtendo token por `client_credentials` nos três clients do realm |
+| A identidade autenticada determina o `providerId` | ✅ o `providerId` sai do **token**; o corpo só pode confirmá-lo, e divergência responde **403 sem chamar o caso de uso** (teste unitário + integração) |
+| Provedores acessam só as próprias transações, inclusive em replay | ✅ no caso de uso e na borda: `:providerId` do path divergente ⇒ 403; operação alheia consultada pela própria rota ⇒ **404** (não 403, que confirmaria a existência); o replay devolve o resultado **daquele** provedor |
+| Operações de carteira restritas ao serviço interno | ✅ `POST /wallets`, `GET /wallets*`, `/reconciliation` e a leitura interna por id exigem role `internal`. Teste de integração prova **403 com zero efeito financeiro** (contagem de tabelas antes/depois) |
+| Acesso à mensageria controlado por credenciais e políticas do broker | ⬜ Fase 8 (filas FIFO + DLQ já provisionadas; o consumidor entra lá) |
+| Escolha do IdP e modelo de permissões justificados no `ARCHITECTURE.md` | ✅ `ARCHITECTURE.md` §10 (era `[PLANEJADO]`): escolha do Keycloak, roles `internal`/`provider`, `provider_id` do token, duas classes de erro (401 x 503), cache/rotação de chave e as limitações registradas |
+| Rejeição de credenciais ausentes, inválidas ou expiradas | ✅ token ausente, malformado, expirado, `nbf` no futuro, emissor errado, audience errada, `kid` inexistente, assinatura de outra chave, `alg: none` e `alg: HS256` — 11 casos, cada um afirmando a causa exata |
+| IdP indisponível não pode gerar efeito financeiro | ✅ discovery/JWKS fora ⇒ **503** com `Retry-After`, e teste de integração confere saldo e ledger intactos |
 
 ## 3. Ambiente de execução e falhas — 🟡
 
@@ -109,10 +116,10 @@ está implementada e testada no nível do caso de uso.
 | --- | --- |
 | Go com versão no `go.mod` e no Dockerfile | ✅ (Fase 0 corrigiu o Dockerfile que não compilava) |
 | Go Modules versionados | ✅ `go.mod` + `go.sum` |
-| Uber Fx com `fx.Module`/`Provide`/`Invoke` | ✅ `internal/app/app.go` (módulos `config` e `httpapi`; `usecase` entra na Fase 7) |
-| `fx.Lifecycle` com validação, cancelamento e shutdown | ✅ para o HTTP (`OnStart` detecta erro de bind, `OnStop` faz `Shutdown` com prazo). Falta: `StopTimeout` vindo da config (**P7**) e o shutdown dos workers (Fases 8–9) |
-| HTTP (`net/http` ou roteador) | ✅ `chi` + middlewares (`RequestID`, `RealIP`, `Recoverer`, `AccessLog`, `Timeout`, `MaxBody`) |
-| IdP OIDC | ✅ Keycloak no compose; middleware ⬜ Fase 7 |
+| Uber Fx com `fx.Module`/`Provide`/`Invoke` | ✅ `internal/app/{app,modules}.go` — módulos `config`, `infra` (pool + Unit of Work + verificador OIDC + health checker), `usecase` (`appwagering.Service`), `auth` (autenticador + health checker) e `httpapi` (rotas, servidor, handlers) |
+| `fx.Lifecycle` com validação, cancelamento e shutdown | ✅ o HTTP (`OnStart` detecta erro de bind, `OnStop` faz `Shutdown` com prazo) e o **fechamento do pool** por `Lifecycle`, na ordem inversa do registro (servidor para antes, dependências fecham depois). **P7 resolvida**: `StopTimeout` vem de `HTTP_STOP_TIMEOUT`, validado contra o `ShutdownTimeout`. Shutdown dos workers entra nas Fases 8–9 |
+| HTTP (`net/http` ou roteador) | ✅ `chi` + middlewares (`RequestID`, `RealIP`, `AccessLog`, `Recoverer`, `Timeout`, `MaxBody`) — com a ordem corrigida (P2) |
+| IdP OIDC | ✅ Keycloak no compose **e middleware implementado** (`internal/infra/auth`): discovery, JWKS com cache/rotação, RS256, `iss`/`aud`/`exp`/`nbf` |
 | PostgreSQL | ✅ |
 | SQS com LocalStack | ✅ filas FIFO + DLQ + redrive provisionadas (`deploy/localstack/init-queues.sh`) |
 | Docker Compose | ✅ `postgres`, `keycloak`, `localstack`, `localstack-init`, `migrate`, `api` |
@@ -179,18 +186,19 @@ durável fica restrito a `PENDING_REFERENCE` (que É durável e retomável).
 | Reenvios não alteram o resultado | ✅ provado (os dois reenvios depois da corrida) |
 | Carteiras diferentes continuam em paralelo | 🟡 garantido por construção (lock de linha); falta a prova explícita (Fase 10) |
 
-## 9. Contratos HTTP — ⬜ Fase 7 (o caso de uso por trás está pronto)
+## 9. Contratos HTTP — ✅ Fase 7
 
 | Exigência | Estado |
 | --- | --- |
-| `POST /wallets` com `{playerId, initialBalance}` → `{id, playerId, balance, version}` | ✅ a regra existe (`OpenWallet`), com **versão 1** na abertura, lançamento partindo de `0.00` e dois eventos no mesmo commit; zero ⇒ sem `OPENING`/ledger/eventos; duplicado ⇒ conflito. ⬜ o endpoint em si, e a rota hoje está em `/internal/wallets` (**P4**) |
-| `GET /wallets/:id`, `/ledger?cursor&limit`, `/wagering/transactions/:id`, `/providers/:providerId/wagering/transactions/:externalTransactionId` | ✅ as leituras existem com cursor opaco, ordenação estável, `limit` padrão 50 e teto 200, e isolamento por provedor. ⬜ os endpoints |
-| `POST /wagering/transactions` com `Idempotency-Key` obrigatório | ✅ a regra (chave obrigatória, **nunca** substituída por uma calculada) e o contrato `201`/`200`/`202`/`422`/`409` estão **desenhados** em `PROXIMO_PASSO.md` §6.3. ⬜ o endpoint |
-| Hash determinístico dos campos de negócio, com JSON canônico, **excluindo** chave de idempotência e metadados de transporte; equivalência HTTP × SQS documentada | ✅ implementado e documentado (`payload.go`), com a normalização ("025.00" = "25.00"; formas não canônicas são recusadas no parsing) registrada em `ARCHITECTURE.md` §7. A **prova** da equivalência HTTP × SQS é a Fase 8 |
-| Replay devolve o saldo do processamento original | ✅ provado |
-| Documentar códigos e corpos para entrada inválida, conflito, rejeição, pendente e indisponibilidade | ✅ desenhado (`PROXIMO_PASSO.md` §6.3); a implementação é a Fase 7 |
-| Reconciliação: `storedBalance`, `calculatedBalance`, `difference`, `consistent`, `checkedEntries`, visão consistente, sem alterar saldo | ✅ implementado e provado no banco (975.00/975.00/0.00/true/2), inclusive a recusa de escrita em transação somente-leitura |
-| `GET /health/live` e `/health/ready` (readiness de PostgreSQL e SQS) | ✅ existem e respondem; readiness do PostgreSQL ✅. SQS ⬜ Fase 8 (**P5**) |
+| `POST /wallets` com `{playerId, initialBalance}` → `{id, playerId, balance, version}` | ✅ **implementado** em `POST /wallets` (P4 resolvida), role `internal`, com **versão 1** na abertura, lançamento partindo de `0.00` e dois eventos no mesmo commit; zero ⇒ sem `OPENING`/ledger/eventos; duplicado ⇒ `409`. Reenvio ⇒ `idempotentReplay: true` |
+| `GET /wallets/:id`, `/ledger?cursor&limit`, `/wagering/transactions/:id`, `/providers/:providerId/wagering/transactions/:externalTransactionId` | ✅ os quatro endpoints, com cursor opaco, ordenação estável, `limit` padrão 50 e teto 200 (e `limit` não numérico ⇒ 400), isolamento por provedor e `nextCursor: null` no fim |
+| `POST /wagering/transactions` com `Idempotency-Key` obrigatório | ✅ implementado. Chave ausente ⇒ `400 IDEMPOTENCY_KEY_REQUIRED` sem chamar o caso de uso; o servidor **nunca** substitui a chave recebida |
+| Hash determinístico dos campos de negócio, com JSON canônico, **excluindo** chave de idempotência e metadados de transporte; equivalência HTTP × SQS documentada | ✅ implementado e documentado (`payload.go`). A **prova** da equivalência HTTP × SQS é a Fase 8 (o `Request` é o mesmo tipo nas duas portas) |
+| Replay devolve o saldo do processamento original | ✅ provado na borda: `200` com `idempotentReplay: true` e o saldo de 975.00 mesmo depois de a carteira ter mudado |
+| Documentar códigos e corpos para entrada inválida, conflito, rejeição, pendente e indisponibilidade | ✅ implementado **e documentado** (`ARCHITECTURE.md` §10, com as duas tabelas): `201`/`200`/`202`/`422`/`409`/`404`/`400`/`403`/`503`/`500`, com `code` e `failureCode` estáveis |
+| Reconciliação: `storedBalance`, `calculatedBalance`, `difference`, `consistent`, `checkedEntries`, visão consistente, sem alterar saldo | ✅ implementado e provado na borda (975.00/975.00/0.00/true/2), com **log de divergência** e métrica `wager_reconciliation_divergences_total` |
+| `GET /health/live` e `/health/ready` (readiness de PostgreSQL e SQS) | ✅ readiness de **PostgreSQL e IdP** registrados no grupo `health_checkers` (P5 parcial: o SQS entra na Fase 8, junto com o cliente) |
+| `docker compose up --build` sobe o `api` saudável | ✅ P1 resolvida: a flag `-health-check` existe e foi provada **subindo o binário real** |
 
 ## 10. Consumidor SQS — ⬜ Fase 8
 
@@ -218,19 +226,19 @@ durável fica restrito a `PENDING_REFERENCE` (que É durável e retomável).
 
 | Exigência | Estado |
 | --- | --- |
-| Logs JSON com `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId`; sem credenciais nem payload financeiro completo | ✅ a base: `slog` JSON, `correlationId`/`requestId` por middleware, redação de dado sensível. O preenchimento dos campos de domínio vem com os handlers (Fase 7) e o consumidor (Fase 8) |
-| Métricas: resultados por status, duplicatas, retries, DLQ, conflitos, atraso da outbox, latência, divergências de reconciliação | 🟡 **as 12 métricas já estão definidas** no pacote de observabilidade (`jungleg_*`); nenhuma é **emitida** ainda — a instrumentação é a Fase 11, de propósito, para o caso de uso não nascer acoplado ao Prometheus |
-| Health checks definidos na API | ✅ `/health/live` e `/health/ready`; falta registrar PG/SQS no grupo de checkers (**P5**) |
+| Logs JSON com `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId`; sem credenciais nem payload financeiro completo | ✅ a borda HTTP já preenche os campos de domínio: `http_request` (status, duração, `idempotencyKey`), `http_error` (`code`, `failureCode`), `operacao_concluida`/`operacao_rejeitada` (`transactionId`, `providerId`, `status`, `failureCode`, `correlationId`), `carteira_aberta`, `ledger_consultado`, `reconciliacao_divergente`, `token_recusado`, `idp_indisponivel`, `provedor_divergente_do_token`. Valor monetário **não** entra no log; a divergência sai em unidades mínimas. `messageId` chega com o consumidor (Fase 8) |
+| Métricas: resultados por status, duplicatas, retries, DLQ, conflitos, atraso da outbox, latência, divergências de reconciliação | 🟡 **4 das 12 já são emitidas pela borda HTTP** (`wager_operations_total{kind,status}`, `wager_operation_duration_seconds`, `wager_idempotent_replays_total`, `wager_reconciliation_divergences_total`). Retries, DLQ, conflitos e atraso da outbox entram nas Fases 8–9/11 |
+| Health checks definidos na API | ✅ `/health/live` (processo) e `/health/ready` (PostgreSQL + IdP, com o nome de cada dependência no corpo). SQS entra na Fase 8 (**P5** parcial) |
 
 ## 13. Verificação obrigatória — 🟡
 
 | Bloco | Estado |
 | --- | --- |
-| **Testes unitários** (parsing e operações de `Money`, escala, limites, entradas inválidas, moedas, invariantes da carteira, transições, regras dos cinco tipos, conflito de payload, política de zero, abertura interna com metadados e eventos) | ✅ 574 casos no domínio + 56 no caso de uso (43 funções `Test`), com dublês em memória que têm semântica real de transação |
-| **Testes de integração** com PostgreSQL, IdP e LocalStack em containers reais | 🟡 PostgreSQL ✅ real, com migrations, constraints, imutabilidade do ledger, atomicidade financeira, outbox concorrente, retry e lease provados (29 casos). IdP ⬜ Fase 7 (usar o Keycloak do container — ⚠️ 5). LocalStack/inbox/reentrega/DLQ ⬜ Fase 8. Recuperação após reinicialização ⬜ Fase 10 |
-| Verificação da composição Fx, início, encerramento e liberação de recursos dos workers | 🟡 `TestValidateAppComposition` e `TestBuildAppFailsWithInvalidConfig` existem; a liberação de recursos dos workers entra com os workers (Fases 8–9) |
-| **Não substituir toda a infraestrutura por mocks** | ✅ os testes de integração usam PostgreSQL real e o Unit of Work de produção; o único dublê é o adaptador da outbox, num teste que precisa provar rollback — e o rollback é do banco |
-| Autenticação/autorização: credenciais ausentes/inválidas/expiradas, isolamento entre provedores inclusive em replay e leitura, restrição das operações internas, nenhum efeito financeiro em acesso negado | 🟡 o isolamento e a restrição das operações internas ✅ no caso de uso; os testes de token ⬜ Fase 7 (**eliminatório**) |
+| **Testes unitários** (parsing e operações de `Money`, escala, limites, entradas inválidas, moedas, invariantes da carteira, transições, regras dos cinco tipos, conflito de payload, política de zero, abertura interna com metadados e eventos) | ✅ 574 casos no domínio + 56 no caso de uso + **49 em `internal/infra/auth`** + **67 em `internal/httpapi`** (tabela desfecho→status, erro→status, handlers com dublês) |
+| **Testes de integração** com PostgreSQL, IdP e LocalStack em containers reais | 🟡 PostgreSQL ✅ real (migrations, constraints, imutabilidade do ledger, atomicidade, outbox concorrente, retry, lease — 29 casos) e **IdP ✅ real** (30 casos na borda HTTP obtendo token por `client_credentials` no Keycloak, + 2 casos subindo o **binário real**). LocalStack/inbox/reentrega/DLQ ⬜ Fase 8. Recuperação após reinicialização ⬜ Fase 10 |
+| Verificação da composição Fx, início, encerramento e liberação de recursos dos workers | 🟡 `TestValidateAppComposition` valida o grafo **inteiro** agora (infra + usecase + auth + httpapi), `TestBuildAppFailsWithInvalidConfig` prova a falha de boot, e o teste do binário real prova **encerramento gracioso** e liberação do pool. A liberação dos recursos dos **workers** entra com os workers (Fases 8–9) |
+| **Não substituir toda a infraestrutura por mocks** | ✅ os testes de integração usam PostgreSQL real, Keycloak real e o Unit of Work de produção; os dublês existem só nos testes **unitários** da borda (autenticador e serviço), onde o objetivo é a tradução do contrato |
+| Autenticação/autorização: credenciais ausentes/inválidas/expiradas, isolamento entre provedores inclusive em replay e leitura, restrição das operações internas, nenhum efeito financeiro em acesso negado | ✅ **Fase 7.** 11 formas de token inválido com a causa exata; isolamento por corpo, por path, na leitura e **no replay**; operações internas exigindo role; e **contagem de tabelas antes/depois** provando zero efeito financeiro no 403/401/503 |
 | Concorrência e recuperação (8 cenários) | 1 mesma aposta 50× ✅ (feito com 12 disparos); 2 disputa 80+80 ✅; 3 carteiras distintas ⬜; 4 três instâncias ⬜; 5 interrupção do consumidor ⬜; 6 dois publishers ⬜ (o `SKIP LOCKED` já é provado com 2 concorrentes no nível do repositório); 7 `REFUND`/`ROLLBACK` antes da referência ✅ a primeira metade (fica `PENDING_REFERENCE`), a resolução/expiração ⬜ Fase 9; 8 reinício preservando idempotência/pendências ⬜ |
 | Conferência final: saldo armazenado == soma de créditos − débitos | ✅ provado em teste, e é exatamente o que a reconciliação faz |
 | `go test -race` nos testes aplicáveis | ✅ verde nos dois modos |
@@ -239,36 +247,37 @@ durável fica restrito a `PENDING_REFERENCE` (que É durável e retomável).
 
 | Eliminatório | Estado |
 | --- | --- |
-| Ausência de autenticação efetiva nos endpoints de negócio | ⬜ **Fase 7** — hoje não há endpoints de negócio, então nada está exposto; passa a valer quando existirem |
-| Acesso não autorizado a operações/transações | 🟡 mitigado no caso de uso; a prova é da Fase 7 |
+| Ausência de autenticação efetiva nos endpoints de negócio | ✅ **Fase 7.** Todos os endpoints de negócio exigem token validado contra o Keycloak real; não há rota de negócio registrada sem autenticador |
+| Acesso não autorizado a operações/transações | ✅ isolamento no caso de uso **e** na borda (corpo, path, leitura e replay), com prova de que o acesso negado não produz efeito financeiro |
 | Cálculo monetário em ponto flutuante | ✅ nenhum nos caminhos monetários (com a nuance do §5.1) |
 | Saldo negativo por concorrência | ✅ impedido no domínio **e** por CHECK no banco |
-| Movimentação duplicada | ✅ impedida por índice único + idempotência persistente |
+| Movimentação duplicada | ✅ impedida por índice único + idempotência persistente, agora alcançável pelas duas portas (HTTP hoje; SQS na Fase 8) |
 | Idempotência restrita à memória | ✅ persistida no banco |
-| Dependência de uma única instância para funcionar | ✅ o estado está todo no PostgreSQL (locks, índices, constraints); a prova com 3 instâncias é a Fase 10 |
+| Dependência de uma única instância para funcionar | ✅ o estado está todo no PostgreSQL (locks, índices, constraints) e a validação de token é **local** (não há estado de sessão em memória); a prova com 3 instâncias é a Fase 10 |
 | Publicação anterior ao commit | ✅ impossível por construção (outbox na mesma transação) |
 | Ausência de ledger auditável | ✅ ledger append-only com dois saldos por lançamento |
-| Substituição integral de PostgreSQL, SQS e IdP por mocks nos testes | ✅ |
+| Substituição integral de PostgreSQL, SQS e IdP por mocks nos testes | ✅ PostgreSQL e IdP são **reais** nos testes de integração; os dublês existem só nos testes unitários da borda |
 
 ## 15. Entrega — 🟡 Fase 12
 
 | Exigência | Estado |
 | --- | --- |
-| Código, migrations, Docker Compose e instruções para reproduzir de um checkout limpo | 🟡 código, migrations e compose ✅; as instruções e a prova de `docker compose up --build` são a Fase 12 (**e dependem de P1**) |
-| `README.md` da solução com pré-requisitos, variáveis, filas, migrations (aplicar/reverter), execução, exemplos e testes | ⬜ Fase 12 — **⚠️ 3: decidir onde esse arquivo vive** |
-| `.env.example` sem segredos reais | ✅ completo (HTTP, banco, OIDC, SQS, outbox, workers) |
-| Provisionamento automático do IdP, identidades de teste e instruções dos fluxos autenticados | 🟡 realm, clients, roles, mapper e usuários de teste ✅ (`deploy/keycloak/realm.json`); as instruções ⬜ Fase 12 |
-| `ARCHITECTURE.md` com decisões e limitações | ✅ existe e está atualizado até a Fase 6 (§1–§17) |
-| Comandos documentados: `docker compose up --build`, `go test ./...`, `go test -race ./...`, `go vet ./...` | ⬜ Fase 12 (os comandos de teste já estão nas evidências; `docker compose up --build` esbarra em P1) |
-| Documentar como preparar dependências de teste, integração, múltiplas instâncias e simulações de falha; informar as build tags | 🟡 a tag `integration` está documentada nas evidências e no `ARCHITECTURE.md` §17; a documentação consolidada é a Fase 12 |
-| Código formatado com `gofmt` e dependências reproduzíveis | ✅ `gofmt -l` limpo e `go.sum` versionado (falta o `go mod tidy` para remover `testcontainers-go`, Fase 12) |
+| Código, migrations, Docker Compose e instruções para reproduzir de um checkout limpo | 🟡 código, migrations e compose ✅; **P1 resolvida**, então `docker compose up --build` sobe o `api` saudável. As instruções consolidadas são a Fase 12 |
+| `README.md` da solução com pré-requisitos, variáveis, filas, migrations (aplicar/reverter), execução, exemplos e testes | 🟡 os exemplos autenticados já existem em `docs/evidencias/FASE_7.md` §4; a decisão de **onde** esse arquivo vive é a ⚠️ 3 da Fase 12 |
+| `.env.example` sem segredos reais | ✅ completo (HTTP, banco, OIDC, SQS, outbox, workers) — e agora com `OIDC_HTTP_TIMEOUT`, `OIDC_TOKEN_URL` e `HTTP_STOP_TIMEOUT` |
+| Provisionamento automático do IdP, identidades de teste e instruções dos fluxos autenticados | 🟡 realm, clients, roles, mapper e usuários de teste ✅; o fluxo `client_credentials` é exercitado pelos testes (com os três clients do realm); as instruções ⬜ Fase 12 |
+| `ARCHITECTURE.md` com decisões e limitações | ✅ atualizado até a **Fase 7** (§10 fechada: autenticação, autorização, contratos, middlewares, composição, readiness e limitações) |
+| Comandos documentados: `docker compose up --build`, `go test ./...`, `go test -race ./...`, `go vet ./...` | 🟡 documentados em `ARCHITECTURE.md` §17 e nas evidências; a consolidação é a Fase 12 |
+| Documentar como preparar dependências de teste, integração, múltiplas instâncias e simulações de falha; informar as build tags | 🟡 a tag `integration` está documentada (§17 e `FASE_7.md` §10), inclusive as dependências (PostgreSQL e Keycloak de pé); múltiplas instâncias é a Fase 10 |
+| Código formatado com `gofmt` e dependências reproduzíveis | ✅ `gofmt -l` limpo e `go.sum` versionado — **sem dependência nova nesta fase** (a validação OIDC usa a biblioteca padrão). Falta o `go mod tidy` para remover `testcontainers-go`, Fase 12 |
 
 ---
 
 ## Divergências e interpretações registradas (para o avaliador)
 
 Nenhuma contraria o enunciado; todas são escolhas onde ele deixou margem. Estão
-detalhadas em `docs/evidencias/FASE_6.md` §8 e no `ARCHITECTURE.md` §9:
+detalhadas em `docs/evidencias/FASE_6.md` §8, `docs/evidencias/FASE_7.md` §8 e no
+`ARCHITECTURE.md` §9 e §10:
 
 1. Referência em `BET`/`WIN`/`LOSS` é **informativa** e não bloqueia a operação.
 2. `WALLET_PLAYER_MISMATCH` e `TRANSACTION_NOT_FOUND` são códigos **novos**, além da
@@ -283,13 +292,23 @@ detalhadas em `docs/evidencias/FASE_6.md` §8 e no `ARCHITECTURE.md` §9:
    conclusão síncrona; o `PENDING` durável é só `PENDING_REFERENCE`.
 7. `sequence` global (e não por carteira) na outbox: a ordem que importa é dentro do
    grupo, e a global a preserva.
+8. `POST /wallets` **não** tem header de idempotência no enunciado: a chave é
+   derivada de `(playerId, moeda)` quando o cliente não manda uma, e a do cliente é
+   usada como veio quando existe.
+9. Na **rejeição de negócio** (422), o corpo é o do desfecho (com `transactionId` e
+   `failureCode`), e não o envelope de erro — a rejeição é um fato auditável, não um
+   erro de transporte. As situações continuam distinguíveis pelo contrato.
+10. `GET /wagering/transactions/{id}` exige role `internal`, porque o identificador
+    é interno; o provedor consulta pela rota dele.
+11. O token do serviço interno não é aceito nas rotas de provedor (403): sem
+    `provider_id` não existe provedor autorizado.
 
 ## O que ainda NÃO existe (lista direta, sem rodeio)
 
-- Nenhum endpoint de negócio respondendo (só `/health/live`, `/health/ready` e `/metrics`).
-- Nenhum token sendo exigido ou validado.
 - Nenhum consumidor de SQS, nenhuma mensagem sendo processada.
 - Nenhum publisher de outbox e nenhum worker (referências, reaper).
-- Nenhuma métrica sendo emitida.
+- **Parcialmente resolvido na Fase 7:** 4 das 12 métricas já são emitidas (pela
+  borda HTTP: operações, latência, replays e divergência de reconciliação); o resto
+  é das Fases 8–9 e 11.
 - Nenhuma prova com 3 instâncias, nem de carteiras distintas em paralelo.
 - O README da solução (o enunciado ocupa esse nome).

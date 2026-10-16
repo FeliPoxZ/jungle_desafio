@@ -22,8 +22,8 @@ Serviço em Go que processa operações financeiras de provedores de jogos
 precisão monetária, idempotência persistente, ledger append-only, concorrência
 sem perda de atualização, entrega de eventos sem perda e recuperação de falhas.
 
-**Estado atual:** Fases 0–5 concluídas (domínio + schema + persistência). O
-caminho de escrita ponta a ponta (HTTP/SQS) entra nas Fases 6–9.
+**Estado atual:** Fases 0–7 concluídas (domínio + schema + persistência + caso de
+uso + API HTTP autenticada). O consumo por SQS e os workers entram nas Fases 8–9.
 
 **Índice de estado:**
 
@@ -37,7 +37,7 @@ caminho de escrita ponta a ponta (HTTP/SQS) entra nas Fases 6–9.
 | Transações e concorrência (Unit of Work) | `[PRONTO]` |
 | Idempotência | `[PRONTO]` — persistência + decisão de replay no caso de uso |
 | Caso de uso da aplicação | `[PRONTO]` — `Process`, `OpenWallet`, leituras e `Reconcile` (Fase 6) |
-| HTTP + autenticação | `[PLANEJADO]` — Fase 7 |
+| HTTP + autenticação | `[PRONTO]` — Fase 7 (§10) |
 | Consumo do SQS (inbox) | `[PLANEJADO]` — Fase 8 |
 | Outbox publisher e worker de referências | `[PLANEJADO]` — Fase 9 |
 
@@ -827,15 +827,283 @@ divergência ficam na borda e na Fase 11 — o caso de uso devolve o resultado.
 
 ---
 
-## 10. HTTP e autenticação `[PLANEJADO]` — Fase 7
+## 10. HTTP e autenticação `[PRONTO]` — Fase 7
 
-- OIDC com Keycloak; `provider_id` vem do token, e o corpo da requisição **não**
-  escolhe o provedor;
-- `Idempotency-Key` obrigatório;
-- `201` nova · `200` replay · `202` pendente · `422` rejeição de negócio ·
-  `409` conflito · `403` provedor errado;
-- `cmd/api` ganha a flag `-health-check` (usada pelo healthcheck do compose);
-- rota `POST /wallets` (hoje o path interno é `/internal/wallets`).
+### As rotas do enunciado, e quem pode cada uma
+
+| Rota | Role | Por que essa role |
+| --- | --- | --- |
+| `POST /wallets` | `internal` | Abrir carteira cria saldo a partir do zero: é dinheiro entrando no sistema, e nenhum provedor tem esse direito (README §2) |
+| `GET /wallets/{walletId}` | `internal` | Operação de carteira é restrita ao serviço interno |
+| `GET /wallets/{walletId}/ledger` | `internal` | idem |
+| `POST /wallets/{walletId}/reconciliation` | `internal` | idem |
+| `GET /wagering/transactions/{transactionId}` | `internal` | O `{transactionId}` é o identificador **interno** (UUID nosso). O provedor não o conhece |
+| `POST /wagering/transactions` | `provider` | A operação do provedor, com `Idempotency-Key` obrigatório |
+| `GET /providers/{providerId}/wagering/transactions/{externalTransactionId}` | `provider` | O provedor consulta pela identidade DELE |
+| `GET /health/live`, `/health/ready`, `/metrics` | público | O orquestrador precisa consultá-los sem credencial de negócio |
+
+### [DECISÃO] O `providerId` vem do TOKEN, nunca do corpo
+
+É a regra do README §2 ("a identidade autenticada deve determinar o `providerId`
+autorizado") e a razão de o corpo ser apenas **confirmatório**:
+
+```
+corpo.providerId preenchido e diferente do claim  → 403 (nem chega ao caso de uso)
+corpo.providerId igual ao claim                   → prossegue
+corpo.providerId ausente                          → prossegue com o claim
+```
+
+Sem isso, qualquer token válido — de qualquer provedor — operaria a carteira de
+qualquer outro. É o eliminatório "acesso não autorizado a operações ou
+transações" (§14). Há teste de unidade que prova que o caso de uso **não é
+chamado** quando o provedor diverge.
+
+### [DECISÃO] Operação de outro provedor responde "não existe", e o 403 é do PATH
+
+As duas checagens existem, e cada uma responde uma pergunta diferente:
+
+| Pergunta | Rota | Resposta |
+| --- | --- | --- |
+| "me dê a operação do **provider-b**" (explícito no path) | `GET /providers/provider-b/...` com token de `provider-a` | **403** — é uma pergunta explícita sobre outro provedor, e o A9 manda 403 |
+| "existe a operação `txn-1`?" (com o MEU token) | `GET /providers/provider-a/wagering/transactions/txn-1`, existindo só para `provider-b` | **404** — devolver 403 confirmaria a **existência** de uma operação alheia |
+
+O `GetByProviderExternalID` vai além: o provedor entra na **consulta SQL**, então
+a linha alheia nem é lida. O teste de integração confere que a resposta de 404 não
+menciona o outro provedor.
+
+### [DECISÃO] Rejeição de negócio é DESFECHO no corpo; erro de transporte é envelope
+
+```
+422  {"transactionId":"...","status":"REJECTED","balance":null,"failureCode":"INSUFFICIENT_FUNDS"}
+     ^ rejeição: a operação EXISTE, foi decidida e é auditável
+
+400/401/403/404/409/503/500  {"error":{"code":"...","message":"...","failureCode":"..."}}
+     ^ o que impede a operação de existir
+```
+
+**Por que não usar o envelope em tudo:** a rejeição é um fato do domínio, com
+identificador próprio. O cliente precisa do `transactionId` para consultar e
+auditar — e o `failureCode` é o que ele usa para decidir o que fazer (§7 do
+enunciado). Estado, por outro lado, é o que o envelope carrega. As duas formas
+continuam distinguíveis pelo contrato, que é a exigência da §9.
+
+### A tabela desfecho → status
+
+| Desfecho | Status | Corpo |
+| --- | --- | --- |
+| `PROCESSED`, primeira vez | `201` | desfecho com `balance` |
+| `PROCESSED`, replay | `200` | desfecho com o saldo **original** e `idempotentReplay: true` |
+| `PENDING_REFERENCE` | `202` | desfecho, `balance: null`, `failureCode: null` |
+| `REJECTED` | `422` | desfecho com `failureCode` |
+| `FAILED` | `503` | desfecho (falha permanente de infraestrutura registrada) |
+| `PENDING` durável ou estado desconhecido | `500` | envelope — a borda não inventa sucesso para um desfecho que não conhece |
+
+### A tabela erro → status
+
+| Erro | Status |
+| --- | --- |
+| `ports.IsConflict` / `ErrIdempotencyConflict` / `ErrWalletAlreadyExists` | `409` |
+| `ports.IsNotFound` / `ErrWalletNotFound` / `ErrTransactionNotFound` | `404` |
+| Códigos de entrada (`INVALID_REQUEST`, `IDEMPOTENCY_KEY_REQUIRED`, `INVALID_AMOUNT`, `REFERENCE_REQUIRED`, `INVALID_TRANSACTION`, `CURRENCY_MISMATCH`, cursor inválido) | `400` + `failureCode` |
+| `OPERATION_NOT_ALLOWED` (`OPENING` de fora) | `403` |
+| `ports.IsRetryable` (transitório esgotado: `55P03`, deadlock, conexão) | `503` + `Retry-After` |
+| Qualquer outro | `500`, sem vazar driver nem stack |
+
+**A regra que nunca pode ser quebrada:** falha de **infraestrutura** nunca vira
+`4xx`. Se um `55P03` (lock timeout) saísse como `400`, o provedor concluiria que o
+pedido dele está errado e **não repetiria** — uma disputa momentânea de lock
+viraria uma aposta perdida. Há teste unitário que passa quatro erros de
+infraestrutura pela classificação e exige que nenhum vire `4xx`.
+
+### Autenticação: OIDC sem dependência externa
+
+`internal/infra/auth` valida o token com a **biblioteca padrão**:
+
+```
+discovery (/.well-known/openid-configuration) ──► jwks_uri ──► JWKS (cache + TTL)
+                                                                   │
+token ──► 3 partes? ──► base64url? ──► alg == RS256? ──► kid existe?
+                                                                   │
+                              rsa.VerifyPKCS1v15(SHA-256) ──► iss? aud? exp? nbf?
+                                                                   │
+                                                              Identity
+```
+
+**Por que não uma biblioteca de terceiros:** um token é base64url + JSON +
+assinatura RSA, e a biblioteca padrão tem as três coisas. A troca é 1 dependência
+(mais as transitivas) por ~300 linhas de regra explícita, testável e sem surpresa.
+
+### [DECISÃO] O algoritmo é decidido AQUI, e não pelo header do token
+
+Confiar no campo `alg` é a vulnerabilidade clássica de JWT, e são três ataques
+concretos:
+
+| Ataque | O que ele explora | Nossa defesa |
+| --- | --- | --- |
+| `alg: "none"` | remover a assinatura e o serviço "validar" | `alg` é comparado com a **constante** `RS256` **antes** de qualquer criptografia |
+| `alg: "HS256"` | assinar com HMAC usando a **chave pública** (que é pública) como segredo | idem: HS256 nunca é aceito, então a chave pública nunca é usada como segredo |
+| `jku`/`x5u` no header | apontar para chave de outro host | o header tem campos opcionais ignorados; a origem das chaves é o discovery **configurado**, e o cliente HTTP não segue redirecionamento |
+
+Além disso: **`kid` é obrigatório**. Sem ele não há como saber qual chave confere a
+assinatura, e "tentar todas" equivaleria a aceitar qualquer chave publicada para
+qualquer token. E o `issuer` anunciado no discovery precisa **bater** com o
+configurado — um DNS trocado no meio do caminho não pode fazer o serviço aceitar
+tokens de terceiro.
+
+### [DECISÃO] Duas classes de erro: token inválido (401) e IdP indisponível (503)
+
+| Situação | Status | Por quê |
+| --- | --- | --- |
+| token ausente, malformado, expirado, assinatura inválida, `iss`/`aud` errados, `alg` errado | `401` | a credencial não serve; repetir não resolve |
+| discovery ou JWKS inacessível, resposta ilegível, nenhuma chave utilizável | `503` + `Retry-After` | o token pode estar **perfeito**; o serviço é que não consegue conferi-lo |
+
+Sem a distinção, uma queda do Keycloak faria o cliente descartar um token válido e
+o incidente seria diagnosticado errado. A resposta **não** diz qual foi o
+problema: "a chave `kid` X não existe" ou "o `exp` passou 3 minutos" ajudaria quem
+está sondando; o detalhe vai para o log, com o `correlationId`.
+
+### [DECISÃO] Cache de JWKS com TTL **e** rebusca por `kid` desconhecido
+
+| Defesa | O que cobre |
+| --- | --- |
+| TTL (`OIDC_JWKS_CACHE_TTL`, padrão 15m) | chave **rotacionada** passa a ser aceita sem reiniciar o serviço; e o IdP não é consultado a cada requisição |
+| rebusca quando o `kid` não está no cache | o intervalo entre a rotação no IdP e o fim do TTL seria uma janela de **401 em massa** para tokens válidos |
+| rebusca única quando a assinatura não confere | uma chave republicada com o mesmo `kid` é aceita; um token forjado continua recusado |
+
+O **cache vencido com o IdP fora** serve a chave antiga: preferir a chave
+conhecida a derrubar o serviço é a escolha certa, porque a assinatura ainda será
+conferida com ela. Já o **readiness** fura o cache de propósito: um readiness que
+consulta cache responderia `UP` durante todo o TTL mesmo com o Keycloak caído.
+
+### [DECISÃO] Autorizar é uma decisão diferente de autenticar
+
+A porta `httpapi.Autenticador` tem três métodos, e a separação é o que faz os
+status serem os corretos:
+
+| Método | Pergunta | Falha |
+| --- | --- | --- |
+| `Middleware` | "quem é você?" | `401` (sem token/inválido) ou `503` (IdP fora) |
+| `RequireRole` | "você pode esta operação?" | `403` — e `401` se **não houver identidade** (composição errada: falha fechado) |
+| `RequireProvider` | "você é um provedor?" | `403` sem `provider_id` |
+
+Com um método só, "token ausente" e "token sem permissão" virariam o mesmo código,
+e o cliente não saberia se deve trocar o token ou pedir acesso.
+
+### [DECISÃO] A interface fica no consumidor, e a implementação na infraestrutura
+
+`httpapi` declara `Autenticador` e `WageringService`; `internal/infra/auth`
+implementa a primeira e `internal/app/wagering` a segunda. Consequências:
+
+- a camada HTTP **não importa** OIDC, e o pacote de autenticação **não importa**
+  `chi` — o acoplamento é por estrutura (interface implícita), não por import;
+- o teste do handler roda com um autenticador que devolve a identidade que o teste
+  quiser, sem chave, sem JWKS e sem rede;
+- `internal/app` é o único lugar que faz a conversão tipo concreto → interface.
+
+### [DECISÃO] Rota de negócio nunca é registrada sem autenticador
+
+`Handlers.RegistrarRotas` devolve sem montar nada quando `auth == nil`. Registrar
+um endpoint financeiro sem autenticação é o eliminatório do §14; falhar **fechado**
+(404, e não 200) é a única resposta aceitável para uma composição errada.
+
+### [DECISÃO] A chave de idempotência da abertura de carteira
+
+O README §9 define `Idempotency-Key` para `POST /wagering/transactions`, e **não**
+para `POST /wallets`. Mas abrir carteira é a operação mais cara de duplicar
+(crédito inicial), e o caso de uso exige a chave. A regra adotada:
+
+```
+cliente mandou Idempotency-Key?  → usa a dele, COMO VEIO (nunca substitui)
+não mandou?                      → deriva "abertura:{playerId}:{moeda}"
+```
+
+Duas consequências, as duas desejáveis: reenviar o **mesmo** pedido devolve a
+carteira com `idempotentReplay: true` (em vez de um conflito seco), e reenviar o
+mesmo jogador com **outro** saldo é conflito de conteúdo — que é a verdade, porque
+a carteira já foi aberta com outro valor. Com saldo inicial **zero** não existe
+`OPENING` (o README manda), então não há registro de idempotência: o reenvio cai na
+unicidade de `(playerId, currency)` e recebe `WALLET_CONFLICT`, que é a resposta
+prescrita para carteira duplicada.
+
+### Middlewares: a ordem, e a correção desta fase (P2)
+
+```
+RequestID → RealIP → AccessLog → Recoverer → Timeout → MaxBody
+```
+
+`AccessLog` vem **antes** (mais externo) que o `Recoverer` de propósito: o log de
+acesso é dono do `statusRecorder`, e o `Recoverer` escreve o `500` **depois** que o
+handler entrou em pânico. Na ordem antiga, o `statusRecorder` já estava fora do
+caminho e o log registrava **200** para uma requisição que respondeu **500** — o
+log mentia exatamente no caso em que ele é mais necessário, e a métrica de status
+herdava o número errado.
+
+**`chimw.RequestSize` foi removido**: com limite `0` ele recusa **qualquer** corpo
+("request body too large"). Não era no-op, e nenhum teste anterior enviava corpo —
+o defeito dormia desde a Fase 0. O limite real é o `MaxBodyMiddleware`, que vem de
+`HTTP_MAX_BODY_BYTES`.
+
+### Composição Fx desta fase
+
+```
+config    → Config validada, slog, métricas
+infra     → *postgres.Pool (com Close no Lifecycle), ports.UnitOfWork, *auth.Verifier,
+            e o health checker do Postgres no grupo health_checkers
+usecase   → ports.Clock, idgen.Generator, *appwagering.Service
+auth      → *auth.Autenticador (+ health checker do IdP no mesmo grupo)
+httpapi   → *Routes, *http.Server, *Handlers, registro das rotas, runHTTPServer
+```
+
+Três detalhes que o Fx exige e que custaram tempo:
+
+1. **`fx.Provide` recebe construtor, não valor.** `clock.System{}` é valor; e como
+   o caso de uso depende das **interfaces** (`ports.Clock`, `idgen.Generator`) e o
+   Fx casa por tipo exato, os providers publicam as duas formas de cada valor;
+2. **grupo é `fx.Annotate(..., fx.ResultTags)`**, não opção de `Provide`; e um
+   parâmetro que é struct `fx.In` **não** pode ser anotado com `fx.ParamTags` — o
+   `group` pertence ao campo;
+3. **o pool recebe `context.Background()` com prazo**, e não o contexto de start: o
+   `pgxpool` é recurso de vida longa, e o contexto de start é cancelado quando o
+   boot termina — passá-lo derrubaria o pool no primeiro `Start`.
+
+### `StopTimeout` vem da configuração (P7)
+
+O prazo de encerramento é uma **opção** do `fx.New` (`fx.StopTimeout`), avaliada na
+construção: nenhum provider do grafo consegue influenciá-la. Por isso `Run` lê a
+configuração **antes** de montar o grafo, e `HTTP_STOP_TIMEOUT` é validado
+(`config.Validate`) junto com a regra de que ele precisa **cobrir**
+`HTTP_SHUTDOWN_TIMEOUT` — com a ordem invertida, o Fx mataria o servidor no meio da
+drenagem das requisições em andamento.
+
+### Readiness: Postgres e IdP (P5)
+
+```
+GET /health/ready → {"status":"UP","dependencies":{"oidc":"UP","postgres":"UP"}}
+```
+
+- **Postgres**: `Ping` com prazo próprio de 2s;
+- **IdP**: discovery **sem cache**, com prazo de 3s. Sem ele no readiness, uma
+  instância que não alcança o Keycloak responderia `200 UP` e continuaria
+  recebendo tráfego para então devolver `503` em toda rota de negócio.
+
+Liveness **não** verifica dependência: se verificasse, uma queda momentânea do
+Postgres faria o orquestrador reiniciar em loop um processo saudável.
+
+### Observabilidade da borda
+
+| Sinal | Onde |
+| --- | --- |
+| `http_request` (método, path, status, bytes, duração, `idempotencyKey`) | `AccessLog` |
+| `http_error` (path, status, `code`, `failureCode`) | `WriteError` |
+| `token_recusado` / `idp_indisponivel` | middleware de autenticação |
+| `provedor_divergente_do_token` / `consulta_de_outro_provedor` | handlers |
+| `operacao_concluida` / `operacao_rejeitada` (`transactionId`, `providerId`, `status`, `failureCode`, `correlationId`) | handler de operação |
+| `reconciliacao_divergente` (unidades mínimas em texto) | handler de reconciliação |
+| `wager_operations_total{kind,status}`, `wager_operation_duration_seconds`, `wager_idempotent_replays_total`, `wager_reconciliation_divergences_total` | métricas Prometheus |
+
+Labels são de **cardinalidade baixa** (tipo e status): usar `walletId` ou
+`transactionId` como label explodiria a série temporal do Prometheus. O valor
+monetário **não** entra no log (payload financeiro completo é proibido pelo §12).
 
 ---
 
@@ -916,6 +1184,13 @@ introduzido de propósito, e todos foram corrigidos com teste que os trava.
 | 17 | 6b | O `CHECK ids_not_blank` exigia `game_id` e `round_id` de **toda** linha, inclusive `OPENING` | abrir carteira obrigaria a INVENTAR jogo e rodada, gravando dado falso no histórico financeiro | migration 000002: a exigência passou a valer só para operação externa; o domínio acompanha |
 | 18 | 6c | **Identificador malformado em coluna `UUID` virava erro permanente (500)** | `GET /wallets/abc` responderia 500 em vez de "não encontrado" (`22P02 invalid input syntax for type uuid`), e uma mensagem de SQS com `walletId` inválido derrubaria o processamento como falha de infraestrutura | guarda de formato antes da consulta (`ids.go`), com "não encontrado" na leitura e entrada inválida no `walletId` da requisição |
 | 19 | 6d | **`RETURNING` não garante a ordem das linhas que devolve** | a fila era lida por `occurred_at`; ao trocar por `sequence`, o `ORDER BY` da subconsulta passou a decidir só QUAIS linhas entram no lote — o lote chegava embaralhado (1 falha em 5 execuções do teste de ordem) e o publisher publicaria fora de ordem | o `UPDATE` virou uma CTE e o `SELECT` de fora ordena por `sequence` |
+| 20 | 7 | **`chimw.RequestSize(0)` no roteador recusava TODO corpo** | `POST /wallets` respondia `400 {"code":"INVALID_REQUEST","message":"JSON inválido: http: request body too large"}` para um corpo de 90 bytes com limite de 1 MiB. Dormia desde a Fase 0 porque **nenhuma rota anterior recebia corpo** | middleware removido; o limite real é o `MaxBodyMiddleware`, vindo de `HTTP_MAX_BODY_BYTES` |
+| 21 | 7 | **`AccessLog` por dentro do `Recoverer` (P2)**: o log registrava 200 para um 500 | o `statusRecorder` do log ficava fora do caminho quando o `Recoverer` escrevia a resposta de panic — o log (e a métrica de status) mentia exatamente no caso mais importante | `AccessLog` passou a envolver o `Recoverer` |
+| 22 | 7 | `fx.Provide(clock.System{})` — valor, não construtor; e o caso de uso depende das **interfaces** | `must provide constructor function, got {} (type clock.System)`; o Fx casa por tipo exato, então o valor também não satisfaria `ports.Clock` | providers que publicam as duas formas (`clock.System`/`ports.Clock`, `idgen.Generator`) |
+| 23 | 7 | Grupo do Fx usado como opção de `Provide` | `must provide constructor function, got {[group:...]} (type fx.resultTagsAnnotation)`, e depois `fx.In structs cannot be annotated with fx.ParamTags` | `fx.Annotate(fn, fx.ResultTags(...))` no provider, e `group` no **campo** de uma struct `fx.In` |
+| 24 | 7 | `context.Context` exigido por `postgres.NewPool` não existe no grafo | `missing type: context.Context` | provider que cria `context.Background()` com prazo — **não** o contexto de start, que é cancelado no fim do boot e derrubaria o pool |
+| 25 | 7 | `-health-check` não existia, e a primeira versão exigia a configuração inteira | o healthcheck do compose apontava para uma flag inexistente (contêiner `unhealthy`); e um processo curto de verificação não deve depender de `DATABASE_URL`/`OIDC_ISSUER` para dar veredito sobre o **serviço** | modo healthcheck que não carrega a config e consulta o próprio `/health/ready` |
+| 26 | 7 | **Três asserções de teste erradas** (régua, não código) | (a) esperava envelope de erro na rejeição 422; (b) usava `cursor=%%%`, que é texto literal válido e devolvia página vazia; (c) tratava a mesma identidade externa em dois provedores como conflito, quando a identidade financeira é o PAR `(providerId, externalTransactionId)` | as três corrigidas, com o motivo escrito no próprio teste |
 
 ---
 
@@ -934,8 +1209,11 @@ que funciona não ajuda quem vai manter.
 | O dublê em memória não prova lock nem concorrência | Ele tem semântica de transação (cópia do estado, troca só no fim sem erro), mas não tem `FOR UPDATE`. Lock, lost update e disputa entre processos são provados contra o PostgreSQL real |
 | `next_resolution_attempt_at` fica preenchido em reversão já `PROCESSED` | Efeito de usar `MarkPendingReference` + `ResolveReference`, que é o único caminho que o agregado oferece para vincular a referência interna. A coluna só é lida para linhas `PENDING_REFERENCE`, então o valor é inerte |
 | `ListLedger` faz uma consulta a mais por página | Confere a existência da carteira antes de listar (para não devolver página vazia ambígua). É uma leitura a mais dentro da mesma transação de leitura |
-| `Reconcile` não emite métrica nem log de divergência | O caso de uso devolve o resultado; log e métrica de divergência entram na Fase 11, junto com as demais métricas de negócio |
-| Sem `ARCHITECTURE.md` de HTTP/SQS/workers | As seções 10 e 11 estão `[PLANEJADO]`; entram nas Fases 7–9 |
+| `Reconcile` não emite métrica nem log de divergência | **Resolvido na Fase 7 na borda**: o handler emite `wager_reconciliation_divergences_total` e o log `reconciliacao_divergente`. O caso de uso continua sem conhecer Prometheus (de propósito) |
+| `ARCHITECTURE.md` sem as seções de SQS e workers | As seções 11 (Fase 8) e as partes de worker da 8/9 seguem `[PLANEJADO]`; a 10 (HTTP) foi fechada na Fase 7 |
+| Sem introspecção de token (RFC 7662) na autenticação | A validação é **local** (assinatura + claims), que é o comportamento normal de OIDC/JWT. Consequência: revogar um token antes do `exp` não é detectado. Introspecção custaria uma ida ao IdP por requisição |
+| `azp` só é conferido com múltiplas audiences | Regra do OIDC Core §3.1.3.7. O realm deste projeto emite uma audience só, então não há o que conferir hoje |
+| Sem rate limiting por identidade | Não é exigido pelo enunciado; com o lock por carteira, o custo de uma rajada é contenção de linha, não corrupção de saldo |
 
 ---
 
@@ -946,27 +1224,32 @@ $env:GOMODCACHE='E:\jungleg\.gocache\mod'
 $env:GOCACHE='E:\jungleg\.gocache\build'
 $env:GOPATH='E:\jungleg\.gocache\gopath'
 
-docker compose up -d postgres
+docker compose up -d postgres keycloak
 $env:DATABASE_URL='postgres://jungleg:jungleg@localhost:5432/jungleg?sslmode=disable'
 .\bin\migrate.exe up
 
-go build ./... ; go vet ./... ; gofmt -l .
+go build ./... ; go vet ./... ; go vet -tags=integration ./...
+gofmt -l .\internal\ .\cmd\ .\migrations\ .\test\
 go test -race ./...
 
-# integração (banco SEPARADO: os testes truncam tabelas)
+# integração (banco SEPARADO: os testes truncam tabelas; e o IdP REAL)
 $env:TEST_DATABASE_URL='postgres://jungleg:jungleg@localhost:5432/jungle_test?sslmode=disable'
+$env:OIDC_ISSUER='http://localhost:8080/realms/jungleg'
+$env:OIDC_DISCOVERY_URL='http://localhost:8080/realms/jungleg'
+$env:OIDC_AUDIENCE='jungleg-api'
 go test -count=1 -race -tags=integration -timeout 300s ./...
-# as 30 operações inválidas que o banco precisa recusar
-docker exec -i jungleg-postgres psql -U jungleg -d jungleg < deploy/postgres/verify_constraints.sql
+
+# as 32 operações inválidas que o banco precisa recusar
+cmd /c "docker exec -i jungleg-postgres psql -U jungleg -d jungleg < deploy/postgres/verify_constraints.sql"
 ```
 
 **Números atuais:** 574 casos no domínio (Fases 1–3) + **38** testes de
-persistência (Fase 5: 13 de unidade, incluindo os 3 de contrato e classificação, e
-25 de integração) + 3 de `idgen` + **56 casos** do caso de uso (43 funções `Test`,
-com os subtests de entrada inválida, abertura e referência divergente) + **29
-casos** de integração do caminho completo. `go test -race` verde nos **13 pacotes**
-de unidade e nos 2 de integração. Cobertura do domínio: `money` 97,9%, `wallet`
-99,0%, `wagering` 100,0%.
+persistência (Fase 5) + 3 de `idgen` + **56 casos** do caso de uso (Fase 6) +
+**49 casos** em `internal/infra/auth` (Fase 7) + **67 casos** em
+`internal/httpapi` (Fase 7) + **29 casos** de integração do caminho completo
+(Fase 6) + **30 casos** de integração da borda HTTP (Fase 7) + 2 de integração do
+binário real. `go test -race` verde nos **15 pacotes** de unidade e nos **3** de
+integração. Cobertura do domínio: `money` 97,9%, `wallet` 99,0%, `wagering` 100,0%.
 
 **Migrations:** três (`000001_init`, `000002_opening_sem_jogo_e_rodada`,
 `000003_ordem_da_outbox`). O binário `bin/migrate.exe` carrega as migrations
@@ -979,4 +1262,12 @@ Como `go test ./...` roda pacotes em processos paralelos, cada `TestMain` toma u
 lock consultivo do PostgreSQL (`pg_advisory_lock`) e espera a vez — **não é
 preciso `-p 1`**.
 
-**Evidências por fase:** `docs/evidencias/FASE_1.md` a `FASE_6.md`.
+**Evidências por fase:** `docs/evidencias/FASE_1.md` a `FASE_7.md`.
+
+**Dependências de teste:** os testes de integração da borda HTTP precisam do
+**Keycloak** de pé (o token é obtido por `client_credentials`), e o de
+`internal/app` compila e sobe o binário real. Sem `TEST_DATABASE_URL` as suítes de
+integração são **puladas** (com aviso), para `go test ./...` continuar verde em
+máquina sem Docker; sem Keycloak, os testes da borda HTTP são pulados pelo mesmo
+motivo — e o `internal/infra/auth` continua provando a criptografia com o servidor
+OIDC de teste que assina de verdade.
