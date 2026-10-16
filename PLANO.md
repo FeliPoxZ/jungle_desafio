@@ -314,13 +314,22 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` feito e **validado por te
 
 **Evidências:** `docs/evidencias/FASE_1.md`
 
-### FASE 2 — Domínio `Wallet` + `LedgerEntry` (D0, ~2h)
-- [ ] `Wallet`: campos privados (`id, playerID, currency, balance, version, createdAt, updatedAt`)
-- [ ] `NewWallet(playerID, initial Money, now)` → version `1`; separado de `RehydrateWallet(...)` (**sem** reaplicar movimentações nem eventos)
-- [ ] `Debit(m)`, `Credit(m)` → validam moeda da carteira; débito nunca deixa saldo negativo (`ErrInsufficientFunds`); incrementam `version` **apenas** quando o saldo muda; atualizam `updatedAt`
-- [ ] `LedgerEntry`: `NewEntry(txnID, walletID, direction, money, balanceBefore)` valida `balanceAfter = before ± money`; imutável (`RehydrateEntry`)
-- [ ] Regras: `(playerID, currency)` único; `LOSS` e rejeições não geram lançamento
-- [ ] Testes: invariantes, débito sem saldo, moeda errada, versão, ledger (antes/depois), reidratação não reaplica
+### FASE 2 — Domínio `Wallet` + `LedgerEntry` (D0, ~2h) — ✅ CONCLUÍDA E VALIDADA
+
+- [x] `Wallet`: campos privados (`id`, `playerID`, `currency`, `balance`, `version`, `createdAt`, `updatedAt`) + acessores
+- [x] `NewWallet(id, playerID, initial, now)` → version `1`, valida id/playerID/moeda/saldo não negativo/instante; separado de `Rehydrate(...)` (**sem** reaplicar movimentações, sem mexer em versão/instantes e sem emitir evento — README §Encaps. L89)
+- [x] `Debit(m, now)`, `Credit(m, now)` → validam moeda da carteira **antes** da aritmética; débito nunca deixa saldo negativo (`ErrInsufficientFunds`); incrementam `version` e `updatedAt` **apenas** quando o saldo muda; devolvem o `Entry` correspondente
+- [x] `apply(direction, amount, now)` é o **único** ponto que muda saldo — `Debit`/`Credit` só escolhem a direção
+- [x] Movimentação de valor **zero**: não muda saldo, não muda versão e **não gera lançamento** (mesma regra do `LOSS`, README §7). Descoberto durante os testes: a primeira versão tentava criar lançamento de zero
+- [x] `Direction` (`DEBIT`/`CREDIT`) com `ParseDirection`/`Validate`/`String`
+- [x] `Entry` (ledger append-only, imutável, **sem setters**): `NewEntry` calcula e valida `balanceAfter = before ± amount`, exige valor **positivo** e devolve `ErrInvalidEntry`/`ErrWalletCurrencyMismatch`; `RehydrateEntry` reconstrói sem revalidar
+- [x] Erros do pacote (`errors.go`): `Error{Code, Message}` + `Is()` por `Code`, sentinelas `ErrInvalidWallet`, `ErrInsufficientFunds`, `ErrWalletCurrencyMismatch`, `ErrInvalidEntry` com códigos `INVALID_WALLET`, `INSUFFICIENT_FUNDS`, `WALLET_CURRENCY_MISMATCH`, `INVALID_LEDGER_ENTRY` — **mesmo padrão do pacote `money`**
+- [x] `(playerID, currency)` único: decisão de schema (constraint `UNIQUE`), verificada na Fase 4
+- [x] Testes: **63 casos** (29 testes + 34 subtests), cobertura **99,0%** (a única linha descoberta é guarda inalcançável, documentada no código)
+- [x] Propriedades: `Credit(x)+Debit(x)` volta ao saldo original com versão +2; nenhuma sequência aceita deixa saldo negativo; a soma dos lançamentos explica a diferença de saldo; falha não deixa estado pela metade
+- [x] Casos defensivos com dados corrompidos via `Rehydrate` (saldo acima do teto, abaixo do piso, direção inválida) — o domínio recusa mesmo sem validar na leitura
+
+**Evidências:** `docs/evidencias/FASE_2.md`
 
 ### FASE 3 — Domínio `WagerTransaction` (D0, ~2h)
 - [ ] `Kind` (`OPENING/BET/WIN/LOSS/REFUND/ROLLBACK`) com `ParseKind`, `IsExternal()`
@@ -508,11 +517,18 @@ Formato: `[data] [fase] status — o que foi feito / decisão / bloqueio`.
   - **Guardas inalcançáveis documentadas:** a guarda de overflow dentro do laço dos inteiros em `parseAmount` é inalcançável dado o portão de 15 dígitos (provado por exaustão); 3 guardas de forma em `rejectDuplicateKeys` são inalcançáveis a partir de `UnmarshalJSON`. Mantidas como defesa e comentadas no código — é a razão da cobertura estar em 97,9% e não 100%.
   - **Anti-float é teste automatizado:** `TestSemPontoFlutuanteNoCodigo` varre a AST do pacote (literais `FLOAT` + identificadores `float64`/`float32`/`ParseFloat`/`FormatFloat`/`NaN`/`Inf`) e `TestImportsPermitidos` mantém lista fechada de imports do núcleo (`bytes`, `encoding/json`, `errors`, `fmt`, `strings`). O item eliminatório do enunciado deixou de depender de revisão manual.
   - **Conformidade README §6.1 + §Encapsulamento: 10 de 10.** Números: **384 casos verdes** (65 testes, 319 subtests), `go test -race ./...` verde nos 5 pacotes, `go vet` e `gofmt` limpos.
+- **D0** — **Fase 2 CONCLUÍDA** — carteira e ledger em `internal/domain/wallet` (`errors.go`, `wallet.go`, `ledger_entry.go`).
+  - **Decisão de design:** `apply` é o **único** ponto que muda saldo; `Debit` e `Credit` só escolhem a direção. Uma regra, um caminho de mutação.
+  - **Decisão de design:** a moeda é checada **antes** da aritmética, para o cliente receber `WALLET_CURRENCY_MISMATCH` em vez de `INSUFFICIENT_FUNDS`. A ordem define o `failureCode`.
+  - **Achado durante os testes:** movimentação de valor zero tentava criar lançamento de ledger, e o `NewEntry` corretamente recusa valor zero. Resolvido no domínio: valor zero **não gera lançamento**, não muda versão e não muda `updatedAt` — mesma regra do `LOSS` (README §7).
+  - **Decisão de design:** valor negativo é rejeitado na movimentação; o sinal é definido pela **direção**. Aceitar negativo inverteria a operação e furaria o saldo mínimo.
+  - **Decisão de design:** `NewEntry` calcula o `balanceAfter` em vez de recebê-lo, então não existe entrada de ledger incoerente por erro de chamada.
+  - **Números: 63 casos verdes** (29 testes, 34 subtests), cobertura **99,0%**, `go test -race ./...` verde nos 6 pacotes.
 
 ### Próximos 3 passos imediatos
-1. **Nós:** Fase 2 — domínio `Wallet` + `LedgerEntry` (mesmo ritmo: um bloco por vez, explicar antes, checkpoint a cada bloco).
-2. **Nós:** documentar a assimetria do negativo e a estritude do `UnmarshalJSON` em `ARCHITECTURE.md` quando a Fase 12 chegar (já comentadas no código).
-3. **Usuário:** checkpoint de entendimento da Fase 1 antes do Bloco 1 da Fase 2 — em especial `errors.Is`/`errors.As` e a guarda de overflow de dois lados.
+1. **Nós:** Fase 3 — domínio `WagerTransaction` (`Kind`, `Status`, transições, `failureCode`, eventos).
+2. **Nós:** Fase 4 — schema e constraints (ledger imutável, `UNIQUE (player_id, currency)`, `CHECK (balance_minor >= 0)`), que é onde as regras da Fase 2 passam a ser impostas pelo banco.
+3. **Usuário:** checkpoint de entendimento das Fases 1–2 antes da Fase 4 (a Fase 3 é sequência direta do domínio).
 
 ---
 
