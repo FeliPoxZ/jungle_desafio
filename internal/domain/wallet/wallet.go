@@ -5,15 +5,21 @@ import (
 	"strings"
 	"time"
 
+	"github.com/FeliPoxZ/jungle_desafio/internal/domain/ids"
+	"github.com/FeliPoxZ/jungle_desafio/internal/domain/ledger"
 	"github.com/FeliPoxZ/jungle_desafio/internal/domain/money"
 )
 
-// WalletID identifica uma carteira. O valor é gerado fora do domínio (uuid v7),
-// então aqui só se verifica que veio preenchido.
-type WalletID string
-
-// PlayerID identifica o jogador dono da carteira.
-type PlayerID string
+// WalletID e PlayerID vêm do pacote ids, que é compartilhado com o ledger e o
+// wagering. São aliases para os nomes continuarem funcionando aqui dentro sem
+// duplicar o tipo — se fossem tipos novos, wallet.WalletID e ids.WalletID seriam
+// incompatíveis e toda conversão viraria ruído.
+type (
+	// WalletID identifica uma carteira.
+	WalletID = ids.WalletID
+	// PlayerID identifica o jogador dono da carteira.
+	PlayerID = ids.PlayerID
+)
 
 // Wallet é a raiz do agregado financeiro: identidade, dono, moeda, saldo,
 // versão e instantes. Os campos são não exportados para que o saldo só mude
@@ -119,14 +125,14 @@ func (w *Wallet) UpdatedAt() time.Time { return w.updatedAt }
 // Devolvendo a versão como parte do resultado, o acoplamento fica explícito e o
 // erro deixa de ser possível: quem grava usa o que o domínio informou.
 type Movement struct {
-	entry         Entry
+	entry         ledger.Entry
 	versionBefore int64
 	balanceBefore money.Money
 	walletAfter   *Wallet
 }
 
 // Entry devolve o lançamento a gravar no ledger.
-func (m Movement) Entry() Entry { return m.entry }
+func (m Movement) Entry() ledger.Entry { return m.entry }
 
 // VersionBefore devolve a versão anterior, para o UPDATE condicional.
 func (m Movement) VersionBefore() int64 { return m.versionBefore }
@@ -146,13 +152,13 @@ func (m Movement) IsZero() bool { return m.entry.IsZero() }
 // O transactionID identifica a operação que originou a movimentação e vai para
 // o lançamento do ledger: sem ele, o lançamento fica órfão e não há como
 // responder "por que o saldo mudou?".
-func (w *Wallet) Debit(transactionID TransactionID, amount money.Money, now time.Time) (Movement, error) {
-	return w.apply(DirectionDebit, transactionID, amount, now)
+func (w *Wallet) Debit(transactionID ledger.TransactionID, amount money.Money, now time.Time) (Movement, error) {
+	return w.apply(ledger.DirectionDebit, transactionID, amount, now)
 }
 
 // Credit soma amount ao saldo, exigindo a mesma moeda.
-func (w *Wallet) Credit(transactionID TransactionID, amount money.Money, now time.Time) (Movement, error) {
-	return w.apply(DirectionCredit, transactionID, amount, now)
+func (w *Wallet) Credit(transactionID ledger.TransactionID, amount money.Money, now time.Time) (Movement, error) {
+	return w.apply(ledger.DirectionCredit, transactionID, amount, now)
 }
 
 // apply é o único ponto que muda o saldo. Valida moeda e valor, calcula o
@@ -161,7 +167,7 @@ func (w *Wallet) Credit(transactionID TransactionID, amount money.Money, now tim
 //
 // Movimentação de valor zero devolve resultado vazio: não muda saldo, não muda
 // versão e não gera lançamento no ledger (mesma regra do LOSS, README §7).
-func (w *Wallet) apply(direction Direction, transactionID TransactionID, amount money.Money, now time.Time) (Movement, error) {
+func (w *Wallet) apply(direction ledger.Direction, transactionID ledger.TransactionID, amount money.Money, now time.Time) (Movement, error) {
 	if err := direction.Validate(); err != nil {
 		return Movement{}, err
 	}
@@ -186,7 +192,7 @@ func (w *Wallet) apply(direction Direction, transactionID TransactionID, amount 
 		after money.Money
 		err   error
 	)
-	if direction == DirectionDebit {
+	if direction == ledger.DirectionDebit {
 		after, err = w.balance.Sub(amount)
 		if err != nil {
 			return Movement{}, err
@@ -206,7 +212,7 @@ func (w *Wallet) apply(direction Direction, transactionID TransactionID, amount 
 	versionBefore := w.version
 	balanceBefore := w.balance
 
-	entry, err := NewEntry(w.id, transactionID, direction, amount, balanceBefore, now)
+	entry, err := ledger.NewEntry(w.id, transactionID, direction, amount, balanceBefore, now)
 	if err != nil {
 		// Inalcançável hoje: o NewEntry revalida moeda, valor positivo,
 		// transactionID, instante e faixa, e o apply já garantiu os cinco antes

@@ -6,30 +6,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/FeliPoxZ/jungle_desafio/internal/app/ports"
 )
-
-// InboxRepo registra as mensagens consumidas, para não processar duas vezes.
-type InboxRepo interface {
-	// InsertIfAbsent grava a mensagem e informa se ela é nova.
-	//
-	// O retorno booleano é o coração da deduplicação: `false` significa que a
-	// mensagem já foi recebida por este consumidor, e quem chamou decide entre
-	// pular (mesmo hash) ou auditar conflito (hash diferente).
-	//
-	// InsertIfAbsent em vez de Exists + Insert porque o UNIQUE do banco resolve
-	// a corrida de graça — duas instâncias recebendo a mesma mensagem ao mesmo
-	// tempo não conseguem as duas inserir.
-	InsertIfAbsent(ctx context.Context, m InboxMessage) (inseriu bool, err error)
-
-	// Get lê a mensagem registrada.
-	Get(ctx context.Context, consumerName, messageID string) (*InboxMessage, error)
-
-	// MarkProcessed marca a conclusão, com o instante.
-	MarkProcessed(ctx context.Context, consumerName, messageID string, now time.Time) error
-
-	// MarkFailed marca a falha, guardando o código estável.
-	MarkFailed(ctx context.Context, consumerName, messageID, failureCode string, now time.Time) error
-}
 
 // InboxMessage é a forma de transporte da mensagem de entrada.
 type InboxMessage struct {
@@ -48,13 +27,13 @@ type inboxRepo struct {
 }
 
 // NewInboxRepo cria o repositório sobre o pool ou sobre uma transação.
-func NewInboxRepo(q querier) InboxRepo { return &inboxRepo{q: q} }
+func NewInboxRepo(q querier) ports.InboxRepository { return &inboxRepo{q: q} }
 
 const inboxColumns = `id, consumer_name, message_id, body_hash, status, failure_code, received_at, completed_at`
 
 // InsertIfAbsent tenta inserir e traduz a violação de unicidade em resultado
 // normal, não em erro: mensagem repetida é o caminho esperado do consumidor.
-func (r *inboxRepo) InsertIfAbsent(ctx context.Context, m InboxMessage) (bool, error) {
+func (r *inboxRepo) InsertIfAbsent(ctx context.Context, m ports.InboxMessage) (bool, error) {
 	// ON CONFLICT DO NOTHING é a forma atômica: o banco decide quem insere,
 	// sem janela entre consultar e gravar.
 	const sql = `
@@ -78,13 +57,13 @@ func (r *inboxRepo) InsertIfAbsent(ctx context.Context, m InboxMessage) (bool, e
 	return tag.RowsAffected() == 1, nil
 }
 
-func (r *inboxRepo) Get(ctx context.Context, consumerName, messageID string) (*InboxMessage, error) {
+func (r *inboxRepo) Get(ctx context.Context, consumerName, messageID string) (*ports.InboxMessage, error) {
 	const sql = `SELECT ` + inboxColumns + `
 		FROM inbox_messages
 		WHERE consumer_name = $1 AND message_id = $2`
 
 	var (
-		m           InboxMessage
+		m           ports.InboxMessage
 		failureCode *string
 		completedAt *time.Time
 	)

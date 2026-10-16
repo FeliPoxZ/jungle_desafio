@@ -12,6 +12,9 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/FeliPoxZ/jungle_desafio/internal/app/ports"
+	"github.com/FeliPoxZ/jungle_desafio/internal/domain/ids"
+	"github.com/FeliPoxZ/jungle_desafio/internal/domain/ledger"
 	"github.com/FeliPoxZ/jungle_desafio/internal/domain/money"
 	"github.com/FeliPoxZ/jungle_desafio/internal/domain/wagering"
 	"github.com/FeliPoxZ/jungle_desafio/internal/domain/wallet"
@@ -86,7 +89,7 @@ func TestWalletUnicidadeDePlayerEMoeda(t *testing.T) {
 
 	// Mesmo par (player_id, currency), id diferente: precisa dar conflito.
 	segunda, err := wallet.NewWallet(
-		wallet.WalletID(uuid.NewString()), "player-1", brl(t, "50.00"), time.Now().UTC(),
+		ids.WalletID(uuid.NewString()), "player-1", brl(t, "50.00"), time.Now().UTC(),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -99,7 +102,7 @@ func TestWalletUnicidadeDePlayerEMoeda(t *testing.T) {
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("err = %v, esperado ErrConflict", err)
 	}
-	if !IsConflict(err) {
+	if !ports.IsConflict(err) {
 		t.Error("IsConflict = false")
 	}
 }
@@ -157,7 +160,7 @@ func TestWalletNotFound(t *testing.T) {
 
 	uow := NewUnitOfWork(poolTeste)
 	err := uow.Run(context.Background(), func(ctx context.Context, r Repos) error {
-		_, err := r.Wallets.GetByID(ctx, wallet.WalletID(uuid.NewString()))
+		_, err := r.Wallets.GetByID(ctx, ids.WalletID(uuid.NewString()))
 		return err
 	})
 	if !errors.Is(err, ErrNotFound) {
@@ -345,7 +348,7 @@ func TestLedgerInsertELeituraComSaldo(t *testing.T) {
 		if lido.BalanceBefore().String() != "1000.00" || lido.BalanceAfter().String() != "975.00" {
 			t.Errorf("saldos = %s -> %s", lido.BalanceBefore(), lido.BalanceAfter())
 		}
-		if lido.Direction() != wallet.DirectionDebit {
+		if lido.Direction() != ledger.DirectionDebit {
 			t.Errorf("direção = %q", lido.Direction())
 		}
 		// A moeda vem do JOIN com wallets.
@@ -411,16 +414,16 @@ func TestLedgerUnicoPorTransacao(t *testing.T) {
 	err = uow.Run(context.Background(), func(ctx context.Context, r Repos) error {
 		// Dois lançamentos para a MESMA carteira e a MESMA transação: o
 		// segundo tem que ser recusado pelo índice único.
-		primeiro := wallet.RehydrateEntry(
-			uuid.NewString(), w.ID(), wallet.TransactionID(txnFixo),
-			wallet.DirectionDebit, brl(t, "5.00"), brl(t, "990.00"), brl(t, "985.00"), time.Now().UTC(),
+		primeiro := ledger.RehydrateEntry(
+			uuid.NewString(), w.ID(), ledger.TransactionID(txnFixo),
+			ledger.DirectionDebit, brl(t, "5.00"), brl(t, "990.00"), brl(t, "985.00"), time.Now().UTC(),
 		)
 		if err := r.Ledger.Insert(ctx, *primeiro); err != nil {
 			return err
 		}
-		segundo := wallet.RehydrateEntry(
-			uuid.NewString(), w.ID(), wallet.TransactionID(txnFixo),
-			wallet.DirectionDebit, brl(t, "5.00"), brl(t, "985.00"), brl(t, "980.00"), time.Now().UTC(),
+		segundo := ledger.RehydrateEntry(
+			uuid.NewString(), w.ID(), ledger.TransactionID(txnFixo),
+			ledger.DirectionDebit, brl(t, "5.00"), brl(t, "985.00"), brl(t, "980.00"), time.Now().UTC(),
 		)
 		return r.Ledger.Insert(ctx, *segundo)
 	})
@@ -435,7 +438,7 @@ func TestLedgerImutavelNoBanco(t *testing.T) {
 	w := carteiraNova(t, "player-1", "1000.00")
 	uow := NewUnitOfWork(poolTeste)
 
-	var entry wallet.Entry
+	var entry ledger.Entry
 	err := uow.Run(context.Background(), func(ctx context.Context, r Repos) error {
 		carteira, err := r.Wallets.GetByIDForUpdate(ctx, w.ID())
 		if err != nil {
@@ -508,12 +511,12 @@ func TestLedgerCursorPaginacao(t *testing.T) {
 			t.Fatalf("página 1 devolveu %d lançamentos, esperado 2", len(pagina1))
 		}
 
-		cursor := CursorDeEntries(pagina1)
+		cursor := ports.CursorDeEntries(pagina1)
 		if cursor == nil {
 			t.Fatal("cursor não foi montado")
 		}
 		// Round-trip do cursor, como o cliente faria.
-		decodificado, err := DecodeCursor(EncodeCursor(*cursor))
+		decodificado, err := ports.DecodeCursor(ports.EncodeCursor(*cursor))
 		if err != nil {
 			return err
 		}
@@ -817,7 +820,7 @@ func TestInboxDeduplicacao(t *testing.T) {
 	uow := NewUnitOfWork(poolTeste)
 	ctx := context.Background()
 
-	primeira := InboxMessage{
+	primeira := ports.InboxMessage{
 		ID:           uuid.NewString(),
 		ConsumerName: "wager-transactions",
 		MessageID:    "msg-1",
@@ -878,7 +881,7 @@ func TestInboxMarcarConclusao(t *testing.T) {
 	agora := time.Now().UTC()
 
 	if err := uow.Run(ctx, func(ctx context.Context, r Repos) error {
-		_, err := r.Inbox.InsertIfAbsent(ctx, InboxMessage{
+		_, err := r.Inbox.InsertIfAbsent(ctx, ports.InboxMessage{
 			ID: uuid.NewString(), ConsumerName: "c-1", MessageID: "m-1", BodyHash: "h-1",
 		})
 		return err
@@ -934,7 +937,7 @@ func TestOutboxClaimBatchComSkipLocked(t *testing.T) {
 	// Cinco eventos disponíveis.
 	for i := 0; i < 5; i++ {
 		if err := uow.Run(ctx, func(ctx context.Context, r Repos) error {
-			return r.Outbox.Insert(ctx, OutboxEvent{
+			return r.Outbox.Insert(ctx, ports.OutboxEvent{
 				EventID:       uuid.NewString(),
 				AggregateID:   "wallet-1",
 				AggregateType: "wallet",
@@ -953,7 +956,7 @@ func TestOutboxClaimBatchComSkipLocked(t *testing.T) {
 	erros := make(chan error, 2)
 
 	reivindicar := func(chave string) error {
-		var lote []OutboxEvent
+		var lote []ports.OutboxEvent
 		err := comRetry(context.Background(), func() error {
 			return uow.Run(ctx, func(ctx context.Context, r Repos) error {
 				var err error
@@ -1002,7 +1005,7 @@ func TestOutboxLeaseImpedeRepeticaoImediata(t *testing.T) {
 	agora := time.Now().UTC()
 
 	if err := uow.Run(ctx, func(ctx context.Context, r Repos) error {
-		return r.Outbox.Insert(ctx, OutboxEvent{
+		return r.Outbox.Insert(ctx, ports.OutboxEvent{
 			EventID: uuid.NewString(), AggregateID: "w-1", AggregateType: "wallet",
 			EventType: "X", Payload: []byte(`{}`), OccurredAt: agora,
 		})
@@ -1010,7 +1013,7 @@ func TestOutboxLeaseImpedeRepeticaoImediata(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var primeiro []OutboxEvent
+	var primeiro []ports.OutboxEvent
 	if err := uow.Run(ctx, func(ctx context.Context, r Repos) error {
 		var err error
 		primeiro, err = r.Outbox.ClaimBatch(ctx, 1, 30*time.Second, agora)
@@ -1048,7 +1051,7 @@ func TestOutboxPublicacaoERetry(t *testing.T) {
 	eventID := uuid.NewString()
 
 	if err := uow.Run(ctx, func(ctx context.Context, r Repos) error {
-		return r.Outbox.Insert(ctx, OutboxEvent{
+		return r.Outbox.Insert(ctx, ports.OutboxEvent{
 			EventID: eventID, AggregateID: "w-1", AggregateType: "wallet",
 			EventType: "WalletBalanceChanged", Payload: []byte(`{"walletId":"w-1"}`), OccurredAt: agora,
 		})
@@ -1095,7 +1098,7 @@ func TestOutboxPublicacaoERetry(t *testing.T) {
 		if err := r.Outbox.MarkPublished(ctx, eventID, time.Now().UTC()); err != nil {
 			return err
 		}
-		presentes := []OutboxEvent{lote[0]}
+		presentes := []ports.OutboxEvent{lote[0]}
 		_ = presentes
 		return nil
 	})
@@ -1139,7 +1142,7 @@ func TestOutboxPendingStats(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		if err := uow.Run(ctx, func(ctx context.Context, r Repos) error {
-			return r.Outbox.Insert(ctx, OutboxEvent{
+			return r.Outbox.Insert(ctx, ports.OutboxEvent{
 				EventID: uuid.NewString(), AggregateID: "w-1", AggregateType: "wallet",
 				EventType: "X", Payload: []byte(`{}`), OccurredAt: ocorrido,
 			})
@@ -1194,7 +1197,7 @@ func TestRollbackNaoDeixaResiduo(t *testing.T) {
 		if err := persistirMovimento(ctx, r, carteira, mov); err != nil {
 			return err
 		}
-		if err := r.Outbox.Insert(ctx, OutboxEvent{
+		if err := r.Outbox.Insert(ctx, ports.OutboxEvent{
 			EventID: uuid.NewString(), AggregateID: string(w.ID()), AggregateType: "wallet",
 			EventType: "WalletBalanceChanged", Payload: []byte(`{}`), OccurredAt: time.Now().UTC(),
 		}); err != nil {
@@ -1259,7 +1262,7 @@ func TestCommitGravaTudoJunto(t *testing.T) {
 		if err := persistirMovimento(ctx, r, carteira, mov); err != nil {
 			return err
 		}
-		return r.Outbox.Insert(ctx, OutboxEvent{
+		return r.Outbox.Insert(ctx, ports.OutboxEvent{
 			EventID: uuid.NewString(), AggregateID: string(w.ID()), AggregateType: "wallet",
 			EventType: "WalletBalanceChanged", Payload: []byte(`{}`), OccurredAt: time.Now().UTC(),
 		})
@@ -1297,14 +1300,14 @@ func TestCommitGravaTudoJunto(t *testing.T) {
 // O ledger tem chave estrangeira para wager_transactions: não existe lançamento
 // sem operação que o origine. Nos testes gravamos a transação primeiro, que é
 // exatamente a ordem do fluxo real da Fase 6.
-func txnGravada(ctx context.Context, t *testing.T, r Repos, w *wallet.Wallet) wallet.TransactionID {
+func txnGravada(ctx context.Context, t *testing.T, r Repos, w *wallet.Wallet) ledger.TransactionID {
 	t.Helper()
 
 	tx := txnNova(t, w, wagering.KindBet, "25.00")
 	if err := r.Transactions.Insert(ctx, tx); err != nil {
 		t.Fatalf("gravando a transação da movimentação: %v", err)
 	}
-	return wallet.TransactionID(tx.ID())
+	return ledger.TransactionID(tx.ID())
 }
 
 // esperarLargada espera as goroutines estarem prontas para começar juntas.
@@ -1365,7 +1368,7 @@ func comRetryTransacao(fn func() error) error {
 }
 
 // lerSaldo lê o saldo direto do banco, sem passar pelo repositório.
-func lerSaldo(t *testing.T, id wallet.WalletID) string {
+func lerSaldo(t *testing.T, id ids.WalletID) string {
 	t.Helper()
 	var minor int64
 	if err := poolTeste.QueryRow(context.Background(),
@@ -1376,7 +1379,7 @@ func lerSaldo(t *testing.T, id wallet.WalletID) string {
 }
 
 // lerVersao lê a versão direto do banco.
-func lerVersao(t *testing.T, id wallet.WalletID) int64 {
+func lerVersao(t *testing.T, id ids.WalletID) int64 {
 	t.Helper()
 	var v int64
 	if err := poolTeste.QueryRow(context.Background(),

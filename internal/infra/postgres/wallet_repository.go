@@ -7,44 +7,19 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/FeliPoxZ/jungle_desafio/internal/app/ports"
+
+	"github.com/FeliPoxZ/jungle_desafio/internal/domain/ids"
 	"github.com/FeliPoxZ/jungle_desafio/internal/domain/money"
 	"github.com/FeliPoxZ/jungle_desafio/internal/domain/wallet"
 )
-
-// WalletRepo persiste carteiras.
-type WalletRepo interface {
-	// Insert grava uma carteira nova. Devolve ErrConflict se o par
-	// (player_id, currency) já existir.
-	Insert(ctx context.Context, w *wallet.Wallet) error
-
-	// GetByID lê pelo identificador, sem lock.
-	GetByID(ctx context.Context, id wallet.WalletID) (*wallet.Wallet, error)
-
-	// GetByPlayerAndCurrency lê pelo par que identifica a carteira.
-	GetByPlayerAndCurrency(ctx context.Context, playerID wallet.PlayerID, currency money.Currency) (*wallet.Wallet, error)
-
-	// GetByIDForUpdate lê COM LOCK de linha (SELECT ... FOR UPDATE).
-	//
-	// É o método que impede lost update: enquanto a transação não terminar,
-	// nenhum outro escritor consegue ler-e-gravar esta carteira. Ler o saldo
-	// sem lock e depois gravar é o bug que o enunciado chama de eliminatório
-	// ("saldo negativo por concorrência").
-	GetByIDForUpdate(ctx context.Context, id wallet.WalletID) (*wallet.Wallet, error)
-
-	// Update grava o saldo e incrementa a versão, exigindo a versão esperada.
-	//
-	// A versão esperada é uma SEGUNDA proteção além do lock: se a linha for
-	// atualizada por outro caminho, o UPDATE não afeta nenhuma linha e a
-	// transação falha em vez de sobrescrever trabalho alheio.
-	Update(ctx context.Context, id wallet.WalletID, expectedVersion int64, balance money.Money) error
-}
 
 type walletRepo struct {
 	q querier
 }
 
 // NewWalletRepo cria o repositório sobre o pool ou sobre uma transação.
-func NewWalletRepo(q querier) WalletRepo { return &walletRepo{q: q} }
+func NewWalletRepo(q querier) ports.WalletRepository { return &walletRepo{q: q} }
 
 const walletColumns = `id, player_id, currency, balance_minor, version, created_at, updated_at`
 
@@ -65,17 +40,17 @@ func (r *walletRepo) Insert(ctx context.Context, w *wallet.Wallet) error {
 	return Classify(err)
 }
 
-func (r *walletRepo) GetByID(ctx context.Context, id wallet.WalletID) (*wallet.Wallet, error) {
+func (r *walletRepo) GetByID(ctx context.Context, id ids.WalletID) (*wallet.Wallet, error) {
 	const sql = `SELECT ` + walletColumns + ` FROM wallets WHERE id = $1`
 	return r.um(ctx, sql, string(id))
 }
 
-func (r *walletRepo) GetByPlayerAndCurrency(ctx context.Context, playerID wallet.PlayerID, currency money.Currency) (*wallet.Wallet, error) {
+func (r *walletRepo) GetByPlayerAndCurrency(ctx context.Context, playerID ids.PlayerID, currency money.Currency) (*wallet.Wallet, error) {
 	const sql = `SELECT ` + walletColumns + ` FROM wallets WHERE player_id = $1 AND currency = $2`
 	return r.um(ctx, sql, string(playerID), moedaDB(currency))
 }
 
-func (r *walletRepo) GetByIDForUpdate(ctx context.Context, id wallet.WalletID) (*wallet.Wallet, error) {
+func (r *walletRepo) GetByIDForUpdate(ctx context.Context, id ids.WalletID) (*wallet.Wallet, error) {
 	// FOR UPDATE trava a linha até o fim da transação. É este lock que
 	// serializa duas operações concorrentes sobre a mesma carteira.
 	const sql = `SELECT ` + walletColumns + ` FROM wallets WHERE id = $1 FOR UPDATE`
@@ -105,8 +80,8 @@ func (r *walletRepo) um(ctx context.Context, sql string, args ...any) (*wallet.W
 	}
 
 	return wallet.Rehydrate(
-		wallet.WalletID(rawID),
-		wallet.PlayerID(rawPlayerID),
+		ids.WalletID(rawID),
+		ids.PlayerID(rawPlayerID),
 		dinheiroMinor(balance, moedaGo(rawCurrency)),
 		version,
 		createdAt,
@@ -114,7 +89,7 @@ func (r *walletRepo) um(ctx context.Context, sql string, args ...any) (*wallet.W
 	), nil
 }
 
-func (r *walletRepo) Update(ctx context.Context, id wallet.WalletID, expectedVersion int64, balance money.Money) error {
+func (r *walletRepo) Update(ctx context.Context, id ids.WalletID, expectedVersion int64, balance money.Money) error {
 	// `AND version = $3` é o controle otimista. Se ninguém mexeu na linha, uma
 	// linha é afetada; se alguém mexeu, ZERO linhas e devolvemos conflito em
 	// vez de sobrescrever.

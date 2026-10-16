@@ -1,14 +1,19 @@
 package postgres
 
 import (
+	"github.com/FeliPoxZ/jungle_desafio/internal/app/ports"
+
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// contains é um atalho para deixar as asserções legíveis.
+func contains(s, sub string) bool { return strings.Contains(s, sub) }
 func TestClassifyViolacaoDeUnicidade(t *testing.T) {
 	// O caso que mais importa: no nosso schema, unique NÃO é erro de banco.
 	// É a idempotência e as proteções de duplicidade funcionando.
@@ -21,10 +26,10 @@ func TestClassifyViolacaoDeUnicidade(t *testing.T) {
 	if !errors.Is(err, ErrConflict) {
 		t.Errorf("err = %v, esperado ErrConflict", err)
 	}
-	if !IsConflict(err) {
+	if !ports.IsConflict(err) {
 		t.Error("IsConflict = false")
 	}
-	if IsRetryable(err) {
+	if ports.IsRetryable(err) {
 		t.Error("conflito de unicidade não é retryável: repetir daria o mesmo erro")
 	}
 	if !contains(err.Error(), "wager_transactions_provider_idempotency_key") {
@@ -42,7 +47,7 @@ func TestClassifyViolacaoDeCheck(t *testing.T) {
 	if !errors.Is(err, ErrCheck) {
 		t.Errorf("err = %v, esperado ErrCheck", err)
 	}
-	if IsRetryable(err) {
+	if ports.IsRetryable(err) {
 		t.Error("violação de CHECK não é retryável: os dados são os mesmos")
 	}
 }
@@ -90,7 +95,7 @@ func TestClassifyTransitorios(t *testing.T) {
 			if !errors.Is(err, ErrTransient) {
 				t.Errorf("código %s: err = %v, esperado ErrTransient", code, err)
 			}
-			if !IsRetryable(err) {
+			if !ports.IsRetryable(err) {
 				t.Errorf("código %s: deveria ser retryável", code)
 			}
 		})
@@ -116,7 +121,7 @@ func TestClassifyPermanente(t *testing.T) {
 	if !errors.Is(err, ErrPermanent) {
 		t.Errorf("err = %v, esperado ErrPermanent", err)
 	}
-	if IsRetryable(err) {
+	if ports.IsRetryable(err) {
 		t.Error("erro de sintaxe não é retryável")
 	}
 }
@@ -156,59 +161,5 @@ func TestClassifyNaoNuloEmViolacao(t *testing.T) {
 	}
 	if !contains(err.Error(), "payload_hash") {
 		t.Errorf("mensagem deveria citar a coluna: %v", err)
-	}
-}
-
-func TestCursorRoundTrip(t *testing.T) {
-	original := Cursor{
-		CreatedAt: mustTime(t, "2026-10-16T12:00:00.123456789Z"),
-		ID:        "22222222-2222-2222-2222-222222222222",
-	}
-
-	codificado := EncodeCursor(original)
-	if codificado == "" {
-		t.Fatal("cursor codificado vazio")
-	}
-	// base64url não deve ter caractere que quebre query string ou header.
-	if contains(codificado, "+") || contains(codificado, "/") || contains(codificado, "=") {
-		t.Errorf("cursor não é base64url cru: %q", codificado)
-	}
-
-	decodificado, err := DecodeCursor(codificado)
-	if err != nil {
-		t.Fatalf("DecodeCursor falhou: %v", err)
-	}
-	if !decodificado.CreatedAt.Equal(original.CreatedAt) {
-		t.Errorf("instante: %v != %v", decodificado.CreatedAt, original.CreatedAt)
-	}
-	if decodificado.ID != original.ID {
-		t.Errorf("id: %q != %q", decodificado.ID, original.ID)
-	}
-}
-
-func TestDecodeCursorInvalido(t *testing.T) {
-	casos := []string{
-		"",
-		"   ",
-		"nao-e-base64!!!",
-		"YWJj",             // "abc": sem separador e sem instante
-		"MjAyNi0xMC0xNg==", // base64 padrão, sem separador
-		"bm9tZXx8aWQ=",     // instante inválido com id vazio
-	}
-
-	for _, c := range casos {
-		t.Run(c, func(t *testing.T) {
-			if _, err := DecodeCursor(c); err == nil {
-				t.Errorf("DecodeCursor(%q) deveria falhar", c)
-			}
-		})
-	}
-}
-
-func TestDecodeCursorSemIdentificador(t *testing.T) {
-	// Instante válido mas sem id: a paginação pularia linhas.
-	bruto := encodeRaw("2026-10-16T12:00:00Z|")
-	if _, err := DecodeCursor(bruto); err == nil {
-		t.Error("cursor sem identificador deveria falhar")
 	}
 }

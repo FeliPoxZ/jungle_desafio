@@ -6,8 +6,9 @@ import (
 	"encoding/json"
 	"time"
 
+	"github.com/FeliPoxZ/jungle_desafio/internal/domain/ids"
+	"github.com/FeliPoxZ/jungle_desafio/internal/domain/ledger"
 	"github.com/FeliPoxZ/jungle_desafio/internal/domain/money"
-	"github.com/FeliPoxZ/jungle_desafio/internal/domain/wallet"
 )
 
 // Tipos de evento de domínio. O nome do tipo é parte do contrato: quem consome
@@ -88,35 +89,35 @@ func NewEvent(
 // LOSS também produz este evento, mesmo sem movimentação: a rodada terminou e o
 // provedor precisa saber.
 type ProcessedData struct {
-	TransactionID string          `json:"transactionId"`
-	WalletID      wallet.WalletID `json:"walletId"`
-	PlayerID      wallet.PlayerID `json:"playerId"`
-	Kind          Kind            `json:"kind"`
-	Status        Status          `json:"status"`
-	ProviderID    string          `json:"providerId,omitempty"`
-	RoundID       string          `json:"roundId"`
-	GameID        string          `json:"gameId"`
-	Money         money.Money     `json:"money"`
-	BalanceAfter  *money.Money    `json:"balanceAfter,omitempty"`
+	TransactionID string       `json:"transactionId"`
+	WalletID      ids.WalletID `json:"walletId"`
+	PlayerID      ids.PlayerID `json:"playerId"`
+	Kind          Kind         `json:"kind"`
+	Status        Status       `json:"status"`
+	ProviderID    string       `json:"providerId,omitempty"`
+	RoundID       string       `json:"roundId"`
+	GameID        string       `json:"gameId"`
+	Money         money.Money  `json:"money"`
+	BalanceAfter  *money.Money `json:"balanceAfter,omitempty"`
 }
 
 // RejectedData é o payload de WagerTransactionRejected.
 type RejectedData struct {
-	TransactionID string          `json:"transactionId"`
-	WalletID      wallet.WalletID `json:"walletId"`
-	Kind          Kind            `json:"kind"`
-	FailureCode   string          `json:"failureCode"`
-	Money         money.Money     `json:"money"`
+	TransactionID string       `json:"transactionId"`
+	WalletID      ids.WalletID `json:"walletId"`
+	Kind          Kind         `json:"kind"`
+	FailureCode   string       `json:"failureCode"`
+	Money         money.Money  `json:"money"`
 }
 
 // PendingReferenceData é o payload de WagerTransactionPendingReference.
 type PendingReferenceData struct {
-	TransactionID          string          `json:"transactionId"`
-	WalletID               wallet.WalletID `json:"walletId"`
-	Kind                   Kind            `json:"kind"`
-	ReferenceExternalTxnID string          `json:"referenceExternalTransactionId"`
-	Attempt                int             `json:"attempt"`
-	NextAttemptAt          time.Time       `json:"nextAttemptAt"`
+	TransactionID          string       `json:"transactionId"`
+	WalletID               ids.WalletID `json:"walletId"`
+	Kind                   Kind         `json:"kind"`
+	ReferenceExternalTxnID string       `json:"referenceExternalTransactionId"`
+	Attempt                int          `json:"attempt"`
+	NextAttemptAt          time.Time    `json:"nextAttemptAt"`
 }
 
 // BalanceChangedData é o payload de WalletBalanceChanged.
@@ -124,9 +125,9 @@ type PendingReferenceData struct {
 // Carrega os dois saldos e a versão: quem consome consegue conferir a
 // aritmética e ordenar por versão sem consultar o banco.
 type BalanceChangedData struct {
-	WalletID      wallet.WalletID  `json:"walletId"`
+	WalletID      ids.WalletID     `json:"walletId"`
 	TransactionID string           `json:"transactionId"`
-	Direction     wallet.Direction `json:"direction"`
+	Direction     ledger.Direction `json:"direction"`
 	Money         money.Money      `json:"money"`
 	BalanceBefore money.Money      `json:"balanceBefore"`
 	BalanceAfter  money.Money      `json:"balanceAfter"`
@@ -182,7 +183,7 @@ func (t *WagerTransaction) PendingReferenceEvent(eventID, correlationID, causati
 func NewBalanceChangedEvent(
 	eventID, correlationID, causationID string,
 	transactionID TransactionID,
-	entry wallet.Entry,
+	entry ledger.Entry,
 	walletVersion int64,
 	now time.Time,
 ) (*Event, error) {

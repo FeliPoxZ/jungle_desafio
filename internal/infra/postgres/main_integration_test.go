@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/FeliPoxZ/jungle_desafio/internal/config"
+	"github.com/FeliPoxZ/jungle_desafio/internal/domain/ids"
 	"github.com/FeliPoxZ/jungle_desafio/internal/domain/money"
 	"github.com/FeliPoxZ/jungle_desafio/internal/domain/wagering"
 	"github.com/FeliPoxZ/jungle_desafio/internal/domain/wallet"
@@ -131,8 +132,8 @@ func carteiraNova(t *testing.T, playerID string, saldo string) *wallet.Wallet {
 	t.Helper()
 
 	w, err := wallet.NewWallet(
-		wallet.WalletID(uuid.NewString()),
-		wallet.PlayerID(playerID),
+		ids.WalletID(uuid.NewString()),
+		ids.PlayerID(playerID),
 		brl(t, saldo),
 		time.Now().UTC(),
 	)

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/FeliPoxZ/jungle_desafio/internal/domain/ledger"
 	"github.com/FeliPoxZ/jungle_desafio/internal/domain/money"
 )
 
@@ -274,7 +275,7 @@ func TestCredit(t *testing.T) {
 				}
 				return
 			}
-			if entry.Entry().Direction() != DirectionCredit {
+			if entry.Entry().Direction() != ledger.DirectionCredit {
 				t.Errorf("direção = %q", entry.Entry().Direction())
 			}
 			if !mesmoMoney(entry.Entry().Amount(), brl(t, c.credito)) {
@@ -479,7 +480,7 @@ func TestDebitGeraLancamentoCoerente(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if entry.Entry().Direction() != DirectionDebit {
+	if entry.Entry().Direction() != ledger.DirectionDebit {
 		t.Errorf("direção = %q", entry.Entry().Direction())
 	}
 	if !mesmoMoney(entry.Entry().Amount(), brl(t, "25.00")) {
@@ -571,136 +572,14 @@ func TestLedgerAcumulaESaldoBate(t *testing.T) {
 // ---------------------------------------------------------------------------
 // NewEntry / RehydrateEntry
 // ---------------------------------------------------------------------------
-
-func TestNewEntry(t *testing.T) {
-	agora := t0
-	saldo := brl(t, "1000.00")
-
-	casos := []struct {
-		nome      string
-		direcao   Direction
-		valor     money.Money
-		queroEr   bool
-		code      string
-		queroApos string
-	}{
-		{"debito", DirectionDebit, brl(t, "25.00"), false, "", "975.00"},
-		{"credito", DirectionCredit, brl(t, "25.00"), false, "", "1025.00"},
-		{"debito zera", DirectionDebit, brl(t, "1000.00"), false, "", "0.00"},
-		{"debito excede", DirectionDebit, brl(t, "1000.01"), true, CodeInvalidEntry, ""},
-		{"valor zero", DirectionDebit, brl(t, "0.00"), true, CodeInvalidEntry, ""},
-		{"valor negativo", DirectionDebit, money.FromMinor(-100, money.BRL), true, CodeInvalidEntry, ""},
-		{"direcao vazia", Direction(""), brl(t, "1.00"), true, CodeInvalidEntry, ""},
-		{"direcao invalida", Direction("TRANSFER"), brl(t, "1.00"), true, CodeInvalidEntry, ""},
-		{"direcao minuscula", Direction("debit"), brl(t, "1.00"), true, CodeInvalidEntry, ""},
-		{"moeda diferente", DirectionDebit, usd(t, "1.00"), true, CodeWalletCurrencyMismatch, ""},
-	}
-
-	for _, c := range casos {
-		t.Run(c.nome, func(t *testing.T) {
-			entry, err := NewEntry("w-1", "txn-teste", c.direcao, c.valor, saldo, agora)
-			if c.queroEr {
-				if err == nil {
-					t.Fatalf("NewEntry deveria falhar, devolveu %+v", entry)
-				}
-				if CodeOf(err) != c.code {
-					t.Errorf("Code = %q, esperado %q", CodeOf(err), c.code)
-				}
-				if !entry.IsZero() {
-					t.Error("entry deveria ser zero value em caso de erro")
-				}
-				return
-			}
-
-			if err != nil {
-				t.Fatalf("NewEntry falhou: %v", err)
-			}
-			if got := entry.BalanceAfter().String(); got != c.queroApos {
-				t.Errorf("balanceAfter = %s, esperado %s", got, c.queroApos)
-			}
-			if entry.BalanceAfter().IsNegative() {
-				t.Errorf("balanceAfter negativo: %s", entry.BalanceAfter())
-			}
-			if !mesmoMoney(entry.BalanceBefore(), saldo) {
-				t.Errorf("balanceBefore = %s", entry.BalanceBefore())
-			}
-			if entry.ID() == "" {
-				t.Error("entry sem id")
-			}
-		})
-	}
-}
-
-func TestNewEntryComInstanteZero(t *testing.T) {
-	if _, err := NewEntry("w-1", "txn-teste", DirectionDebit, brl(t, "1.00"), brl(t, "10.00"), time.Time{}); err == nil {
-		t.Error("instante zero deveria falhar")
-	}
-}
-
-func TestNewEntryDeMoedaInvalida(t *testing.T) {
-	invalido := money.FromMinor(100, money.Currency("xx"))
-	if _, err := NewEntry("w-1", "txn-teste", DirectionDebit, invalido, invalido, t0); err == nil {
-		t.Error("moeda inválida deveria falhar")
-	}
-}
-
-func TestRehydrateEntry(t *testing.T) {
-	// Reidratação não recalcula nem valida: reconstrói exatamente o que veio.
-	entry := RehydrateEntry(
-		"entry-1", "w-1", "txn-1", DirectionDebit,
-		brl(t, "25.00"), brl(t, "1000.00"), brl(t, "975.00"), t0,
-	)
-
-	if entry.ID() != "entry-1" || entry.WalletID() != "w-1" || entry.TransactionID() != "txn-1" {
-		t.Errorf("identidade: %q/%q/%q", entry.ID(), entry.WalletID(), entry.TransactionID())
-	}
-	if entry.Direction() != DirectionDebit {
-		t.Errorf("direção = %q", entry.Direction())
-	}
-	if entry.BalanceBefore().String() != "1000.00" || entry.BalanceAfter().String() != "975.00" {
-		t.Errorf("saldos = %s -> %s", entry.BalanceBefore(), entry.BalanceAfter())
-	}
-	if entry.Amount().String() != "25.00" {
-		t.Errorf("valor = %s", entry.Amount())
-	}
-	if !entry.CreatedAt().Equal(t0) {
-		t.Errorf("createdAt = %v", entry.CreatedAt())
-	}
-}
-
-func TestDirectionValidateEParse(t *testing.T) {
-	for _, s := range []string{"DEBIT", "CREDIT"} {
-		d, err := ParseDirection(s)
-		if err != nil {
-			t.Errorf("ParseDirection(%q) falhou: %v", s, err)
-		}
-		if d.String() != s {
-			t.Errorf("String() = %q, esperado %q", d.String(), s)
-		}
-	}
-
-	for _, s := range []string{"", "debit", "credit", "TRANSFER", "DEBITO", " DEBIT"} {
-		if _, err := ParseDirection(s); err == nil {
-			t.Errorf("ParseDirection(%q) deveria falhar", s)
-		} else if !errors.Is(err, ErrInvalidEntry) {
-			t.Errorf("ParseDirection(%q): erro não é ErrInvalidEntry: %v", s, err)
-		}
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Erros de domínio
-// ---------------------------------------------------------------------------
-
 func TestErrorTextoECodigos(t *testing.T) {
 	casos := []struct {
 		err  error
 		want string
 	}{
-		{ErrInvalidWallet, "wallet: INVALID_WALLET: carteira inválida"},
-		{ErrInsufficientFunds, "wallet: INSUFFICIENT_FUNDS: saldo insuficiente"},
-		{ErrWalletCurrencyMismatch, "wallet: WALLET_CURRENCY_MISMATCH: moeda incompatível com a da carteira"},
-		{ErrInvalidEntry, "wallet: INVALID_LEDGER_ENTRY: lançamento de ledger inválido"},
+		{ErrInvalidWallet, "INVALID_WALLET: carteira inválida"},
+		{ErrInsufficientFunds, "INSUFFICIENT_FUNDS: saldo insuficiente"},
+		{ErrWalletCurrencyMismatch, "WALLET_CURRENCY_MISMATCH: moeda incompatível com a da carteira"},
 	}
 
 	for _, c := range casos {
@@ -714,7 +593,7 @@ func TestErrosNaoSeConfundem(t *testing.T) {
 	if errors.Is(ErrInsufficientFunds, ErrWalletCurrencyMismatch) {
 		t.Error("saldo insuficiente casou com moeda incompatível")
 	}
-	if errors.Is(ErrInvalidEntry, ErrInvalidWallet) {
+	if errors.Is(ErrInsufficientFunds, ErrInvalidWallet) {
 		t.Error("entry inválido casou com carteira inválida")
 	}
 	if errors.Is(ErrInsufficientFunds, ErrInvalidWallet) {
@@ -827,32 +706,19 @@ func TestDebitComSaldoCorrompidoAbaixoDoPiso(t *testing.T) {
 }
 
 func TestApplyComDirecaoInvalida(t *testing.T) {
-	// Chamada direta com direção inválida: a guarda de NewEntry/apply existe
-	// mesmo que Debit e Credit já fixem a direção.
+	// Chamada direta com direção inválida: a guarda existe mesmo que Debit e
+	// Credit já fixem a direção.
 	w := novaCarteira(t, "100.00")
 
-	if _, err := w.apply(Direction("TRANSFER"), "txn-teste", brl(t, "1.00"), t0); err == nil {
+	if _, err := w.apply(ledger.Direction("TRANSFER"), "txn-teste", brl(t, "1.00"), t0); err == nil {
 		t.Fatal("direção inválida deveria falhar")
-	} else if !errors.Is(err, ErrInvalidEntry) {
-		t.Errorf("err = %v, esperado ErrInvalidEntry", err)
+	} else if !errors.Is(err, ledger.ErrInvalidEntry) {
+		t.Errorf("err = %v, esperado ledger.ErrInvalidEntry", err)
 	}
 	if w.Balance().String() != "100.00" || w.Version() != 1 {
 		t.Errorf("estado mudou: %s v%d", w.Balance(), w.Version())
 	}
 }
-
-func TestNewEntryComSaldoCorrompido(t *testing.T) {
-	// balanceBefore acima do teto: o Add estoura e NewEntry tem que devolver
-	// erro de lançamento inválido, não um valor absurdo.
-	corrompido := money.FromMinor(9_000_000_000_000_000, money.BRL)
-
-	if _, err := NewEntry("w-1", "txn-teste", DirectionCredit, brl(t, "1.00"), corrompido, t0); err == nil {
-		t.Fatal("saldo posterior além do limite deveria falhar")
-	} else if !errors.Is(err, ErrInvalidEntry) {
-		t.Errorf("err = %v, esperado ErrInvalidEntry", err)
-	}
-}
-
 func TestIsNaoCasaComErroDeOutroTipo(t *testing.T) {
 	if errors.Is(ErrInsufficientFunds, errors.New("erro qualquer")) {
 		t.Error("sentinela casou com erro que não é *Error")

@@ -6,9 +6,11 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/FeliPoxZ/jungle_desafio/internal/app/ports"
 )
 
-// OutboxRepo persiste os eventos a publicar, na MESMA transação do domínio.
+// ports.OutboxRepository persiste os eventos a publicar, na MESMA transação do domínio.
 //
 // # Por que a outbox existe
 //
@@ -17,37 +19,6 @@ import (
 // operação que não existiu), ou a transação comitar e a publicação falhar
 // (operação sem evento). Gravar o evento na MESMA transação resolve: ou os dois
 // acontecem, ou nenhum. A publicação vira um passo separado, idempotente e
-// repetível.
-type OutboxRepo interface {
-	// Insert grava o evento para publicação futura.
-	Insert(ctx context.Context, e OutboxEvent) error
-
-	// ClaimBatch reserva um lote de eventos para publicação.
-	//
-	// Usa FOR UPDATE SKIP LOCKED: duas instâncias pegam lotes diferentes, e
-	// nenhuma fica esperando pela linha que a outra travou. É isso que permite
-	// rodar vários publishers sem duplicar evento nem serializar o worker.
-	//
-	// A reserva é limitada por tempo (lease): se o processo morrer no meio, o
-	// evento volta a ficar disponível quando o lease expirar, em vez de ficar
-	// preso para sempre.
-	ClaimBatch(ctx context.Context, limit int, lease time.Duration, now time.Time) ([]OutboxEvent, error)
-
-	// MarkPublished marca o evento como publicado.
-	MarkPublished(ctx context.Context, eventID string, now time.Time) error
-
-	// MarkRetry devolve o evento à fila com backoff, contando a tentativa.
-	//
-	// O incremento de attempts é feito no banco ($ + 1), não calculado em Go:
-	// duas instâncias falhando ao mesmo tempo contariam a mesma tentativa se o
-	// valor viesse do processo.
-	MarkRetry(ctx context.Context, eventID string, nextAttemptAt time.Time, lastError string) error
-
-	// PendingStats devolve quantos eventos estão pendentes e a idade do mais
-	// antigo, para o gauge de métrica.
-	PendingStats(ctx context.Context, now time.Time) (pendentes int64, maisAntigo time.Duration, err error)
-}
-
 // OutboxEvent é a forma de transporte do evento persistido.
 type OutboxEvent struct {
 	EventID       string
@@ -68,7 +39,7 @@ type outboxRepo struct {
 }
 
 // NewOutboxRepo cria o repositório sobre o pool ou sobre uma transação.
-func NewOutboxRepo(q querier) OutboxRepo { return &outboxRepo{q: q} }
+func NewOutboxRepo(q querier) ports.OutboxRepository { return &outboxRepo{q: q} }
 
 const outboxColumns = `
 	event_id, aggregate_id, aggregate_type, event_type, payload,
@@ -83,7 +54,7 @@ const outboxColumnsComAlias = `
 	o.event_id, o.aggregate_id, o.aggregate_type, o.event_type, o.payload,
 	o.occurred_at, o.available_at, o.attempts, o.last_error, o.published_at, o.created_at`
 
-func (r *outboxRepo) Insert(ctx context.Context, e OutboxEvent) error {
+func (r *outboxRepo) Insert(ctx context.Context, e ports.OutboxEvent) error {
 	const sql = `
 		INSERT INTO outbox_events (
 			event_id, aggregate_id, aggregate_type, event_type, payload,
@@ -107,7 +78,7 @@ func (r *outboxRepo) Insert(ctx context.Context, e OutboxEvent) error {
 	return Classify(err)
 }
 
-func (r *outboxRepo) ClaimBatch(ctx context.Context, limit int, lease time.Duration, now time.Time) ([]OutboxEvent, error) {
+func (r *outboxRepo) ClaimBatch(ctx context.Context, limit int, lease time.Duration, now time.Time) ([]ports.OutboxEvent, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
@@ -138,7 +109,7 @@ func (r *outboxRepo) ClaimBatch(ctx context.Context, limit int, lease time.Durat
 	}
 	defer rows.Close()
 
-	var saida []OutboxEvent
+	var saida []ports.OutboxEvent
 	for rows.Next() {
 		e, err := scanOutbox(rows)
 		if err != nil {
@@ -184,7 +155,7 @@ func (r *outboxRepo) MarkRetry(ctx context.Context, eventID string, nextAttemptA
 	return nil
 }
 
-func (r *outboxRepo) PendingStats(ctx context.Context, now time.Time) (int64, time.Duration, error) {
+func (r *outboxRepo) PendingStats(ctx context.Context, now time.Time) (int, time.Duration, error) {
 	const sql = `
 		SELECT COUNT(*), COALESCE(MIN(occurred_at), $1)
 		FROM outbox_events
@@ -205,13 +176,13 @@ func (r *outboxRepo) PendingStats(ctx context.Context, now time.Time) (int64, ti
 	if idade < 0 {
 		idade = 0
 	}
-	return pendentes, idade, nil
+	return int(pendentes), idade, nil
 }
 
 // scanOutbox lê uma linha de outbox_events, inclusive a partir de RETURNING.
-func scanOutbox(rows pgx.Rows) (OutboxEvent, error) {
+func scanOutbox(rows pgx.Rows) (ports.OutboxEvent, error) {
 	var (
-		e           OutboxEvent
+		e           ports.OutboxEvent
 		lastError   *string
 		publishedAt *time.Time
 	)
@@ -221,7 +192,7 @@ func scanOutbox(rows pgx.Rows) (OutboxEvent, error) {
 		&e.OccurredAt, &e.AvailableAt, &e.Attempts, &lastError, &publishedAt, &e.CreatedAt,
 	)
 	if err != nil {
-		return OutboxEvent{}, Classify(err)
+		return ports.OutboxEvent{}, Classify(err)
 	}
 
 	e.LastError = texto(lastError)

@@ -35,9 +35,10 @@ package money
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/FeliPoxZ/jungle_desafio/internal/domain/errors"
 )
 
 // ---------------------------------------------------------------------------
@@ -89,11 +90,12 @@ const (
 	CodeCurrencyMismatch = "CURRENCY_MISMATCH"
 )
 
-// Error é o erro de domínio do pacote money.
-type Error struct {
-	Code    string
-	Message string
-}
+// Error é o erro de domínio, compartilhado com os outros pacotes de domínio.
+//
+// É um alias, não uma redefinição: `money.Error`, `wallet.Error` e
+// `wagering.Error` são o MESMO tipo, então `errors.Is` funciona igual nos três e
+// não existe a possibilidade de duas implementações divergirem.
+type Error = errors.Error
 
 // Erros sentinela. Use errors.Is(err, money.ErrInvalidAmount) para classificar;
 // não compare a mensagem.
@@ -102,22 +104,6 @@ var (
 	ErrInvalidAmount    = &Error{Code: CodeInvalidAmount, Message: "valor monetário inválido"}
 	ErrCurrencyMismatch = &Error{Code: CodeCurrencyMismatch, Message: "moedas incompatíveis na operação"}
 )
-
-// Error devolve a representação textual, com o Code na frente para que logs
-// possam ser filtrados sem parsear a mensagem.
-func (e *Error) Error() string {
-	return fmt.Sprintf("money: %s: %s", e.Code, e.Message)
-}
-
-// Is permite comparar erros por Code com errors.Is, mesmo quando o erro foi
-// envelopado com fmt.Errorf("...: %w", err) alguns níveis acima.
-func (e *Error) Is(target error) bool {
-	var other *Error
-	if ok := errors.As(target, &other); ok {
-		return e.Code == other.Code
-	}
-	return false
-}
 
 // invalidAmount monta um erro de valor inválido com mensagem formatada.
 func invalidAmount(format string, args ...any) error {

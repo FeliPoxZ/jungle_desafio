@@ -29,3 +29,6 @@ Thumbs.db
 # --- Clone vazio do GitHub que existia dentro do workspace (movido para _backup_*) ---
 /_backup_*/
 /jungle_desafio/
+
+# Mensagem de commit usada com 'git commit -F' (nao versionar).
+commit-msg-*.txt

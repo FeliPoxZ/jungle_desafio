@@ -100,6 +100,12 @@ func TestImportsPermitidos(t *testing.T) {
 		"errors":        true,
 		"fmt":           true,
 		"strings":       true,
+
+		// O erro de domínio é compartilhado com wallet, ledger e wagering. É a
+		// única dependência interna do money, e ela aponta para um pacote sem
+		// lógica: só o tipo do erro e o CodeOf. Não traz I/O, driver nem
+		// aritmética.
+		"github.com/FeliPoxZ/jungle_desafio/internal/domain/errors": true,
 	}
 	// Pacotes que indicam o caminho do float dentro de código monetário.
 	vetados := map[string]string{

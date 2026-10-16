@@ -6,8 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/FeliPoxZ/jungle_desafio/internal/domain/ids"
+	"github.com/FeliPoxZ/jungle_desafio/internal/domain/ledger"
 	"github.com/FeliPoxZ/jungle_desafio/internal/domain/money"
-	"github.com/FeliPoxZ/jungle_desafio/internal/domain/wallet"
 )
 
 // ---------------------------------------------------------------------------
@@ -406,8 +407,8 @@ func TestNewCamposObrigatorios(t *testing.T) {
 	casos := []struct {
 		nome    string
 		id      TransactionID
-		wallet  wallet.WalletID
-		player  wallet.PlayerID
+		wallet  ids.WalletID
+		player  ids.PlayerID
 		game    string
 		round   string
 		now     time.Time
@@ -958,7 +959,7 @@ func TestPendingReferenceEvent(t *testing.T) {
 }
 
 func TestNewBalanceChangedEvent(t *testing.T) {
-	entry, err := wallet.NewEntry("w-1", "txn-1", wallet.DirectionDebit,
+	entry, err := ledger.NewEntry("w-1", "txn-1", ledger.DirectionDebit,
 		dinheiro(t, "25.00", "BRL"), dinheiro(t, "1000.00", "BRL"), opNow)
 	if err != nil {
 		t.Fatal(err)
@@ -976,7 +977,7 @@ func TestNewBalanceChangedEvent(t *testing.T) {
 	if data.WalletVersion != 2 {
 		t.Errorf("walletVersion = %d", data.WalletVersion)
 	}
-	if data.Direction != wallet.DirectionDebit {
+	if data.Direction != ledger.DirectionDebit {
 		t.Errorf("direction = %q", data.Direction)
 	}
 	if data.BalanceBefore.String() != "1000.00" || data.BalanceAfter.String() != "975.00" {
@@ -985,13 +986,13 @@ func TestNewBalanceChangedEvent(t *testing.T) {
 }
 
 func TestNewBalanceChangedEventValidacoes(t *testing.T) {
-	entry, err := wallet.NewEntry("w-1", "txn-1", wallet.DirectionDebit,
+	entry, err := ledger.NewEntry("w-1", "txn-1", ledger.DirectionDebit,
 		dinheiro(t, "25.00", "BRL"), dinheiro(t, "1000.00", "BRL"), opNow)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := NewBalanceChangedEvent("evt-1", "c", "", "txn-1", wallet.Entry{}, 2, opNow); err == nil {
+	if _, err := NewBalanceChangedEvent("evt-1", "c", "", "txn-1", ledger.Entry{}, 2, opNow); err == nil {
 		t.Error("entry vazio deveria falhar (LOSS e rejeição não geram este evento)")
 	}
 	if _, err := NewBalanceChangedEvent("evt-1", "c", "", "txn-1", entry, 0, opNow); err == nil {

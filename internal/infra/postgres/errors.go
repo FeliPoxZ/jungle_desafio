@@ -3,15 +3,19 @@
 // # Regra central desta camada
 //
 // Um erro do driver NÃO é um erro de negócio, mas precisa virar um. Aqui os
-// códigos do PostgreSQL são traduzidos para erros tipados que o serviço da
-// Fase 6 consegue classificar sem conhecer pgx:
+// códigos do PostgreSQL são traduzidos para os erros do CONTRATO (`app/ports`),
+// que o serviço da Fase 6 classifica sem conhecer pgx.
 //
-//	ErrNotFound      linha não existe
-//	ErrConflict      violação de unicidade → idempotência funcionando, ou conflito real
-//	ErrCheck         violação de CHECK → invariante do domínio foi violada
-//	ErrForeignKey    referência inexistente
-//	ErrTransient     falha que pode ser repetida (deadlock, serialização, conexão)
-//	ErrPermanent     o resto
+// # Por que os sentinelas são aliases, e não erros novos
+//
+// Se esta camada declarasse os próprios `ErrConflict`/`ErrNotFound`, existiriam
+// dois jogos de sentinelas com o mesmo nome. A aplicação chamaria
+// `ports.IsConflict(err)` em um erro produzido aqui — e receberia `false`, porque
+// seriam objetos diferentes. O bug seria silencioso: o serviço trataria conflito
+// de idempotência como falha desconhecida.
+//
+// Com alias, existe UM jogo de sentinelas, e `IsConflict`/`IsRetryable`/
+// `IsNotFound` do contrato funcionam para qualquer erro produzido aqui.
 package postgres
 
 import (
@@ -19,32 +23,37 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/FeliPoxZ/jungle_desafio/internal/app/ports"
 )
 
-// Erros sentinela da camada de persistência.
+// Erros do contrato de persistência, expostos aqui por conveniência.
+//
+// Os nomes são os mesmos de `ports` de propósito: o código desta camada lê
+// `ErrConflict` e o serviço lê `ports.ErrConflict`, e é o MESMO objeto.
 var (
 	// ErrNotFound indica que a linha procurada não existe.
-	ErrNotFound = errors.New("postgres: registro não encontrado")
+	ErrNotFound = ports.ErrNotFound
 
-	// ErrConflict indica violação de unicidade. No nosso schema isso NÃO é
-	// "erro de banco": é a idempotência e as proteções de duplicidade
-	// funcionando (chave de idempotência repetida, reversão duplicada,
-	// lançamento duplicado).
-	ErrConflict = errors.New("postgres: conflito de unicidade")
+	// ErrConflict indica violação de unicidade ou versão desatualizada. No nosso
+	// schema isso NÃO é "erro de banco": é a idempotência e as proteções de
+	// duplicidade funcionando (chave repetida, reversão duplicada, lançamento
+	// duplicado).
+	ErrConflict = ports.ErrConflict
 
-	// ErrCheck indica violação de CHECK: uma invariante do domínio foi violada
-	// no caminho até o banco.
-	ErrCheck = errors.New("postgres: violação de constraint de verificação")
+	// ErrCheck indica violação de CHECK ou de trigger: uma invariante do domínio
+	// foi violada no caminho até o banco.
+	ErrCheck = ports.ErrCheck
 
 	// ErrForeignKey indica referência a linha inexistente.
-	ErrForeignKey = errors.New("postgres: violação de chave estrangeira")
+	ErrForeignKey = ports.ErrForeignKey
 
 	// ErrTransient indica falha que pode ser repetida com sucesso: deadlock,
-	// falha de serialização, conexão fora do ar, recurso esgotado.
-	ErrTransient = errors.New("postgres: falha transitória")
+	// falha de serialização, timeout de lock, conexão fora do ar.
+	ErrTransient = ports.ErrTransient
 
 	// ErrPermanent indica falha que não se resolve repetindo.
-	ErrPermanent = errors.New("postgres: falha permanente")
+	ErrPermanent = ports.ErrPermanent
 )
 
 // Códigos do PostgreSQL usados na classificação.
@@ -124,15 +133,10 @@ func Classify(err error) error {
 	return fmt.Errorf("%w: %s (%s)", ErrPermanent, pgErr.Message, pgErr.Code)
 }
 
-// IsRetryable informa se a operação pode ser repetida com chance de sucesso.
+// As funções de classificação vivem no CONTRATO (`ports`), porque é lá que a
+// aplicação as alcança sem importar este pacote.
 //
-// Fica aqui, e não no serviço, porque a decisão depende de detalhe do driver.
-// Quem repete é a Fase 6, com backoff — repetir no repositório esconderia a
-// semântica de "uma tentativa de transação".
-func IsRetryable(err error) bool { return errors.Is(err, ErrTransient) }
-
-// IsConflict informa se o erro foi violação de unicidade.
-func IsConflict(err error) bool { return errors.Is(err, ErrConflict) }
-
-// IsNotFound informa se a linha não existe.
-func IsNotFound(err error) bool { return errors.Is(err, ErrNotFound) }
+// Não há redefinição aqui: `ports.IsRetryable` e a versão que o serviço usa são a
+// mesma função. Duplicar criaria dois critérios que podem divergir com o tempo, e
+// o serviço decidiria repetir uma operação que o repositório considera
+// permanente.

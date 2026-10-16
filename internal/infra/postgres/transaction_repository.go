@@ -7,62 +7,19 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/FeliPoxZ/jungle_desafio/internal/app/ports"
+
+	"github.com/FeliPoxZ/jungle_desafio/internal/domain/ids"
 	"github.com/FeliPoxZ/jungle_desafio/internal/domain/money"
 	"github.com/FeliPoxZ/jungle_desafio/internal/domain/wagering"
-	"github.com/FeliPoxZ/jungle_desafio/internal/domain/wallet"
 )
-
-// TxnRepo persiste transações de aposta.
-type TxnRepo interface {
-	// Insert grava a transação nova. Devolve ErrConflict quando a chave de
-	// idempotência do provedor já existe — que é a idempotência funcionando,
-	// não um erro de banco.
-	Insert(ctx context.Context, t *wagering.WagerTransaction) error
-
-	// GetByID lê pelo identificador interno, com lock opcional.
-	GetByID(ctx context.Context, id wagering.TransactionID) (*wagering.WagerTransaction, error)
-	GetByIDForUpdate(ctx context.Context, id wagering.TransactionID) (*wagering.WagerTransaction, error)
-
-	// GetByProviderAndExternalID resolve a operação pelo identificador do
-	// provedor.
-	GetByProviderAndExternalID(ctx context.Context, providerID, externalID string) (*wagering.WagerTransaction, error)
-
-	// GetByIdempotencyKey resolve pela chave de idempotência.
-	GetByIdempotencyKey(ctx context.Context, providerID, key string) (*wagering.WagerTransaction, error)
-
-	// GetOpeningByIdempotencyKey resolve a abertura interna pela chave.
-	GetOpeningByIdempotencyKey(ctx context.Context, key string) (*wagering.WagerTransaction, error)
-
-	// Save grava o estado atual da transição (status, failure_code, saldo
-	// resultante, referência resolvida e controle de tentativas).
-	Save(ctx context.Context, t *wagering.WagerTransaction) error
-
-	// ListPendingReferencesDue devolve as operações em PENDING_REFERENCE cujo
-	// próximo instante de tentativa já passou.
-	//
-	// O índice parcial criado na Fase 4 cobre exatamente esta consulta.
-	ListPendingReferencesDue(ctx context.Context, now time.Time, limit int) ([]*wagering.WagerTransaction, error)
-
-	// ListByWallet devolve as operações de uma carteira, mais recentes
-	// primeiro, com cursor.
-	ListByWallet(ctx context.Context, walletID wallet.WalletID, limit int, cursor *Cursor) ([]*wagering.WagerTransaction, error)
-}
-
-// Cursor é a posição de paginação: instante + identificador.
-//
-// Os dois juntos porque `created_at` pode repetir (duas operações no mesmo
-// microssegundo), e o desempate por `id` é o que torna a ordem estável.
-type Cursor struct {
-	CreatedAt time.Time
-	ID        string
-}
 
 type txnRepo struct {
 	q querier
 }
 
 // NewTxnRepo cria o repositório sobre o pool ou sobre uma transação.
-func NewTxnRepo(q querier) TxnRepo { return &txnRepo{q: q} }
+func NewTxnRepo(q querier) ports.TransactionRepository { return &txnRepo{q: q} }
 
 const txnColumns = `
 	id, wallet_id, player_id, kind, status, amount_minor, currency,
@@ -177,7 +134,7 @@ func (r *txnRepo) ListPendingReferencesDue(ctx context.Context, now time.Time, l
 	return r.varios(ctx, sql, now, limit)
 }
 
-func (r *txnRepo) ListByWallet(ctx context.Context, walletID wallet.WalletID, limit int, cursor *Cursor) ([]*wagering.WagerTransaction, error) {
+func (r *txnRepo) ListByWallet(ctx context.Context, walletID ids.WalletID, limit int, cursor *ports.Cursor) ([]*wagering.WagerTransaction, error) {
 	// Ordem estável: created_at e id. O cursor carrega os dois para não pular
 	// nem repetir linha quando o instante empata.
 	if cursor == nil {
@@ -280,8 +237,8 @@ func (row *txnRow) dominio() *wagering.WagerTransaction {
 
 	return wagering.Rehydrate(
 		wagering.TransactionID(row.id),
-		wallet.WalletID(row.walletID),
-		wallet.PlayerID(row.playerID),
+		ids.WalletID(row.walletID),
+		ids.PlayerID(row.playerID),
 		wagering.Kind(row.kind),
 		wagering.Status(row.status),
 		dinheiroMinor(row.amountMinor, currency),

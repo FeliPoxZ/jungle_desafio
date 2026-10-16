@@ -4,13 +4,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/FeliPoxZ/jungle_desafio/internal/domain/ids"
 	"github.com/FeliPoxZ/jungle_desafio/internal/domain/money"
-	"github.com/FeliPoxZ/jungle_desafio/internal/domain/wallet"
 )
 
-// TransactionID identifica a transação internamente (uuid v7, gerado fora do
-// domínio).
-type TransactionID string
+// TransactionID vêm do pacote ids, compartilhado com o ledger.
+//
+// É alias, e não tipo novo, para não existir conversão entre o identificador da
+// transação e o do lançamento: são o mesmo conceito visto de dois lugares.
+type TransactionID = ids.TransactionID
 
 // PayloadEncoder serializa o payload recebido para calcular o hash.
 //
@@ -30,8 +32,8 @@ type Hash string
 // transição, que validam a máquina de estados.
 type WagerTransaction struct {
 	id        TransactionID
-	walletID  wallet.WalletID
-	playerID  wallet.PlayerID
+	walletID  ids.WalletID
+	playerID  ids.PlayerID
 	kind      Kind
 	status    Status
 	amount    money.Money
@@ -64,8 +66,8 @@ type WagerTransaction struct {
 // aceita esses metadados, porque não vêm de provedor nenhum.
 func New(
 	id TransactionID,
-	walletID wallet.WalletID,
-	playerID wallet.PlayerID,
+	walletID ids.WalletID,
+	playerID ids.PlayerID,
 	kind Kind,
 	amount money.Money,
 	gameID string,
@@ -109,8 +111,8 @@ func New(
 // validateNew concentra as regras de criação, por origem.
 func validateNew(
 	id TransactionID,
-	walletID wallet.WalletID,
-	playerID wallet.PlayerID,
+	walletID ids.WalletID,
+	playerID ids.PlayerID,
 	kind Kind,
 	amount money.Money,
 	gameID, roundID, idempotencyKey, providerID, externalTransactionID, referenceExternalTxnID string,
@@ -210,8 +212,8 @@ func hashPayload(payload any, encode PayloadEncoder) (Hash, error) {
 // reaplicar movimentação, transição ou emissão de evento.
 func Rehydrate(
 	id TransactionID,
-	walletID wallet.WalletID,
-	playerID wallet.PlayerID,
+	walletID ids.WalletID,
+	playerID ids.PlayerID,
 	kind Kind,
 	status Status,
 	amount money.Money,
@@ -271,10 +273,10 @@ func dinheiroOuZero(m *money.Money) money.Money {
 func (t *WagerTransaction) ID() TransactionID { return t.id }
 
 // WalletID devolve a carteira da operação.
-func (t *WagerTransaction) WalletID() wallet.WalletID { return t.walletID }
+func (t *WagerTransaction) WalletID() ids.WalletID { return t.walletID }
 
 // PlayerID devolve o jogador da operação.
-func (t *WagerTransaction) PlayerID() wallet.PlayerID { return t.playerID }
+func (t *WagerTransaction) PlayerID() ids.PlayerID { return t.playerID }
 
 // Kind devolve o tipo da operação.
 func (t *WagerTransaction) Kind() Kind { return t.kind }

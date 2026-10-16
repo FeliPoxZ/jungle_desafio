@@ -34,9 +34,13 @@ func TestErrorTexto(t *testing.T) {
 		err  error
 		want string
 	}{
-		{ErrInvalidCurrency, "money: INVALID_CURRENCY: código de moeda inválido"},
-		{ErrInvalidAmount, "money: INVALID_AMOUNT: valor monetário inválido"},
-		{ErrCurrencyMismatch, "money: CURRENCY_MISMATCH: moedas incompatíveis na operação"},
+		// Sem prefixo de pacote: o erro de domínio é UM tipo compartilhado por
+		// money, wallet, ledger e wagering. Prefixar com o nome do pacote faria
+		// a mesma mensagem mudar conforme quem a produziu, e o log passaria a
+		// depender do caminho em vez do Code.
+		{ErrInvalidCurrency, "INVALID_CURRENCY: código de moeda inválido"},
+		{ErrInvalidAmount, "INVALID_AMOUNT: valor monetário inválido"},
+		{ErrCurrencyMismatch, "CURRENCY_MISMATCH: moedas incompatíveis na operação"},
 	}
 
 	for _, c := range casos {

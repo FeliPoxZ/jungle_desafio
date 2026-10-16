@@ -7,31 +7,22 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/FeliPoxZ/jungle_desafio/internal/app/ports"
 )
 
-// UnitOfWork delimita a transação de uma operação de negócio.
+// UnitOfWork e Repos são o CONTRATO declarado em app/ports, onde a aplicação
+// pode alcançá-los sem importar este pacote.
 //
-// Toda operação financeira acontece em UMA transação: transação de aposta,
-// carteira, lançamento no ledger, inbox e outbox. Se qualquer parte falhar, o
-// dinheiro não se move e o evento não é publicado — não existe estado
-// intermediário visível.
-type UnitOfWork interface {
-	Run(ctx context.Context, fn func(ctx context.Context, r Repos) error) error
-	RunReadOnly(ctx context.Context, fn func(ctx context.Context, r Repos) error) error
-}
-
-// Repos agrupa os repositórios que participam da mesma transação.
-//
-// Os repositórios são criados POR TRANSAÇÃO, e não injetados como singleton:
-// cada um carrega o `querier` da transação corrente, então dois `Run`
-// simultâneos nunca compartilham conexão.
-type Repos struct {
-	Wallets      WalletRepo
-	Transactions TxnRepo
-	Ledger       LedgerRepo
-	Inbox        InboxRepo
-	Outbox       OutboxRepo
-}
+// São aliases, e não tipos novos, para não existir conversão: o serviço recebe
+// ports.UnitOfWork, e o que o Fx injeta é este mesmo tipo. Se fossem tipos
+// distintos, a aplicação precisaria de adaptador só para trocar o nome.
+type (
+	// UnitOfWork delimita a transação de uma operação de negócio.
+	UnitOfWork = ports.UnitOfWork
+	// Repos agrupa os repositórios que participam da mesma transação.
+	Repos = ports.Repos
+)
 
 // Escopo transacional.
 
