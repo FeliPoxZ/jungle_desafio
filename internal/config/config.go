@@ -54,10 +54,16 @@ type HTTPConfig struct {
 	RequestTimeout  time.Duration `env:"REQUEST_TIMEOUT" envDefault:"10s"`
 	MaxBodyBytes    int64         `env:"MAX_BODY_BYTES" envDefault:"1048576"` // 1 MiB
 	// StopTimeout é o prazo TOTAL do shutdown do processo (o `fx.StopTimeout`):
-	// quanto tempo o Fx espera os hooks de parada antes de desistir. Precisa ser
-	// MAIOR que ShutdownTimeout, senão o Fx mataria o servidor HTTP antes de ele
-	// terminar de drenar as requisições em andamento.
-	StopTimeout time.Duration `env:"STOP_TIMEOUT" envDefault:"25s"`
+	// quanto tempo o Fx espera os hooks de parada antes de desistir.
+	//
+	// O default precisa COBRIR os dois encerramentos que rodam dentro dele — o do
+	// servidor HTTP (ShutdownTimeout, 20s) e o do consumidor de SQS
+	// (SQS_SHUTDOWN_GRACE, 15s) — porque validar essa soma é o certo e o default
+	// não pode violar a própria regra. Com 25s a aplicação **não subia** ao ligar
+	// o consumidor com os valores de exemplo: a validação recusava antes de abrir
+	// qualquer conexão, e o sintoma era "configuração inválida" no boot de um
+	// ambiente que estava correto. 40s dá margem para 20 + 15.
+	StopTimeout time.Duration `env:"STOP_TIMEOUT" envDefault:"40s"`
 }
 
 // DatabaseConfig controla o pool do PostgreSQL.

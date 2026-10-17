@@ -37,9 +37,12 @@ const inboxColumns = `id, consumer_name, message_id, body_hash, status, failure_
 func (r *inboxRepo) InsertIfAbsent(ctx context.Context, m ports.InboxMessage) (bool, error) {
 	// ON CONFLICT DO NOTHING é a forma atômica: o banco decide quem insere,
 	// sem janela entre consultar e gravar.
+	//
+	// `attempts` entra já na inserção: uma linha na inbox significa PELO MENOS uma
+	// entrega (ver o comentário abaixo).
 	const sql = `
-		INSERT INTO inbox_messages (id, consumer_name, message_id, body_hash, status, received_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO inbox_messages (id, consumer_name, message_id, body_hash, status, received_at, attempts)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (consumer_name, message_id) DO NOTHING`
 
 	status := m.Status
@@ -51,7 +54,16 @@ func (r *inboxRepo) InsertIfAbsent(ctx context.Context, m ports.InboxMessage) (b
 		recebidoEm = time.Now().UTC()
 	}
 
-	tag, err := r.q.Exec(ctx, sql, m.ID, m.ConsumerName, m.MessageID, m.BodyHash, status, recebidoEm)
+	// Uma linha na inbox significa PELO MENOS uma entrega: `attempts` zero seria
+	// uma contagem mentindo sobre um fato que já aconteceu. Quem grava pode
+	// informar um número maior (para testes de cenário), e o incremento das
+	// entregas seguintes é `attempts = attempts + 1` no SQL.
+	tentativas := m.Attempts
+	if tentativas < 1 {
+		tentativas = 1
+	}
+
+	tag, err := r.q.Exec(ctx, sql, m.ID, m.ConsumerName, m.MessageID, m.BodyHash, status, recebidoEm, tentativas)
 	if err != nil {
 		return false, Classify(err)
 	}

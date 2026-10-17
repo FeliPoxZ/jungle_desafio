@@ -105,6 +105,11 @@ func (f *inboxFalsa) InsertIfAbsent(_ context.Context, m ports.InboxMessage) (bo
 		return false, nil
 	}
 	copia := m
+	// Mesma normalização do repositório real: uma linha na inbox significa PELO
+	// MENOS uma entrega.
+	if copia.Attempts < 1 {
+		copia.Attempts = 1
+	}
 	f.registros[k] = &copia
 	return true, nil
 }
@@ -372,9 +377,12 @@ func TestProcessarReentregaNaoReaplica(t *testing.T) {
 		t.Errorf("invocações = %d, quer 2 (a segunda é a que reconhece a duplicata)", servico.chamadas)
 	}
 
+	// O contador durável de entregas chega a 2: a primeira no registro, a segunda
+	// na reentrega. É o que sobra quando o `ApproximateReceiveCount` do broker se
+	// perde (mensagem removida ou morta na DLQ).
 	registro, _ := inbox.Get(context.Background(), ConsumerName, "msg-1")
-	if registro.Attempts != 0 {
-		t.Errorf("attempts = %d, quer 0 (o contador é incrementado pelo consumidor, não pelo processador)", registro.Attempts)
+	if registro.Attempts != 2 {
+		t.Errorf("attempts = %d, quer 2 (uma entrega no registro, uma na reentrega)", registro.Attempts)
 	}
 }
 

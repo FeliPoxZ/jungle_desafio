@@ -12,6 +12,7 @@ package consumer
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"math/rand"
@@ -315,6 +316,13 @@ func (c *Consumidor) confirmar(ctx context.Context, entrega *entregaRastreada, r
 	if status == "" {
 		status = "PROCESSED"
 	}
+
+	// A MESMA métrica de negócio que a borda HTTP emite (`kind` e `status` são
+	// labels de cardinalidade baixa — nunca identificadores). Sem ela, o caminho
+	// ASSÍNCRONO, que é o principal deste serviço, ficaria invisível no painel: a
+	// operação chegaria por SQS e só apareceria no banco.
+	c.metrics.ObserveOperation(kindDaMensagem(entrega.msg.Body), status, time.Since(inicio))
+
 	c.logger.InfoContext(ctx, "sqs_mensagem_processada",
 		slog.String("messageId", entrega.msg.ID),
 		slog.String("status", status),
@@ -326,6 +334,26 @@ func (c *Consumidor) confirmar(ctx context.Context, entrega *entregaRastreada, r
 	if res.Replay {
 		c.metrics.IncInboxDuplicate()
 	}
+}
+
+// kindDaMensagem extrai o tipo da operação para o label da métrica.
+//
+// Uma leitura TOLERANTE do corpo: se ele não for o envelope esperado, o label
+// vira "unknown" em vez de a métrica sumir. A validação de verdade é do
+// processador — aqui o objetivo é só não perder a contagem.
+func kindDaMensagem(corpo []byte) string {
+	var envelope struct {
+		Data struct {
+			Kind string `json:"kind"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(corpo, &envelope); err != nil {
+		return "unknown"
+	}
+	if envelope.Data.Kind == "" {
+		return "unknown"
+	}
+	return envelope.Data.Kind
 }
 
 // tratarErro decide entre retry (volta para a fila) e DLQ (não há o que fazer).

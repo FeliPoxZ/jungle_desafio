@@ -930,13 +930,23 @@ func TestSQSReadinessReportaAFila(t *testing.T) {
 	s.esvaziarFila(t, s.urlTxn)
 	s.enviar(t, `{"messageId":"msg-receive-direto"}`, "dedup-receive-direto")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	// Espera por CONDIÇÃO, e não uma leitura só: sob carga (a suíte inteira
+	// rodando em paralelo com outros pacotes) o SQS pode levar alguns segundos
+	// para tornar a mensagem visível, e uma leitura isolada transforma isso em
+	// falha intermitente — o tipo de teste que destrói a confiança na suíte.
+	var mensagens []consumer.Message
+	esperarAtende(t, "a mensagem ficar disponível para o Receive", 20*time.Second, func() bool {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
 
-	mensagens, err := fila.Receive(ctx, s.urlTxn, 10, 5)
-	if err != nil {
-		t.Fatalf("Receive devolveu erro: %v", err)
-	}
+		lidas, err := fila.Receive(ctx, s.urlTxn, 10, 2)
+		if err != nil || len(lidas) == 0 {
+			return false
+		}
+		mensagens = lidas
+		return true
+	})
+
 	if len(mensagens) != 1 {
 		t.Fatalf("Receive devolveu %d mensagem(ns), quer 1", len(mensagens))
 	}

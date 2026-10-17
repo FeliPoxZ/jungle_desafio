@@ -191,7 +191,20 @@ func (p *Processador) ganchos(messageID, hashCorpo string) *appwagering.ProcessH
 						appwagering.ErrInboxBodyConflict, messageID, existente.BodyHash, hashCorpo)
 				}
 				// Mesma mensagem, já com tratamento durável confirmado: nada a
-				// fazer. O caso de uso traduz isto em replay.
+				// fazer ALÉM de contar a entrega.
+				//
+				// A contagem é o único efeito desta passagem, e é deliberado: é
+				// ela que registra que a mensagem foi entregue mais de uma vez —
+				// informação que só existe aqui, porque o
+				// `ApproximateReceiveCount` do broker se perde quando a mensagem
+				// é removida. O incremento é `attempts + 1` no SQL (duas
+				// instâncias somam as duas entregas em vez de gravar o mesmo
+				// valor).
+				if err := r.Inbox.CountAttempt(ctx, ConsumerName, messageID, agora()); err != nil {
+					return fmt.Errorf("inbox: contando a reentrega de %s: %w", messageID, err)
+				}
+				// O caso de uso traduz isto em replay: transação encerrada sem
+				// mudar nada do domínio.
 				return appwagering.ErrIdempotentSkip
 			case !ports.IsNotFound(err):
 				return err

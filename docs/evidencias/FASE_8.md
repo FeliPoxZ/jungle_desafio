@@ -234,6 +234,81 @@ aconteceu por várias rodadas.
 | "lançamentos = 1" onde o teste esperava 2 | carteira criada por `INSERT` direto: **sem** `OpenWallet` não existe lançamento de abertura | os testes de SQS passaram a abrir a carteira pela regra de negócio (a régua do README §9: abertura 1000.00 + BET 25.00 → `checkedEntries: 2`) |
 | "a condição não foi atendida" sem mais nada | o log do consumidor ia para `io.Discard` | o log vai para um buffer e é **despejado na falha** — foi o que mostrou "mensagens=0" em laço e o erro exato de classificação |
 
+## 6b. Três defeitos que SÓ apareceram ao rodar o binário
+
+O teste de integração exercita o consumidor embutido no processo de teste. Subir o
+**binário** com `SQS_CONSUME_TRANSACTIONS=true` e enviar uma mensagem pela fila
+revelou três coisas que nenhum teste via.
+
+### 6b.1. Com os DEFAULTS, ligar o consumidor faz a aplicação NÃO SUBIR
+
+```
+$ ./bin/api.exe   # com SQS_CONSUME_TRANSACTIONS=true e defaults
+erro fatal: app: config: configuração inválida:
+  - HTTP_STOP_TIMEOUT deve cobrir HTTP_SHUTDOWN_TIMEOUT + SQS_SHUTDOWN_GRACE quando
+    SQS_CONSUME_TRANSACTIONS está ligado
+```
+
+O `HTTP_STOP_TIMEOUT` padrão era **25s**, e a regra exige cobrir 20s (servidor) +
+15s (consumidor) = 35s. Ou seja: **o default violava a própria regra de validação**,
+e o operador que só ligasse o worker recebia "configuração inválida" num ambiente
+correto. Corrigido: default de **40s** (e o `.env.example` alinhado), com dois
+testes de config travando os dois lados da regra.
+
+### 6b.2. A métrica de negócio não era emitida no caminho SQS
+
+O consumidor não chamava `ObserveOperation`, então `wager_operations_total` **não
+existia** para operações vindas da fila — o caminho principal do serviço ficava
+invisível no painel (a operação aparecia no banco e em lugar nenhum mais).
+Corrigido: o consumidor emite a mesma métrica da borda HTTP, com `kind` extraído do
+corpo de forma TOLERANTE (`unknown` quando não é o envelope esperado — a validação
+de verdade é do processador; aqui o objetivo é não perder a contagem).
+
+```
+$ curl http://127.0.0.1:18099/metrics | grep operations_total
+jungleg_wager_operations_total{kind="BET",status="PROCESSED"} 1
+jungleg_wager_operation_duration_seconds_count{kind="BET",status="PROCESSED"} 1
+```
+
+### 6b.3. O contador durável de entregas nunca incrementava
+
+`attempts` ficava em 0 para sempre: o caminho da reentrega (a mensagem que a inbox
+já tem) **não existia** para o contador — e é exatamente nele que a contagem importa,
+porque é o único registro que sobrevive quando o broker não é mais consultado.
+Corrigido em duas partes: a inserção grava `attempts = 1` (uma linha na inbox
+significa PELO MENOS uma entrega, normalizado **no repositório**) e a reentrega faz
+`attempts = attempts + 1` no SQL. O teste que discrimina: `TestProcessarReentregaNaoReaplica`
+afirma `attempts = 2` depois de duas entregas.
+
+> O mesmo defeito apareceu **de novo**, e a correção o expôs: o `INSERT` ganhou a
+> coluna `attempts` sem os placeholders correspondentes (`mismatched param and
+> argument count`), pego pelos testes de integração do repositório
+> (`TestInboxDeduplicacao` e `TestInboxMarcarConclusao`). É o valor de ter a suíte
+> inteira no mesmo comando: a mudança de uma camada quebra a asserção de outra.
+
+## 6c. A prova ponta a ponta pelo BINÁRIO (wallet por HTTP, operação pela FILA)
+
+```
+1) carteira aberta pela API: 01a14761-2f6d-7b52-b029-cb6255753915 saldo=1000.00 versao=1
+2) mensagem enviada para a fila (MessageId 50e216b8-...)
+3) saldo depois do consumo: 97500 (esperado 97500)
+4) reconciliacao: 975.00/975.00 dif=0.00 consistent=True entries=2
+5) jungleg_wager_operations_total{kind="BET",status="PROCESSED"} 1
+6) log: msg=sqs_mensagem_processada messageId=50e216b8-... status=PROCESSED
+        failureCode="" replay=false receiveCount=1 durationMs=24.7
+```
+
+Leitura: a carteira nasceu pelo caminho de negócio (abertura + lançamento), a
+operação chegou **pela fila** (não por HTTP), o consumidor aplicou, o ledger ficou
+com DOIS lançamentos (abertura 1000.00 e débito 25.00), a inbox registrou
+`PROCESSED`, a reconciliação fechou e a métrica de negócio foi emitida.
+
+> ⚠️ **Armadilha de PowerShell registrada:** montar JSON com aspas dentro de
+> `docker exec ... awslocal sqs send-message` **corrompe o corpo** (o primeiro envio
+> chegou como `invalid character ''t'' ...` e foi para a DLQ, corretamente
+> classificada como permanente). O envio tem de ser feito **lendo de um arquivo**
+> copiado para dentro do container: `docker cp` + `BODY=$(cat arquivo)`.
+
 ## 7. Decisões de design registradas
 
 1. **Ganchos transacionais** (`ProcessHooks`): `OnBegin` antes de qualquer leitura

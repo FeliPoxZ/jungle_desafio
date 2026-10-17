@@ -189,6 +189,46 @@ func TestValidateReportsEveryProblem(t *testing.T) {
 	}
 }
 
+// Ligar o consumidor de SQS com os DEFAULTS precisa resultar em configuração
+// válida.
+//
+// Existe porque já não resultou: o `HTTP_STOP_TIMEOUT` padrão era 25s, e a
+// validação exige que ele cubra o `HTTP_SHUTDOWN_TIMEOUT` (20s) **mais** o
+// `SQS_SHUTDOWN_GRACE` (15s) quando o consumidor está ligado. O sintoma era a
+// aplicação não subir — com a mensagem "configuração inválida" — num ambiente em
+// que o operador só tinha ligado o worker. Um default que viola a própria regra
+// de validação é um defeito, e é este teste que o trava.
+func TestLoadComConsumidorLigadoUsaDefaultsValidos(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("SQS_CONSUME_TRANSACTIONS", "true")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() com o consumidor ligado e defaults devolveu erro: %v", err)
+	}
+
+	soma := cfg.HTTP.ShutdownTimeout + cfg.SQS.ShutdownGrace
+	if cfg.HTTP.StopTimeout < soma {
+		t.Errorf("StopTimeout (%v) não cobre ShutdownTimeout + ShutdownGrace (%v)",
+			cfg.HTTP.StopTimeout, soma)
+	}
+}
+
+// A ordem invertida é recusada: o Fx mataria o servidor no meio da drenagem.
+func TestLoadRejeitaStopTimeoutMenorQueShutdown(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("HTTP_STOP_TIMEOUT", "5s")
+	t.Setenv("HTTP_SHUTDOWN_TIMEOUT", "20s")
+
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("Load() aceitou StopTimeout menor que ShutdownTimeout")
+	}
+	if !strings.Contains(err.Error(), "HTTP_STOP_TIMEOUT") {
+		t.Errorf("a mensagem deveria apontar HTTP_STOP_TIMEOUT; recebido: %v", err)
+	}
+}
+
 func TestSlogLevel(t *testing.T) {
 	tests := []struct {
 		in      string
