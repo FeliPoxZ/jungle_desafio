@@ -16,10 +16,21 @@
 > **Não comece a codar sem ler as seções 3 e 3.5.**
 >
 > ⭐ **A próxima fase é a 11 (observabilidade e polimento)**, seguida da **12**
-> (documentação e entrega). Os dois documentos finais — `docs/SISTEMA_EXPLICADO.md` e
-> `docs/ENTREVISTA.md` — são **entrega obrigatória** (§3.5), e a Fase 10 já deixou a
-> matéria-prima pronta na **seção final de `docs/evidencias/FASE_10.md`**
-> ("MATÉRIA-PRIMA PARA OS DOIS DOCUMENTOS"): a Fase 12 **organiza**, não reconstrói.
+> (documentação e entrega). Os prompts de abertura das duas estão prontos e são
+> autossuficientes:
+>
+> - **`PROMPT_FASE_11.md`** — métricas com teste por métrica, log do **processo** real,
+>   dashboard/alerta, `go mod tidy`, composição Fx com start/stop, revisão
+>   anti-eliminatórios; cinco blocos (11a–11e).
+> - **`PROMPT_FASE_12.md`** — o "README da solução" (a ⚠️ 3), **`docs/SISTEMA_EXPLICADO.md`**,
+>   **`docs/ENTREVISTA.md`**, `docker compose up --build` de um checkout limpo e a
+>   conferência de conformidade §1–§15; quatro blocos (12a–12d).
+>
+> O **§3.6** deste arquivo detalha a distinção entre os dois documentos finais.
+>
+> Os dois documentos finais — `docs/SISTEMA_EXPLICADO.md` e `docs/ENTREVISTA.md` — são
+> **entrega obrigatória** (§3.5 e §3.6), e a Fase 10 já deixou a matéria-prima pronta na
+> **seção final de `docs/evidencias/FASE_10.md`**: a Fase 12 **organiza**, não reconstrói.
 >
 > A Fase 10 está CONCLUÍDA: **três processos independentes** demonstraram T1–T8 e a
 > conferência final do README §13, com a prova de SIGTERM no container Linux. Prova em
@@ -276,6 +287,70 @@ Explicar **tudo o que o sistema faz**, para quem vai ler o código ou mantê-lo:
 > ⚠️ **Estes dois documentos são o motivo pelo qual a IA deve explicar cada bloco durante o
 > caminho:** eles serão montados a partir dessas explicações. Explicar agora é investir na
 > entrega final.
+>
+> ⚠️ **Atualizado em 2026-10-18 (fim da Fase 10):** os dois documentos estão detalhados no
+> **§3.6** abaixo, com o formato de cada um e com o papel do triângulo
+> `DECISÃO | MOTIVO | O QUE QUEBRARIA SEM ELA`. O **§0b do `PROMPT_FASE_11.md`** e o
+> **§0b do `PROMPT_FASE_12.md`** trazem a mesma distinção, em versão operacional.
+
+### 3.6. 📚 OS DOIS DOCUMENTOS, DETALHADOS — e a distinção entre eles
+
+São **dois** documentos porque há **dois usos**: manter o código e defender o projeto
+numa entrevista. Um único texto falharia nos dois — ensina devagar e não treina rápido.
+
+| Dimensão | `docs/SISTEMA_EXPLICADO.md` | `docs/ENTREVISTA.md` |
+| --- | --- | --- |
+| Para quem | quem vai **ler e manter** o código (o avaliador, um colega novo, você em 3 meses) | **você**, treinando em voz alta |
+| Pergunta que responde | "o que este sistema faz, por que é assim, e o que quebra se eu mudar?" | "como eu defendo isso em 60 s, com número, e como admito o que ficou frágil?" |
+| Ordem | do zero ao avançado, por capítulo | por pergunta, do simples ao hostil |
+| Vocabulário | **explicado na primeira aparição** (nada de "como todos sabem") | pressupõe que já foi aprendido |
+| Unidade de texto | componente, fluxo, tabela | pergunta → resposta → "se insistirem" → número/teste |
+| A tabela `DECISÃO \| MOTIVO \| O QUE QUEBRARIA SEM ELA` vira | **prosa** que ensina | **fala** que defende |
+| Limitação | capítulo "limites conhecidos", com o motivo de cada uma | pergunta difícil, com resposta honesta |
+| Erro do passado (41 defeitos) | capítulo "problemas resolvidos": sintoma → causa → correção | "qual foi o bug mais difícil?" e "o que faria diferente?" |
+| Extensão | longa (é um manual) | média (é um treino) |
+| Critério de pronto | o leitor explica **onde** cada garantia é imposta | nenhuma resposta sem motivo e consequência |
+| O que NÃO é | resumo do `ARCHITECTURE.md` (aquele é do avaliador, denso, em 3ª pessoa) | lista de jargão decorado |
+
+**Ordem obrigatória do `SISTEMA_EXPLICADO.md`** (a mesma do `PROMPT_FASE_12.md` §0b):
+problema → vocabulário do zero (unidades mínimas, carteira, lançamento, transação/lock,
+idempotência, outbox/inbox, pendência, worker, lease) → fluxo completo de uma requisição
+(HTTP → commit → publicação; e o mesmo pela fila) → cada componente e por que existe →
+**onde cada garantia é imposta** (garantia → camada → arquivo/teste) → regras de negócio
+com o porquê → decisões com motivo/consequência → os 41 defeitos → limites conhecidos.
+
+**Blocos obrigatórios do `ENTREVISTA.md`:** arquitetura, decisão, garantia,
+**concorrência** (a nota de 20 pontos), erro e aprendizado, e **as difíceis** (queda
+reproduzida × provocada, ordem por carteira dependente do lote, latência de cliente
+local, reaper que repete linha, sem introspecção de token, `stop_grace_period`), mais
+"o que eu faria diferente" e "o que não entreguei e por quê".
+
+**O triângulo `DECISÃO | MOTIVO | O QUE QUEBRARIA SEM ELA` é o rascunho dos dois.** É o
+formato de explicação usado em toda a caminhada desde a Fase 6. Exemplo real:
+
+| DECISÃO | MOTIVO | O QUE QUEBRARIA SEM ELA |
+| --- | --- | --- |
+| `SELECT ... FOR UPDATE` na linha da carteira, antes de ler o saldo | o conflito real é "duas operações na mesma carteira"; o lock de linha serializa só isso | as duas apostas de 80.00 leriam 100.00 ao mesmo tempo e uma escrita sumiria (lost update) |
+
+- no **SISTEMA_EXPLICADO**: dois parágrafos — um explica o que é transação e lock de
+  linha **sem presumir vocabulário**, o outro conta a consequência e **onde** ela é
+  imposta (no banco), com o teste que prova;
+- na **ENTREVISTA**: a pergunta "por que não `SERIALIZABLE`?" com resposta de 40 s
+  terminando nos números (1 `PROCESSED`, 1 `REJECTED`, saldo 20.00, **um** débito; p99
+  166 ms × 579 ms);
+- e a pergunta difícil que o mesmo dado permite responder: "e se o processo morrer entre
+  o commit e a resposta?" — com o T5 e o SIGTERM do container, **admitindo** que a janela
+  foi reproduzida por estado durável.
+
+**O que nenhum dos dois pode fazer:** contradizer o `README.md` da raiz; omitir as
+**23 interpretações** de `docs/CONFORMIDADE_README.md` (cada uma com motivo e
+consequência); esconder fragilidade; inventar número. Todo número vem de teste,
+evidência ou medição registrada.
+
+**A matéria-prima já está pronta:** cada fase desde a 10 entrega, na seção final de
+`docs/evidencias/FASE_N.md`, o bloco **"MATÉRIA-PRIMA PARA OS DOIS DOCUMENTOS"** —
+perguntas→respostas curtas, decisões em tabela e o que a fase acrescentou à compreensão.
+A Fase 12 **organiza**; não reconstrói o raciocínio.
 
 ---
 
