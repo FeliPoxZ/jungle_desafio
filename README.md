@@ -613,7 +613,7 @@ docker logs jungle-sigterm | grep -E 'shutdown_signal_received|sqs_visibilidade_
 
 - `GET /metrics` (público) expõe as 12 métricas Prometheus `jungleg_wager_*`, sem
   label de alta cardinalidade. Cada uma tem teste que dispara o gatilho e lê o
-  valor em `/metrics` (`EVIDENCIAS.md` §4).
+  valor em `/metrics` (`docs/EVIDENCIAS.md` §4).
 - `GET /health/live` e `GET /health/ready` (públicos) — readiness com PostgreSQL,
   IdP, SQS e `workers`.
 - Logs JSON com `correlationId`, `messageId`, `transactionId`, `walletId` e
