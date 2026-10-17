@@ -418,18 +418,32 @@ func (i *instancia) parar(t *testing.T) {
 func (i *instancia) chamar(t *testing.T, metodo, caminho, token string, corpo any, cabecalhos map[string]string) resposta {
 	t.Helper()
 
+	resp, err := i.tentarChamar(metodo, caminho, token, corpo, cabecalhos)
+	if err != nil {
+		t.Fatalf("%s %s %s: %v", i.nome, metodo, caminho, err)
+	}
+	return resp
+}
+
+// tentarChamar é o `chamar` que devolve erro em vez de falhar o teste.
+//
+// Existe porque os cenários de concorrência disparam requisições de GOROUTINES, e
+// `t.Fatalf` chamado fora da goroutine do teste não interrompe o teste: ele sai
+// do processo errado. Aqui o erro viaja como valor, e quem decide é quem espera o
+// grupo — depois da barreira, na goroutine principal.
+func (i *instancia) tentarChamar(metodo, caminho, token string, corpo any, cabecalhos map[string]string) (resposta, error) {
 	var leitor io.Reader
 	if corpo != nil {
 		bruto, err := json.Marshal(corpo)
 		if err != nil {
-			t.Fatalf("serializando o corpo: %v", err)
+			return resposta{}, fmt.Errorf("serializando o corpo: %w", err)
 		}
 		leitor = bytes.NewReader(bruto)
 	}
 
 	req, err := http.NewRequestWithContext(context.Background(), metodo, i.baseURL+caminho, leitor)
 	if err != nil {
-		t.Fatalf("montando a requisição para %s: %v", i.nome, err)
+		return resposta{}, fmt.Errorf("montando a requisição: %w", err)
 	}
 	if corpo != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -447,12 +461,15 @@ func (i *instancia) chamar(t *testing.T, metodo, caminho, token string, corpo an
 	cliente := &http.Client{Timeout: 60 * time.Second}
 	resp, err := cliente.Do(req)
 	if err != nil {
-		t.Fatalf("%s %s %s: %v", i.nome, metodo, caminho, err)
+		return resposta{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	lido, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	return resposta{status: resp.StatusCode, corpo: lido, header: resp.Header}
+	lido, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return resposta{}, fmt.Errorf("lendo a resposta: %w", err)
+	}
+	return resposta{status: resp.StatusCode, corpo: lido, header: resp.Header}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -492,10 +509,36 @@ func backendsPorAplicacao(t *testing.T) map[string]int {
 	return saida
 }
 
+// instanciasEsperandoLock conta quantos backends das INSTÂNCIAS estão esperando
+// lock AGORA.
+//
+// É a medida que sustenta o T3 sem cronômetro: `wait_event_type = 'Lock'` é o
+// PostgreSQL dizendo "esta sessão está parada esperando um lock", e o filtro por
+// `application_name` restringe a contagem às conexões das instâncias — sem ele,
+// qualquer outra suíte esperando o `pg_advisory_lock` do harness entraria na
+// conta e o número mentiria.
+//
+// (O `application_name` só é possível por causa da correção do defeito 40: antes
+// dela todas as instâncias se chamavam "jungleg-api", e não haveria como separar
+// as conexões do app das do processo de teste.)
+func instanciasEsperandoLock(t *testing.T) int {
+	t.Helper()
+
+	var total int
+	err := poolTeste.QueryRow(context.Background(),
+		`SELECT count(*)
+		   FROM pg_stat_activity
+		  WHERE wait_event_type = 'Lock'
+		    AND application_name LIKE 'api-%'`).Scan(&total)
+	if err != nil {
+		t.Fatalf("contando sessões esperando lock: %v", err)
+	}
+	return total
+}
+
 // ---------------------------------------------------------------------------
 // A prova de que são TRÊS PROCESSOS INDEPENDENTES (README §8)
 // ---------------------------------------------------------------------------
-
 // TestTresInstanciasIndependentes fecha o critério do README §8 antes de qualquer
 // cenário financeiro: três processos de verdade, com conexões e memória próprias,
 // e a queda de um sem efeito nos outros.
