@@ -41,6 +41,11 @@ type ServidorOIDCTeste struct {
 	discoveryStatus int
 	jwksStatus      int
 	discoveryCorpo  string
+	// jwksURIAnunciado troca o `jwks_uri` que o discovery publica. Vazio significa
+	// "o endereço deste servidor" (o normal). Existe para provar a sobrescrita
+	// `OIDC_JWKS_URL`: num container, o Keycloak anuncia `localhost:8080`, que lá
+	// dentro é o próprio container, e as chaves ficam inalcançáveis.
+	jwksURIAnunciado string
 
 	// contadores de acesso, para provar cache e rotação.
 	discoveryBuscas int
@@ -162,6 +167,18 @@ func (s *ServidorOIDCTeste) ComIssuerDiferente(issuer string) {
 	s.discoveryCorpo = issuer
 }
 
+// ComJWKSEm troca o `jwks_uri` anunciado pelo discovery.
+//
+// `url` inalcançável reproduz o que acontece com o Keycloak em container: o
+// documento anuncia `http://localhost:8080/...`, que de dentro do container é o
+// PRÓPRIO container. A prova de que a sobrescrita resolve isso está em
+// `TestJWKSURLSobrescreveOAnunciadoPeloDiscovery`.
+func (s *ServidorOIDCTeste) ComJWKSEm(url string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.jwksURIAnunciado = url
+}
+
 // --- handlers ----------------------------------------------------------------
 
 func (s *ServidorOIDCTeste) handlerDiscovery(w http.ResponseWriter, _ *http.Request) {
@@ -173,6 +190,9 @@ func (s *ServidorOIDCTeste) handlerDiscovery(w http.ResponseWriter, _ *http.Requ
 		issuer = s.discoveryCorpo
 	}
 	jwksURI := s.Server.URL + "/protocol/openid-connect/certs"
+	if s.jwksURIAnunciado != "" {
+		jwksURI = s.jwksURIAnunciado
+	}
 	s.mu.Unlock()
 
 	if status != http.StatusOK {

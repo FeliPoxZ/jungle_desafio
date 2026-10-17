@@ -55,6 +55,7 @@ func novoVerificadorOIDC(cfg *config.Config) *auth.Verifier {
 	return auth.New(auth.Config{
 		Issuer:       cfg.OIDC.Issuer,
 		DiscoveryURL: cfg.OIDC.DiscoveryURL,
+		JWKSURL:      cfg.OIDC.JWKSURL,
 		Audience:     cfg.OIDC.Audience,
 		JWKSCacheTTL: cfg.OIDC.JWKSCacheTTL,
 		ClockSkew:    cfg.OIDC.ClockSkew,

@@ -1,6 +1,9 @@
 package auth
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Config é o que a validação OIDC precisa saber do IdP.
 //
@@ -17,6 +20,20 @@ type Config struct {
 	// DiscoveryURL é a base onde fica /.well-known/openid-configuration.
 	// Vazio significa "igual ao Issuer".
 	DiscoveryURL string
+
+	// JWKSURL sobrescreve o endereço das chaves públicas.
+	//
+	// Vazio significa "use o `jwks_uri` do documento de discovery", que é o
+	// comportamento padrão e o que o OIDC define. A sobrescrita existe por um
+	// motivo concreto e medido (defeito 41 da Fase 10): o Keycloak anuncia os
+	// endereços com o nome PÚBLICO do IdP (`http://localhost:8080/...`), e de
+	// dentro de um container `localhost` é o próprio container. O discovery passa
+	// (ele é buscado pelo endereço configurado), o readiness fica UP e TODO token
+	// válido vira 503 — o sintoma mente sobre a causa.
+	//
+	// Com esta chave, o operador aponta as chaves para o endereço que a rede
+	// dele alcança, sem tocar no `iss` (que precisa continuar sendo o público).
+	JWKSURL string
 
 	// Audience é o `aud` obrigatório. Vazio desliga a checagem — usado só em
 	// ambiente onde não há audience configurada; em produção é exigido.
@@ -41,6 +58,7 @@ func (c Config) comDefaults() Config {
 	if c.DiscoveryURL == "" {
 		c.DiscoveryURL = c.Issuer
 	}
+	c.JWKSURL = strings.TrimRight(c.JWKSURL, "/")
 	if c.JWKSCacheTTL <= 0 {
 		c.JWKSCacheTTL = 15 * time.Minute
 	}

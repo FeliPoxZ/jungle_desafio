@@ -198,6 +198,14 @@ services:
       # ou o `iss` não bate (todo token vira 401) ou o serviço não alcança o IdP.
       OIDC_ISSUER: http://localhost:8080/realms/jungleg
       OIDC_DISCOVERY_URL: http://host.docker.internal:8080/realms/jungleg
+      # O Keycloak anuncia o `jwks_uri` com o nome PÚBLICO do IdP
+      # (`http://localhost:8080/...`). De dentro DESTE container, `localhost` é o
+      # próprio container: o discovery passa, o readiness fica UP e TODO token
+      # válido vira 503 ("não foi possível validar a autenticação"). Esta chave
+      # aponta as chaves públicas para o endereço que a rede do container
+      # alcança, sem mexer no `iss` (que precisa continuar sendo o público).
+      # Defeito 41 da Fase 10; provado subindo ESTE container e autenticando.
+      OIDC_JWKS_URL: http://host.docker.internal:8080/realms/jungleg/protocol/openid-connect/certs
       OIDC_AUDIENCE: ${OIDC_AUDIENCE:-jungleg-api}
       OIDC_JWKS_CACHE_TTL: "15m"
       OIDC_CLOCK_SKEW: "30s"

@@ -112,6 +112,16 @@ type OIDCConfig struct {
 	// não é o mesmo endereço que o cliente usa para obter o token (localhost).
 	DiscoveryURL string `env:"DISCOVERY_URL" envDefault:""`
 	Audience     string `env:"AUDIENCE" envDefault:""`
+	// JWKSURL sobrescreve o endereço das chaves públicas do IdP. Vazio usa o
+	// `jwks_uri` do discovery, que é o padrão do OIDC.
+	//
+	// Existe por um caso concreto (defeito 41 da Fase 10): o Keycloak anuncia os
+	// endereços com o nome PÚBLICO do IdP (`http://localhost:8080/...`), e de
+	// dentro do container `localhost` é o próprio container. O discovery passa
+	// (é buscado pelo DiscoveryURL), o readiness fica UP, e todo token válido
+	// vira 503 — o sintoma mente sobre a causa. Aqui o operador aponta as chaves
+	// para o endereço que a rede dele alcança, sem mexer no `iss`.
+	JWKSURL string `env:"JWKS_URL" envDefault:""`
 	// JWKSCacheTTL controla por quanto tempo as chaves públicas ficam em cache
 	// antes de nova consulta ao IdP.
 	JWKSCacheTTL time.Duration `env:"JWKS_CACHE_TTL" envDefault:"15m"`

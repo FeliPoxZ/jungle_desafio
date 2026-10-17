@@ -183,11 +183,25 @@ func (v *Verifier) obterDiscovery(ctx context.Context, forcar bool) (discoveryDo
 
 	v.mu.Lock()
 	v.discovery = doc
-	v.jwksURI = doc.JWKSURI
+	v.jwksURI = v.enderecoDoJWKS(doc)
 	v.descobriuEm = v.agora()
 	v.mu.Unlock()
 
 	return doc, nil
+}
+
+// enderecoDoJWKS decide de onde as chaves públicas são buscadas.
+//
+// O padrão do OIDC é o `jwks_uri` do documento. A configuração pode sobrescrevê-lo
+// (`OIDC_JWKS_URL`) — e a razão é de rede, não de gosto: o Keycloak anuncia os
+// endereços com o nome PÚBLICO do IdP, e de dentro de um container esse nome pode
+// ser o próprio container. Sem a sobrescrita, o discovery responde, o readiness
+// fica UP e todos os tokens válidos viram 503 (defeito 41 da Fase 10).
+func (v *Verifier) enderecoDoJWKS(doc discoveryDocument) string {
+	if v.cfg.JWKSURL != "" {
+		return v.cfg.JWKSURL
+	}
+	return doc.JWKSURI
 }
 
 // chavePara devolve a chave pública do `kid`.
@@ -239,12 +253,16 @@ func (v *Verifier) atualizarChaves(ctx context.Context) (map[string]*rsa.PublicK
 		return nil, err
 	}
 
+	// De ONDE as chaves são buscadas: o `jwks_uri` anunciado ou a sobrescrita da
+	// configuração. Ver `Config.JWKSURL` e o defeito 41.
+	endereco := v.enderecoDoJWKS(doc)
+
 	var jwks jwksDocument
-	if err := v.buscarJSON(ctx, doc.JWKSURI, &jwks); err != nil {
+	if err := v.buscarJSON(ctx, endereco, &jwks); err != nil {
 		return nil, err
 	}
 	if len(jwks.Keys) == 0 {
-		return nil, indisponivel(ErrDocumentoInvalido, "JWKS sem chaves em %s", doc.JWKSURI)
+		return nil, indisponivel(ErrDocumentoInvalido, "JWKS sem chaves em %s", endereco)
 	}
 
 	chaves := make(map[string]*rsa.PublicKey, len(jwks.Keys))
@@ -276,9 +294,9 @@ func (v *Verifier) atualizarChaves(ctx context.Context) (map[string]*rsa.PublicK
 	if len(chaves) == 0 {
 		if ultimoErro != nil {
 			return nil, indisponivel(ErrDocumentoInvalido,
-				"nenhuma chave RSA utilizável em %s: %v", doc.JWKSURI, ultimoErro)
+				"nenhuma chave RSA utilizável em %s: %v", endereco, ultimoErro)
 		}
-		return nil, indisponivel(ErrDocumentoInvalido, "nenhuma chave de assinatura RSA em %s", doc.JWKSURI)
+		return nil, indisponivel(ErrDocumentoInvalido, "nenhuma chave de assinatura RSA em %s", endereco)
 	}
 
 	v.mu.Lock()
