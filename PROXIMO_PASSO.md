@@ -104,6 +104,8 @@ e recuperação (Fase 10): 11 funções de integração com três processos + 4 
 ### Histórico de commits (mais recente primeiro)
 
 ```
+8822b00 docs(prompt): escreve os prompts de abertura das fases 11 e 12 e detalha os dois documentos
+a6b88d4 docs(fase10): registra as evidencias, a arquitetura e a conformidade da Fase 10
 6b2f223 test(fase10d): conferencia final cruzando HTTP e SQS, latencia e fim do residuo  ← FASE 10d
 f8f375f fix(oidc): permite apontar o endereco do JWKS (defeito 41)                      ← FASE 10 (fix)
 fddf11c test(fase10c): prova T5, T6, T7 e T8 com processos reais                        ← FASE 10c
@@ -806,6 +808,11 @@ corrigida (defeito 21).
 
 ## 8. CHECKLIST DE ARRANQUE PARA A NOVA CONVERSA (Fase 11)
 
+> ⭐ **O prompt de abertura está em `PROMPT_FASE_11.md`** — autossuficiente, com o escopo
+> do §12/§15 do README, os cinco blocos (11a–11e), as armadilhas de ambiente, os
+> critérios de aceite e o formato da primeira resposta esperada. O da Fase 12 está em
+> **`PROMPT_FASE_12.md`**. O resumo abaixo é o checklist operacional.
+
 > ⚠️ **A Fase 10 fechou o critério de 20 pontos do §14 (concorrência).** O que falta na
 > 11 é **observabilidade/polimento** e, na 12, **documentação e entrega**.
 
@@ -815,7 +822,7 @@ corrigida (defeito 21).
 - [ ] **Teste da composição Fx**: `fx.ValidateApp`, start/stop, `fx.StopTimeout`, liberação de recursos dos workers (o runner já tem 6 casos; `goleak` é opcional)
 - [ ] `go vet ./...`, `gofmt -l .` vazio e **`go mod tidy`** (remover `testcontainers-go`, que está baixado e não é usado)
 - [ ] **Revisão anti-eliminatórios** (§14) item por item, com evidência — o `docs/CONFORMIDADE_README.md` §14 já está ✅ desde a Fase 10
-- [ ] **Fase 12**: `docs/SISTEMA_EXPLICADO.md` e `docs/ENTREVISTA.md` a partir da matéria-prima da Fase 10; resolver a ⚠️ 3 (onde vive o "README da solução"); conferir `docker compose up --build` do zero
+- [ ] **Fase 12**: `docs/SISTEMA_EXPLICADO.md` e `docs/ENTREVISTA.md` a partir da matéria-prima das Fases 10–11 (o **§3.6** detalha os dois); resolver a ⚠️ 3 (onde vive o "README da solução"); `docker compose up --build` do zero; conferência §1–§15
 - [ ] Aceitar contestação do usuário: se ele questionar e estiver certo, **admitir e corrigir**
 - [ ] Depois de aprovado, commitar (um bloco por vez, com a mensagem contando a história)
 - [ ] Atualizar `docs/evidencias/FASE_11.md`, `ARCHITECTURE.md`, `docs/CONFORMIDADE_README.md`, `PROXIMO_PASSO.md`, `PLANO.md`
