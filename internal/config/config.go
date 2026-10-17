@@ -150,6 +150,17 @@ type OutboxConfig struct {
 	MaxAttempts  int32         `env:"MAX_ATTEMPTS" envDefault:"10"`
 	BaseBackoff  time.Duration `env:"BASE_BACKOFF" envDefault:"2s"`
 	MaxBackoff   time.Duration `env:"MAX_BACKOFF" envDefault:"5m"`
+
+	// ParkedBackoff é o prazo da QUARENTENA: quanto tempo um evento que não pôde
+	// ser publicado fica fora da fila de trabalho depois de esgotar as
+	// tentativas (ou depois de uma recusa definitiva do destino).
+	//
+	// Existe porque "não publicar mais" precisa de um lugar para onde ir: o
+	// evento continua pendente (nada é perdido, e o atraso da outbox denuncia a
+	// quarentena), mas com `available_at` empurrado para frente. Sem este valor,
+	// o `ClaimBatch` reivindicaria o mesmo evento a cada ciclo — laço quente sobre
+	// um evento que já provou não passar.
+	ParkedBackoff time.Duration `env:"PARKED_BACKOFF" envDefault:"1h"`
 }
 
 // ReferenceConfig controla o worker que resolve referências pendentes.
@@ -279,8 +290,38 @@ func (c *Config) Validate() error {
 	if c.Outbox.Lease < 5*time.Second {
 		problems = append(problems, "OUTBOX_LEASE muito baixo: outra instância pode republicar um evento em andamento")
 	}
+	if c.Outbox.MaxAttempts < 1 {
+		problems = append(problems, "OUTBOX_MAX_ATTEMPTS deve ser maior que zero")
+	}
+	if c.Outbox.BaseBackoff < time.Second {
+		problems = append(problems, "OUTBOX_BASE_BACKOFF muito baixo: repetir rápido demais sobre um SQS fora do ar só amplifica a falha")
+	}
+	if c.Outbox.MaxBackoff < c.Outbox.BaseBackoff {
+		problems = append(problems, "OUTBOX_MAX_BACKOFF deve ser maior ou igual a OUTBOX_BASE_BACKOFF")
+	}
+	// A quarentena tem de ser MAIS LONGA que o teto do backoff: se fosse menor,
+	// um evento "emparedado" voltaria para a fila de trabalho antes de o backoff
+	// normal terminar, e a quarentena não significaria nada.
+	if c.Outbox.ParkedBackoff < c.Outbox.MaxBackoff {
+		problems = append(problems, "OUTBOX_PARKED_BACKOFF deve ser maior ou igual a OUTBOX_MAX_BACKOFF")
+	}
 	if c.Reference.MaxAttempts < 1 {
 		problems = append(problems, "REFERENCE_MAX_ATTEMPTS deve ser maior que zero")
+	}
+	if c.Reference.BaseBackoff < time.Second {
+		problems = append(problems, "REFERENCE_BASE_BACKOFF muito baixo: repetir rápido demais não ajuda uma referência que ainda não chegou")
+	}
+	if c.Reference.MaxBackoff < c.Reference.BaseBackoff {
+		problems = append(problems, "REFERENCE_MAX_BACKOFF deve ser maior ou igual a REFERENCE_BASE_BACKOFF")
+	}
+	if c.Reference.BatchSize < 1 {
+		problems = append(problems, "REFERENCE_BATCH_SIZE deve ser maior que zero")
+	}
+	if c.Reference.PendingMaxAge < c.Reference.BaseBackoff {
+		problems = append(problems, "REFERENCE_PENDING_MAX_AGE deve ser maior ou igual a REFERENCE_BASE_BACKOFF")
+	}
+	if c.Reference.ReaperEvery <= 0 {
+		problems = append(problems, "REFERENCE_REAPER_INTERVAL deve ser maior que zero")
 	}
 
 	if _, err := c.SlogLevel(); err != nil {

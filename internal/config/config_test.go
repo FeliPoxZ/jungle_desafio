@@ -19,6 +19,8 @@ func baseEnv(t *testing.T) {
 		"DB_MAX_CONNS", "DB_MIN_CONNS", "SQS_BATCH_SIZE", "SQS_VISIBILITY_TIMEOUT",
 		"SQS_TRANSACTIONS_QUEUE", "HTTP_REQUEST_TIMEOUT", "OIDC_ISSUER",
 		"OIDC_DISCOVERY_URL", "LOG_LEVEL", "OUTBOX_LEASE", "REFERENCE_MAX_ATTEMPTS",
+		"OUTBOX_PARKED_BACKOFF", "OUTBOX_MAX_BACKOFF", "REFERENCE_MAX_BACKOFF",
+		"REFERENCE_PENDING_MAX_AGE", "WORKERS_SHUTDOWN_GRACE",
 	} {
 		t.Setenv(key, "")
 	}
@@ -226,6 +228,45 @@ func TestLoadRejeitaStopTimeoutMenorQueShutdown(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "HTTP_STOP_TIMEOUT") {
 		t.Errorf("a mensagem deveria apontar HTTP_STOP_TIMEOUT; recebido: %v", err)
+	}
+}
+
+// A quarentena da outbox precisa ser MAIS LONGA que o teto do backoff.
+//
+// Se fosse menor, um evento emparedado voltaria para a fila de trabalho antes de
+// o backoff normal terminar — e "quarentena" não significaria nada. O erro é de
+// configuração, e a validação o pega no boot em vez de deixar o operador
+// descobrir pelo comportamento.
+func TestLoadRejeitaQuarentenaMenorQueOTetoDoBackoff(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("OUTBOX_MAX_BACKOFF", "1h")
+	t.Setenv("OUTBOX_PARKED_BACKOFF", "1m")
+
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("Load() aceitou OUTBOX_PARKED_BACKOFF menor que OUTBOX_MAX_BACKOFF")
+	}
+	if !strings.Contains(err.Error(), "OUTBOX_PARKED_BACKOFF") {
+		t.Errorf("a mensagem deveria apontar OUTBOX_PARKED_BACKOFF; recebido: %v", err)
+	}
+}
+
+// Os DEFAULTS da outbox e do worker de referências são uma configuração válida.
+//
+// Mesma razão do teste do consumidor: um default que viola a própria regra de
+// validação impede a aplicação de subir num ambiente correto (foi o defeito 33).
+func TestLoadComWorkersLigadosUsaDefaultsValidos(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("OUTBOX_ENABLED", "true")
+	t.Setenv("REFERENCE_ENABLED", "true")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() com os workers ligados e defaults devolveu erro: %v", err)
+	}
+	if cfg.Outbox.ParkedBackoff < cfg.Outbox.MaxBackoff {
+		t.Errorf("OUTBOX_PARKED_BACKOFF (%v) menor que OUTBOX_MAX_BACKOFF (%v)",
+			cfg.Outbox.ParkedBackoff, cfg.Outbox.MaxBackoff)
 	}
 }
 
