@@ -15,16 +15,15 @@
 >
 > **Não comece a codar sem ler as seções 3 e 3.5.**
 >
-> ⭐ **A próxima fase é a 10 (concorrência e recuperação: 3 processos independentes,
-> T1–T8).** O prompt de abertura dela está pronto em **`PROMPT_FASE_10.md`** —
-> autossuficiente, com o escopo do §8/§13 do README, os quatro blocos, os critérios
-> de aceite e as armadilhas de ambiente. Use-o como primeira mensagem da nova
-> conversa; este arquivo continua sendo o handoff completo.
+> ⭐ **A próxima fase é a 11 (observabilidade e polimento)**, seguida da **12**
+> (documentação e entrega). Os dois documentos finais — `docs/SISTEMA_EXPLICADO.md` e
+> `docs/ENTREVISTA.md` — são **entrega obrigatória** (§3.5), e a Fase 10 já deixou a
+> matéria-prima pronta na **seção final de `docs/evidencias/FASE_10.md`**
+> ("MATÉRIA-PRIMA PARA OS DOIS DOCUMENTOS"): a Fase 12 **organiza**, não reconstrói.
 >
-> A Fase 9 está CONCLUÍDA: a outbox publica de verdade em `wallet-events.fifo`, o
-> worker de referências dá desfecho a `PENDING_REFERENCE`, o reaper retoma
-> `PENDING` e o runner supervisiona os três laços. Provas em
-> `docs/evidencias/FASE_9.md`.
+> A Fase 10 está CONCLUÍDA: **três processos independentes** demonstraram T1–T8 e a
+> conferência final do README §13, com a prova de SIGTERM no container Linux. Prova em
+> `docs/evidencias/FASE_10.md`; dois defeitos reais corrigidos (40 e 41).
 
 ---
 
@@ -61,14 +60,17 @@ solução + `ARCHITECTURE.md`.
 | Fase 7 (HTTP + autenticação) | ✅ **CONCLUÍDA E VALIDADA** em 5 blocos (7a–7e) + P1 — **49 casos** em `internal/infra/auth`, **67** em `internal/httpapi`, **30** de integração da borda HTTP (Keycloak real), **2** do binário real, **8 defeitos reais corrigidos** |
 | Fase 8 (SQS + inbox) | ✅ **CONCLUÍDA E VALIDADA** em 2 blocos (8a/8b e 8e) — **26 casos** em `internal/app/inbox`, **19** em `internal/consumer`, **9 funções** de integração com o **LocalStack real**; **8 defeitos reais corrigidos** (um de ambiente: as filas nunca eram criadas; três que só apareceram ao rodar o binário) |
 | Fase 9 (publicador da outbox + worker de referências + reaper) | ✅ **CONCLUÍDA E VALIDADA** em 4 blocos (9a–9d) — **38 casos unitários** novos, **8 funções** de integração com PostgreSQL + LocalStack reais, prova pelo **binário real** com os três laços; **3 defeitos reais corrigidos** (dois só apareceram rodando a retomada contra o banco) |
-| Fases 10–12 | ⬜ Não iniciadas (ver checklist no `PLANO.md` §3) |
+| Fase 10 (concorrência e recuperação com 3 processos) | ✅ **CONCLUÍDA E VALIDADA** em 4 blocos (10a–10d) + 1 correção — **11 funções** de integração com **três processos independentes** do binário, **4 testes unitários** novos, prova de **SIGTERM real em container Linux**; **2 defeitos reais corrigidos** (40: `application_name`; 41: o container não autenticava) |
+| Fases 11–12 | ⬜ Não iniciadas (ver checklist no `PLANO.md` §3) |
 
 **Domínio (Fases 1–3): 574 casos. Persistência (Fase 5): 38. Caso de uso (Fase 6):
 55 unitários + 27 de integração. Borda HTTP (Fase 7): 116 unitários + 32 de
 integração. Consumo por SQS (Fase 8): 45 unitários + 9 funções de integração.
-Publicação e laços (Fase 9): 38 unitários + 8 funções de integração.
+Publicação e laços (Fase 9): 38 unitários + 8 funções de integração. Concorrência
+e recuperação (Fase 10): 11 funções de integração com três processos + 4 unitários
+(2 de `application_name`, 2 do endereço do JWKS).
 `go test -race` verde em 17 pacotes com teste de unidade (18 no comando com a tag
-`integration`). Árvore git limpa.**
+`integration`), em duas rodadas consecutivas da suíte inteira. Árvore git limpa.**
 
 > ⚠️ Os **três** pacotes de integração usam o mesmo banco de teste e truncam
 > tabelas. Cada `TestMain` toma um lock consultivo (`pg_advisory_lock`) e espera a
@@ -91,6 +93,13 @@ Publicação e laços (Fase 9): 38 unitários + 8 funções de integração.
 ### Histórico de commits (mais recente primeiro)
 
 ```
+6b2f223 test(fase10d): conferencia final cruzando HTTP e SQS, latencia e fim do residuo  ← FASE 10d
+f8f375f fix(oidc): permite apontar o endereco do JWKS (defeito 41)                      ← FASE 10 (fix)
+fddf11c test(fase10c): prova T5, T6, T7 e T8 com processos reais                        ← FASE 10c
+4694834 test(fase10b): prova T1, T2 e T3 com tres processos independentes               ← FASE 10b
+3d25f5a test(fase10a): adiciona a infraestrutura de tres processos independentes         ← FASE 10a
+4d246ab docs(prompt10): promove os dois documentos finais a compromisso explicito da fase
+cefef1b docs(handoff): prepara o prompt da Fase 10 e atualiza o handoff
 3624557 docs(fase9): registra as evidencias, a arquitetura e a conformidade da Fase 9
 8c78384 test(fase9): prova as recuperacoes com LocalStack e PostgreSQL reais              ← FASE 9d
 45fffe2 feat(app): liga os lacos da fase 9 no Fx com supervisao e readiness honesto       ← FASE 9c
@@ -135,7 +144,7 @@ b046e6a feat(money): completa o value object com aritmetica, comparacao e serial
 1eef5b2 chore(setup): fundacao do projeto com Fx, config validada, HTTP e observabilidade
 ```
 
-> ✅ **As Fases 0 a 9 estão commitadas e validadas. Não revalide nem recommite.**
+> ✅ **As Fases 0 a 10 estão commitadas e validadas. Não revalide nem recommite.**
 
 ---
 
@@ -357,22 +366,22 @@ docker exec jungleg-localstack sh /etc/localstack/init/ready.d/init-queues.sh
 As filas esperadas: `wager-transactions.fifo`, `wager-transactions-dlq.fifo`,
 `wallet-events.fifo`, `wallet-events-dlq.fifo`.
 
-### 4.6. Três instâncias (o que a Fase 10 vai precisar)
+### 4.6. Três instâncias (como a Fase 10 fez, para reusar)
 
 O README §8 exige **três processos independentes**, "cada um com suas próprias
-conexões e memória". O padrão já existe no teste do binário real
-(`internal/app/healthcheck_integration_test.go`: `compilarBinario`, `exec.Command`,
-`portaDeTeste`, `esperarPronto`), hoje com **um** processo. Para três:
+conexões e memória". A infraestrutura está em `test/integration/instancias_test.go`
+e é reusável por qualquer cenário futuro:
 
-| Item | Detalhe |
+| Item | Como ficou |
 | --- | --- |
-| Portas | o compose publica **8081**; a suíte usa **18099**. Escolha uma faixa livre (ex.: 18091/18092/18093) e documente |
-| Banco | os três apontam para `jungle_test` (os testes TRUNCAM — nunca aponte para `jungleg`) |
-| Pool | `DB_MAX_CONNS` padrão 20 → 3 instâncias = 60 conexões no PostgreSQL de teste; baixe se precisar |
-| Filas | as mesmas do LocalStack; esvazie entre cenários e use nonce no `MessageDeduplicationId` |
-| Consumidor/workers | ligue por instância (`SQS_CONSUME_TRANSACTIONS`, `OUTBOX_ENABLED`, `REFERENCE_ENABLED`); nos cenários de número, deixe DESLIGADO para a asserção não ser poluída |
-| Encerramento | `t.Cleanup` com Kill/`Taskkill` no Windows; `docker stop`/SIGTERM no container (Linux) é a prova de sinal |
-| Timeout | a integração desta fase precisa de `-timeout 600s` (processos reais) |
+| Portas | faixa **18091+**, escolhidas por `portaLivre` (o compose publica **8081**; o teste do binário em `internal/app` usa 18099) |
+| Banco | os três apontam para `jungle_test`, com `application_name=api-N` no DSN (é o que torna as conexões identificáveis) |
+| Pool | `DB_MAX_CONNS=6` e `DB_MIN_CONNS=1` por instância (`max_connections` do container é 200) |
+| Filas | as mesmas do LocalStack; `abrirSQS` deixa a visibilidade em **2s** no teste e os cenários **drenam** a fila no `t.Cleanup` |
+| Consumidor/workers | ligados por instância (`opcoesInstancia{Consumidor, Outbox, Referencia, Inicio, Extras}`); nos cenários de número ficam **desligados** |
+| Encerramento | `t.Cleanup` com `Kill` (terminação dura no Windows); o log do processo é despejado na falha |
+| Tempo | `-timeout 600s` (processos reais + esperas de `VisibilityTimeout`/backoff) |
+| Compilação | `cmd/api` compilado **uma vez por execução**, no `TestMain` |
 
 ---
 
@@ -614,6 +623,56 @@ vale para os testes de concorrência:
 
 ---
 
+## 6e. ✅ CONCLUÍDA: FASE 10 — concorrência e recuperação com 3 processos
+
+> **Estado: CONCLUÍDA E VALIDADA em 4 blocos + 1 correção.** Evidências em
+> `docs/evidencias/FASE_10.md`; as decisões estão no `ARCHITECTURE.md` §6 e §8, os
+> cenários marcados como PROVADOS no §13 e as limitações no §16.
+
+| Bloco | Commit | O que entregou |
+| --- | --- | --- |
+| **10a** | `3d25f5a` | infraestrutura de prova multi-instância (binário compilado 1× no `TestMain`, N processos com porta/`application_name`/log próprios, laços ligados por instância) e `TestTresInstanciasIndependentes`; **defeito 40** corrigido |
+| **10b** | `4694834` | T1 (50× entre três processos, HTTP e SQS), T2 (80+80 entre instâncias), T3 (paralelismo entre carteiras por lock construído) |
+| **10c** | `fddf11c` | T5 (queda entre commit e delete), T8 (reinício), T6 e T7 com três instâncias reais |
+| **fix** | `f8f375f` | **defeito 41**: o container do compose não autenticava (endereço do JWKS); `OIDC_JWKS_URL` |
+| **10d** | `6b2f223` | conferência final cruzando HTTP × SQS (saldo == ledger por duas vias), latência p50/p95/p99 e fim do resíduo de fila na suíte |
+
+**O caminho, em uma frase por peça:**
+
+```
+test/integration/instancias_test.go  → N processos do binário real, portas 18091+, log por processo
+application_name=api-N no DSN        → prova de pool próprio E instrumento de medida do lock
+T1/T2/T3                             → várias portas, mesmas garantias: um débito, um dono do saldo
+T5 (fila embrulhada)                 → o Delete não acontece: estado de queda entre commit e delete
+T5 (container, SIGTERM real)         → libera visibilidade, exit=0, instância nova processa uma vez
+T6/T7 com 3 publishers/workers       → disputa de verdade e resolução por quem tem o worker
+T8                                   → processo novo devolve replay e resolve pendência durável
+conferência final                    → SQL puro + endpoint, com a mesma operação em HTTP e SQS
+```
+
+**Os dois defeitos que só a prova multi-instância revelou (40 e 41):**
+
+1. **40** — o `NewPool` sobrescrevia o `application_name` do DSN: as três instâncias
+   apareciam idênticas no `pg_stat_activity`. Invisível desde a Fase 5 porque nunca
+   houve duas instâncias de verdade. Corrigido: o DSN vence, o default é preservado.
+2. **41** — o **container** entregue pelo compose não autenticava: o Keycloak anuncia o
+   `jwks_uri` em `http://localhost:8080/...`, e dentro do container `localhost` é o
+   próprio container. Readiness UP e **todo token válido em 503**. Nunca apareceu
+   porque nenhum teste subia o container autenticando. Corrigido com `OIDC_JWKS_URL`
+   (opcional; vazio mantém o comportamento padrão do OIDC), compose e `.env.example`.
+
+## 6f. LIÇÕES DA FASE 10 QUE A FASE 11 E A 12 NÃO PODEM REPETIR
+
+| Lição | Como aplicar daqui para frente |
+| --- | --- |
+| **Teste de concorrência erra primeiro na expectativa** | Nesta fase foram **4 réguas erradas** contra **2 defeitos de código**. Antes de acusar o sistema, meça: contadores do SQS são aproximados (~1 min), `MaxNumberOfMessages` é 10, o LocalStack **não** antecipa entrega com `ChangeMessageVisibility(0)`, e resíduo de fila de um cenário reaparece no seguinte |
+| **Fila de teste é estado compartilhado** | `abrirSQS` deixa a visibilidade em **2s** no ambiente de teste (o compose continua 60s) e os cenários **drenam** a fila no cleanup, inclusive o que está em voo. Um teste que "espia" a fila (`mensagensNaFila`) **deixa mensagem em voo** — isso quebrou o T5 e um teste da Fase 8 |
+| **Processo real revela o que o teste embutido esconde** | Os dois defeitos desta fase apareceram por subir **processos** (e o container), não por mais asserções em processo único |
+| **`stop_grace_period` não é decoração** | `docker stop` sem prazo matou o processo em ~3,4s (`exit=137`) com mensagem em voo; a recuperação continuou correta, mas mais lenta. O compose já define 60s |
+| **A matéria-prima dos documentos finais é agora** | A seção final de `FASE_10.md` tem as perguntas→respostas, as decisões em tabela e as perguntas difíceis com resposta honesta. A Fase 12 **organiza**; não reconstrua o raciocínio |
+
+---
+
 ## 7. PENDÊNCIAS CONHECIDAS
 
 Do `CONTEXTO.md` §4: **P1 a P5 e P7 foram resolvidas na Fase 7** (P1 `-health-check`,
@@ -636,18 +695,23 @@ tratado com `TrimSpace` e testado, `Movement` resolvendo a versão do UPDATE con
 corrigida (defeito 21).
 
 **Abertas:**
-- **`ARCHITECTURE.md` está atualizado até a Fase 9** — §8 (publicação/outbox),
-  §11 (consumo do SQS + contrato de `wallet-events.fifo`), §12 (observabilidade
-  completa), §13 (recuperação) e §15/§16 (defeitos 37–39 e limitações). Falta a
-  parte de dashboards/alerta (Fase 11) e a de 3 instâncias (Fase 10);
+- **`ARCHITECTURE.md` está atualizado até a Fase 10** — §6 (o que a prova multi-instância
+  confirmou), §8 (três publishers reais e o limite do lote), §13 (T1–T8 marcados como
+  PROVADOS, com o nome do teste), §15 (defeitos 40 e 41), §16 (5 limitações novas) e §17
+  (números). Falta a parte de dashboards/alerta (Fase 11);
 - **limitação nova da Fase 9:** o reaper repete indefinidamente uma linha
   `PENDING` que não consegue concluir (sem contador durável de falhas do reaper);
 - **limitação nova da Fase 9:** a ordem por carteira depende do lote — mais
   eventos pendentes da mesma carteira que `OUTBOX_BATCH_SIZE` numa rodada podem
   ser divididos entre dois publishers (o consumidor pode ordenar por
-  `walletVersion`);
+  `walletVersion`). **Na Fase 10 isso foi OBSERVADO** com `OUTBOX_BATCH_SIZE=1`;
+- **limitações novas da Fase 10** (todas no `ARCHITECTURE.md` §16): a queda entre
+  commit e delete é **reproduzida** por estado durável (o sinal real está provado no
+  container); o encerramento gracioso depende do prazo do orquestrador; o LocalStack não
+  antecipa entrega com `ChangeMessageVisibility(0)`; a distribuição de publicações entre
+  réplicas não é asserida; a latência é medida com cliente local;
 - **sem prova de SIGTERM no Windows** (P8): o `Stop-Process` é terminação dura; a
-  prova de sinal é do ambiente Linux/container;
+  prova de sinal é do container Linux (`FASE_10.md` §6);
 - `testcontainers-go` foi baixado e **não é usado** (os testes apontam para o Postgres do
   compose via `TEST_DATABASE_URL`). Remover com `go mod tidy` na Fase 12;
 - **métricas de negócio**: **12 das 12 já são emitidas** (4 pela borda HTTP, 3
@@ -658,35 +722,27 @@ corrigida (defeito 21).
   aplica nada (aconteceu na 000002, na 000004 e de novo na 000005);
 - a ordem dos eventos na outbox **foi resolvida** (bloco 6d, migration 000003) e a
   **publicação** preserva a ordem por carteira (Fase 9); a prova com 3 instâncias
-  é a Fase 10;
+  foi feita na Fase 10 **e revelou o limite do lote** (§16);
 - **`wallet-events.fifo`** agora recebe eventos; **não há consumidor** de eventos
   nesta entrega (decisão de escopo: o README §11 pede publicação + contrato
   documentado). O contrato de consumo está no `ARCHITECTURE.md` §11.
 
 ---
 
-## 8. CHECKLIST DE ARRANQUE PARA A NOVA CONVERSA (Fase 10)
+## 8. CHECKLIST DE ARRANQUE PARA A NOVA CONVERSA (Fase 11)
 
-> ⭐ **O prompt de abertura da Fase 10 está em `PROMPT_FASE_10.md`** — autossuficiente,
-> com o escopo do §8/§13 do README, os quatro blocos (10a infraestrutura
-> multi-instância, 10b T1/T2/T3, 10c T5/T8, 10d fechamento), os critérios de aceite,
-> as armadilhas de ambiente e o formato da primeira resposta esperada. Use-o como
-> primeira mensagem; o checklist abaixo é o resumo operacional.
+> ⚠️ **A Fase 10 fechou o critério de 20 pontos do §14 (concorrência).** O que falta na
+> 11 é **observabilidade/polimento** e, na 12, **documentação e entrega**.
 
-- [ ] Ler `README.md` (**§8 concorrência, §13 verificação, §14 critérios**), `ARCHITECTURE.md` (§6 locks, §8 outbox, §11 SQS, §15 defeitos, §16 limitações), `docs/evidencias/FASE_9.md` e `PLANO.md` §3 (Fase 10)
-- [ ] **T1** mesma aposta 50× em paralelo (HTTP e SQS) → um débito, replays devolvem o mesmo resultado
-- [ ] **T2** saldo 100.00 + duas BET 80.00 simultâneas → 1 `PROCESSED`, 1 `REJECTED/INSUFFICIENT_FUNDS`, saldo 20.00, **um** lançamento
-- [ ] **T3** carteiras distintas em paralelo (provar paralelismo: tempos/locks distintos, ausência de lock global)
-- [ ] **T4** repetir T1–T3 com **3 instâncias** (3 processos/containers `api`, conexões e memória próprias)
-- [ ] **T5** interromper o consumidor **depois do commit e antes do delete** → reentrega sem movimentação duplicada
-- [x] **T6** dois publishers disputando a outbox → **já provado na Fase 9** (`TestDoisPublishersDisputamAMesmaOutbox`); na Fase 10, repetir com 3 instâncias reais
-- [x] **T7** `REFUND`/`ROLLBACK` antes da referência → **já provado na Fase 9** (resolução posterior **e** rejeição por expiração, em teste de integração e no binário real)
-- [ ] **T8** reiniciar a aplicação → idempotência, pendências e consistência preservadas
-- [ ] Conferência final: saldo armazenado == soma de créditos − débitos do ledger, em cenários cruzando HTTP e SQS
-- [ ] Latência da borda sob concorrência (p50/p95/p99) — diferencial do §14, com comando reproduzível
+- [ ] Ler `README.md` (**§12 observabilidade, §15 entrega**), `ARCHITECTURE.md` (§12 e §16–§17), `docs/evidencias/FASE_10.md` (a seção final é a matéria-prima dos dois documentos) e `PLANO.md` §3 (Fase 11)
+- [ ] **Dashboards/alerta** (diferencial opcional): o §12 pede métricas, e as **12 já são emitidas**; um dashboard versionado + regra de alerta (atraso da outbox, DLQ) é o que falta
+- [ ] **Revisão dos logs JSON**: `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId` — nenhum segredo nem payload financeiro completo. Os cinco já aparecem; conferir a cobertura e documentar
+- [ ] **Teste da composição Fx**: `fx.ValidateApp`, start/stop, `fx.StopTimeout`, liberação de recursos dos workers (o runner já tem 6 casos; `goleak` é opcional)
+- [ ] `go vet ./...`, `gofmt -l .` vazio e **`go mod tidy`** (remover `testcontainers-go`, que está baixado e não é usado)
+- [ ] **Revisão anti-eliminatórios** (§14) item por item, com evidência — o `docs/CONFORMIDADE_README.md` §14 já está ✅ desde a Fase 10
+- [ ] **Fase 12**: `docs/SISTEMA_EXPLICADO.md` e `docs/ENTREVISTA.md` a partir da matéria-prima da Fase 10; resolver a ⚠️ 3 (onde vive o "README da solução"); conferir `docker compose up --build` do zero
 - [ ] Aceitar contestação do usuário: se ele questionar e estiver certo, **admitir e corrigir**
 - [ ] Depois de aprovado, commitar (um bloco por vez, com a mensagem contando a história)
-- [ ] Atualizar `docs/evidencias/FASE_10.md`, `ARCHITECTURE.md`, `docs/CONFORMIDADE_README.md`, `PROXIMO_PASSO.md`, `PLANO.md`
-- [ ] Lembrar do **compromisso final** (seção 3.5): `docs/SISTEMA_EXPLICADO.md` e `docs/ENTREVISTA.md`
+- [ ] Atualizar `docs/evidencias/FASE_11.md`, `ARCHITECTURE.md`, `docs/CONFORMIDADE_README.md`, `PROXIMO_PASSO.md`, `PLANO.md`
 
-**As Fases 0 a 9 estão commitadas e validadas. Não revalide nem recommite.**
+**As Fases 0 a 10 estão commitadas e validadas. Não revalide nem recommite.**

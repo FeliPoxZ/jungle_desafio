@@ -39,9 +39,9 @@
 | **HTTP (contratos §9)** | ✅ **Fase 7** | `internal/httpapi` — 7 rotas + health + métricas |
 | **Autenticação (OIDC)** | ✅ **Fase 7** — era **eliminatório** | `internal/infra/auth` (validação real contra o Keycloak) |
 | **Consumidor SQS + inbox** | ✅ **Fase 8** | `internal/consumer` + `internal/app/inbox`, com integração contra o LocalStack |
-| **Publisher da outbox + workers** | ⬜ **Fase 9** | `ClaimBatch`/lease/`MarkRetry` prontos; a fila de eventos e a DLQ dela estão provisionadas |
-| Prova com 3 instâncias | ⬜ **Fase 10** | |
-| Métricas de negócio alimentadas | 🟡 **Fase 11** | 4 das 12 já emitidas **pela borda HTTP** (Fase 7); o resto é 8–11 |
+| **Publisher da outbox + workers** | ✅ **Fase 9** | `internal/worker` (publicador, referências, reaper, runner) |
+| **Concorrência e recuperação com 3 processos** | ✅ **Fase 10** | `test/integration` (T1–T8 + conferência final + latência) e a prova de SIGTERM no container |
+| Métricas de negócio alimentadas | 🟡 **Fase 11** | **12 das 12 já emitidas** (Fases 7–9); falta dashboard/alerta |
 | README da solução + `.env.example` | 🟡 **Fase 12** | `.env.example` existe; ver ⚠️ 3 |
 
 ### Os cinco pontos de atenção que valem mais que o resto
@@ -52,7 +52,10 @@
    negado (contagem de tabelas antes/depois). O risco aberto deixou de ser "não
    existe autenticação" e passou a ser o de qualquer validação local: token
    revogado antes do `exp` não é detectado (sem introspecção — limitação
-   registrada no `ARCHITECTURE` §16).
+   registrada no `ARCHITECTURE` §16). **Na Fase 10** apareceu o outro lado disso: o
+   **container** entregue não autenticava por causa do endereço das chaves
+   (defeito 41, corrigido com `OIDC_JWKS_URL`), e isso só foi descoberto porque a
+   prova de SIGTERM subiu o container de verdade.
 2. **✅ P1 resolvida:** a flag `-health-check` existe, é testada **subindo o
    binário real** e `docker compose up --build` deixa de subir o `api` como
    `unhealthy`.
@@ -62,10 +65,11 @@
    tomar com o usuário na Fase 12: (a) um `README_SOLUCAO.md` na raiz, (b) um
    `docs/README_SOLUCAO.md` referenciado no topo do `PROXIMO_PASSO`, ou (c) uma
    seção nova no topo do `README.md` preservando o texto do enunciado.
-4. **⚠️ "pelo menos três processos independentes" (README §8 e §13.4)** e
-   **"carteiras distintas simultaneamente" (§13.3)** ainda não têm prova. As
-   garantias existem (lock por carteira + constraints), mas a demonstração é da
-   Fase 10.
+4. **✅ "pelo menos três processos independentes" (README §8 e §13.4) e
+   "carteiras distintas simultaneamente" (§13.3) têm prova desde a Fase 10:**
+   três processos do binário com pools e memórias próprios (medido em
+   `pg_stat_activity`), a corrida 80+80 entre instâncias, 50 envios simultâneos
+   entre processos e o paralelismo entre carteiras provado por lock construído.
 5. **⚠️ Testes com o IdP:** resolvido na direção certa — a prova principal usa o
    **Keycloak do container** com tokens de `client_credentials` (⚠️ 5 atendido), e
    o servidor OIDC de teste assinando de verdade cobre só o que o Keycloak não
@@ -183,15 +187,15 @@ assume no dia em que existir aceite assíncrono.
 | `PENDING_REFERENCE` persistida, worker com backoff exponencial **após reinício**, TTL/máx. de tentativas, e comportamento quando a referência existe mas está pendente ou terminou mal | 🟡 persistência, backoff inicial e os dois comportamentos ✅; o **worker** com backoff/TTL é a Fase 9 (`PLANO.md` A7 define 20 tentativas/24h) |
 | Toda rejeição com `failureCode` estável e documentado | ✅ 17 códigos na tabela A8 + os dois novos (`WALLET_PLAYER_MISMATCH`, `TRANSACTION_NOT_FOUND`), distinguindo corrigível de definitivo |
 
-## 8. Concorrência — 🟡
+## 8. Concorrência — ✅ Fase 10
 
 | Exigência | Estado |
 | --- | --- |
 | Coordenação por carteira, com estratégia justificada | ✅ `READ COMMITTED` + `SELECT ... FOR UPDATE` + versão, justificado em `ARCHITECTURE.md` §6 |
-| Demonstração com **três processos independentes** | ⬜ Fase 10 (3 containers `api`) |
-| Teste obrigatório: 100.00 com duas apostas simultâneas de 80.00 → uma processada, uma rejeitada, saldo 20.00 e **um** débito | ✅ provado contra o banco real (`TestCenarioDoREADMEDuasApostasDe80Sobre100`) |
-| Reenvios não alteram o resultado | ✅ provado (os dois reenvios depois da corrida) |
-| Carteiras diferentes continuam em paralelo | 🟡 garantido por construção (lock de linha); falta a prova explícita (Fase 10) |
+| Demonstração com **três processos independentes**, cada um com suas conexões e memória | ✅ **`TestTresInstanciasIndependentes`**: três processos do binário (PIDs distintos), com **três conjuntos disjuntos de conexões** vistos em `pg_stat_activity` por `application_name`, e a queda de um sem efeito nos outros dois. Todos os cenários do §13 rodam nessa topologia |
+| Teste obrigatório: 100.00 com duas apostas simultâneas de 80.00 → uma processada, uma rejeitada, saldo 20.00 e **um** débito | ✅ **`TestT2DuasApostasDe80Sobre100EmInstanciasDiferentes`**: uma aposta por instância (`api-2` e `api-3`), disparadas por barreira → 1 `PROCESSED`, 1 `REJECTED/INSUFFICIENT_FUNDS`, saldo 20.00, **um** débito, versão 2 |
+| Reenvios não alteram o resultado | ✅ 10 reenvios de cada aposta, alternando instâncias: a processada volta 200 replay, a rejeitada volta 422 com o mesmo `failureCode`, e saldo, versão, ledger e transações não mudam |
+| Carteiras diferentes continuam em paralelo | ✅ **`TestT3CarteirasDistintasEmParaleloSemLockGlobal`**: com a linha da carteira A presa por uma transação do teste, 5 operações em outras carteiras concluem (14–34 ms) e **nenhum** backend de instância aparece esperando lock; a de A fica bloqueada e conclui 408 ms depois da liberação. Custo da serialização medido: p99 166 ms em carteiras distintas × 579 ms na mesma (`TestLatenciaSobConcorrenciaTresInstancias`) |
 
 ## 9. Contratos HTTP — ✅ Fase 7
 
@@ -248,32 +252,32 @@ assume no dia em que existir aceite assíncrono.
 | Métricas: resultados por status, duplicatas, retries, DLQ, conflitos, **atraso da outbox**, latência, divergências de reconciliação | ✅ **12 de 12** emitidas. A Fase 9 fechou as 5 que faltavam: `wager_outbox_publish_total{result}`, `wager_outbox_pending_age_seconds` (atraso da outbox via `PendingStats`), `wager_outbox_publish_attempts`, `wager_reference_resolution_total{result}` e os `retries_total{stage}` dos laços |
 | Health checks definidos na API | ✅ `/health/live` e `/health/ready` com **PostgreSQL, IdP, SQS e `workers`** — o `workers` responde DOWN quando um laço ligado não está rodando (`{"oidc":"UP","postgres":"UP","sqs":"UP","workers":"UP"}` no binário real) |
 
-## 13. Verificação obrigatória — 🟡
+## 13. Verificação obrigatória — ✅ Fase 10
 
 | Bloco | Estado |
 | --- | --- |
-| **Testes unitários** (parsing e operações de `Money`, escala, limites, entradas inválidas, moedas, invariantes da carteira, transições, regras dos cinco tipos, conflito de payload, política de zero, abertura interna com metadados e eventos) | ✅ 574 casos no domínio + 56 no caso de uso + **49 em `internal/infra/auth`** + **67 em `internal/httpapi`** + **45 da Fase 8** (26 inbox + 19 consumer) + **38 da Fase 9** (23 em `internal/worker`: publicador 10, referências/reaper 7, runner 6; 10 de `Retomar` em `internal/app/wagering`; 4 de config; 1 de composição do Fx) |
-| **Testes de integração** com PostgreSQL, IdP e LocalStack em containers reais | 🟡 PostgreSQL ✅ real (migrations, constraints, imutabilidade do ledger, atomicidade, outbox concorrente, retry, lease — 29 casos) + **IdP ✅ real** (30 casos na borda HTTP com token por `client_credentials` + 2 do binário real) + LocalStack ✅ real (9 funções de consumo, **8 funções de publicação e recuperação**) |
-| Verificação da composição Fx, início, encerramento e liberação de recursos dos workers | ✅ `TestValidateAppComposition` (grafo inteiro, com e **sem** os workers ligados), `TestBuildAppFailsWithInvalidConfig`, o teste do binário real (encerramento e liberação do pool) e, na Fase 9, **6 casos do runner** (sobe, reinicia o laço morto, readiness DOWN/UP, espera o trabalho em voo, grace da config) + o encerramento do consumidor |
-| **Não substituir toda a infraestrutura por mocks** | ✅ os testes de integração usam PostgreSQL, Keycloak e **LocalStack** reais; os dublês existem só nos unitários, e registram chamadas para as asserções incluírem a **ausência** delas |
-| Autenticação/autorização | ✅ **Fase 7** (11 formas de token inválido, isolamento por corpo/path/leitura/replay, contagem de tabelas antes/depois) |
-| Concorrência e recuperação (8 cenários) | 1 mesma aposta 50× ✅ (12 disparos); 2 disputa 80+80 ✅; 3 carteiras distintas ⬜ Fase 10; 4 três instâncias ⬜ Fase 10; 5 interrupção do consumidor 🟡 (encerramento + reentrega provados; falta o processo novo matando o antigo — Fase 10); **6 dois publishers ✅ Fase 9**; **7 `REFUND`/`ROLLBACK` antes da referência ✅ Fase 9 (as duas metades: resolução posterior e rejeição por expiração)**; 8 reinício preservando idempotência/pendências 🟡 (pendências e tentativas estão no banco e o reaper/worker as retomam; falta o cenário com processo novo — Fase 10) |
-| Conferência final: saldo armazenado == soma de créditos − débitos | ✅ provado em teste **e** no binário real (`reconciliation` com 4 lançamentos e diferença 0.00) |
-| `go test -race` nos testes aplicáveis | ✅ verde nos dois modos (17 pacotes na unidade, 18 com a tag) |
+| **Testes unitários** (parsing e operações de `Money`, escala, limites, entradas inválidas, moedas, invariantes da carteira, transições, regras dos cinco tipos, conflito de payload, política de zero, abertura interna com metadados e eventos) | ✅ 574 casos no domínio + 56 no caso de uso + **51 em `internal/infra/auth`** (+2 da Fase 10) + **67 em `internal/httpapi`** + **45 da Fase 8** (26 inbox + 19 consumer) + **38 da Fase 9** (23 em `internal/worker`: publicador 10, referências/reaper 7, runner 6; 10 de `Retomar` em `internal/app/wagering`; 4 de config; 1 de composição do Fx) |
+| **Testes de integração** com PostgreSQL, IdP e LocalStack em containers reais | ✅ PostgreSQL ✅ real (migrations, constraints, imutabilidade do ledger, atomicidade, outbox concorrente, retry, lease — 29 casos) + **IdP ✅ real** (30 casos na borda HTTP com token por `client_credentials` + 2 do binário real) + LocalStack ✅ real (9 funções de consumo, **8 funções de publicação e recuperação**) + **11 funções da Fase 10** com três processos independentes + **2 funções** de `application_name` |
+| Verificação da composição Fx, início, encerramento e liberação de recursos dos workers | ✅ `TestValidateAppComposition` (grafo inteiro, com e **sem** os workers ligados), `TestBuildAppFailsWithInvalidConfig`, o teste do binário real (encerramento e liberação do pool), **6 casos do runner** (Fase 9) e a **prova de SIGTERM no container Linux** (`docs/evidencias/FASE_10.md` §6): `exit=0` em 8,09 s, `sqs_visibilidade_liberada`, pool fechado por último |
+| **Não substituir toda a infraestrutura por mocks** | ✅ os testes de integração usam PostgreSQL, Keycloak e **LocalStack** reais; os dublês existem só nos unitários, e registram chamadas para as asserções incluírem a **ausência** delas. A única substituição na Fase 10 é o **passo `Delete` do consumidor**, embrulhado para reproduzir a queda entre commit e delete — o banco, o domínio e o consumidor são os de produção |
+| Autenticação/autorização | ✅ **Fase 7** (11 formas de token inválido, isolamento por corpo/path/leitura/replay, contagem de tabelas antes/depois) e **Fase 10**: o container do compose passa a autenticar de verdade (defeito 41 — `OIDC_JWKS_URL`) |
+| Concorrência e recuperação (8 cenários) | ✅ **todos com prova**, e os de concorrência com **três processos independentes**: 1 mesma aposta 50× (`TestT1MesmaAposta50VezesEntreTresInstancias` e `TestT1MesmaOperacao50VezesPelaFila`); 2 disputa 80+80 (`TestT2DuasApostasDe80Sobre100EmInstanciasDiferentes`); 3 carteiras distintas (`TestT3CarteirasDistintasEmParaleloSemLockGlobal`); 4 três instâncias (a rodada consolidada de T1–T3, T5–T8 e da conferência); 5 interrupção entre commit e delete (`TestT5QuedaEntreCommitEDeleteReentregaReconhecida` **e** o SIGTERM no container); 6 publishers disputando a outbox (Fase 9 + `TestT6TresPublishersReaisDisputamAMesmaOutbox`); 7 reversão antes da referência (Fase 9, as duas metades + `TestT7REFUNDAntesDaReferenciaResolvidoPorOutraInstancia`); 8 reinício (`TestT8ReinicioPreservaIdempotenciaPendenciaEConsistencia`, com `PENDING_REFERENCE` resolvida por instância nova) |
+| Conferência final: saldo armazenado == soma de créditos − débitos | ✅ **`TestConferenciaFinalCruzandoHTTPESQS`**, de duas formas independentes (SQL puro e o endpoint de reconciliação), com a **mesma operação cruzando HTTP e SQS** e um único débito; e também no binário real (Fase 9) |
+| `go test -race` nos testes aplicáveis | ✅ verde nos dois modos (17 pacotes na unidade, 18 com a tag), em duas rodadas consecutivas da suíte inteira |
 
 ## 14. Critérios de avaliação e eliminatórios — ✅
 
 | Eliminatório | Estado |
 | --- | --- |
-| Ausência de autenticação efetiva nos endpoints de negócio | ✅ **Fase 7.** Todos os endpoints de negócio exigem token validado contra o Keycloak real; não há rota de negócio registrada sem autenticador |
+| Ausência de autenticação efetiva nos endpoints de negócio | ✅ **Fase 7.** Todos os endpoints de negócio exigem token validado contra o Keycloak real; não há rota de negócio registrada sem autenticador. **Reforçado na Fase 10:** o container entregue pelo compose passou a autenticar de verdade (defeito 41 — sem `OIDC_JWKS_URL` todo token válido virava 503 dentro do container) |
 | Acesso não autorizado a operações/transações | ✅ isolamento no caso de uso **e** na borda (corpo, path, leitura e replay), com prova de que o acesso negado não produz efeito financeiro |
 | Cálculo monetário em ponto flutuante | ✅ nenhum nos caminhos monetários |
-| Saldo negativo por concorrência | ✅ impedido no domínio **e** por CHECK no banco |
-| Movimentação duplicada | ✅ índice único + idempotência persistente, alcançável pelas duas portas — e agora também **sem** duplicar na retomada de referência (lock da linha + estado/tentativa esperados) |
-| Idempotência restrita à memória | ✅ persistida no banco; **sobrevive ao reinício** (tentativas e pendências no banco) |
-| Dependência de uma única instância para funcionar | ✅ estado todo no PostgreSQL; dois publishers concorrentes provados (Fase 9); a prova com 3 instâncias é a Fase 10 |
-| **Publicação anterior ao commit** | ✅ impossível por construção (outbox na mesma transação) **e agora provado no caminho de saída**: o publisher só lê o que já foi commitado |
-| Ausência de ledger auditável | ✅ ledger append-only com dois saldos por lançamento |
+| Saldo negativo por concorrência | ✅ impedido no domínio **e** por CHECK no banco; a disputa 80+80 sobre 100.00 foi provada com **três processos** e termina em 20.00 |
+| Movimentação duplicada | ✅ índice único + idempotência persistente, alcançável pelas duas portas — e, na Fase 10, provada com 50 envios simultâneos entre três processos (HTTP) e 50 entregas distintas pela fila: **um** débito nos dois caminhos |
+| Idempotência restrita à memória | ✅ persistida no banco; **sobrevive ao reinício** — provado com um processo que morre e outro que responde replay (`TestT8...`) |
+| Dependência de uma única instância para funcionar | ✅ **fechado na Fase 10**: três processos com pools e memórias próprios executam T1–T8; a queda de um não afeta os outros; publishers e consumidores concorrentes funcionam |
+| **Publicação anterior ao commit** | ✅ impossível por construção (outbox na mesma transação) e provado no caminho de saída: o publisher só lê o que já foi commitado; com três publishers reais, 12 eventos → 12 mensagens sem duplicar nem perder |
+| Ausência de ledger auditável | ✅ ledger append-only com dois saldos por lançamento; a conferência final da Fase 10 soma o ledger em SQL puro e compara com o saldo armazenado (101000 == 101000) |
 | Substituição integral de PostgreSQL, SQS e IdP por mocks nos testes | ✅ os três são **reais** nos testes de integração (PostgreSQL, Keycloak e LocalStack); os dublês existem só nos unitários |
 
 **Observabilidade (5 pontos):** 🟡→✅ no que a Fase 9 fecha — log estruturado com
@@ -354,15 +358,42 @@ detalhadas em `docs/evidencias/FASE_6.md` §8, `docs/evidencias/FASE_7.md` §8 e
     `REFERENCE_MAX_ATTEMPTS = 1` significa "só a do intake" e a primeira retomada
     expira. O default (20) e o `REFERENCE_PENDING_MAX_AGE` (2m) tornam o TTL por
     idade o que decide na prática.
+20. **"Três processos independentes" são três processos do BINÁRIO**, não três
+    containers (Fase 10): o §8 pede "suas próprias conexões e memória", e um
+    processo do binário tem PID, pool e memória próprios — provado em
+    `pg_stat_activity` por `application_name`. O container entra na prova de
+    **SIGTERM**, que é o que o processo local no Windows não consegue provar. O
+    `PLANO.md` falava em "3 containers `api` no compose"; a redação foi ajustada
+    (o compose **não** ganhou `api-2`/`api-3`).
+21. **O T4 do `PLANO.md` não é um teste separado** (Fase 10): é a rodada
+    consolidada — T1–T3, T5–T8 e a conferência final rodando com três processos
+    na mesma suíte.
+22. **O T6 não assere a ORDEM por carteira quando `OUTBOX_BATCH_SIZE=1`** (Fase
+    10): nesse arranjo dois publishers podem enviar eventos consecutivos da mesma
+    carteira em ordem trocada — é a limitação do §16, agora observada. A
+    invariante asserida é a partição (12 eventos → 12 mensagens, sem repetição nem
+    perda); a ordem é reportada. Com o lote padrão, a ordem continua garantida
+    pelo `ORDER BY sequence` do claim.
+23. **O endereço das chaves públicas é configurável** (Fase 10, defeito 41): o
+    padrão continua sendo o `jwks_uri` do discovery (OIDC). `OIDC_JWKS_URL`
+    existe porque o Keycloak anuncia o nome PÚBLICO do IdP, que de dentro de um
+    container pode não ser alcançável — e o `iss` continua sendo conferido contra
+    `OIDC_ISSUER`. A chave ajusta **onde** as chaves são buscadas, não afrouxa a
+    validação.
 
 ## O que ainda NÃO existe (lista direta, sem rodeio)
 
 - **Consumidor de `wallet-events.fifo`**: nesta fase o evento é **publicado**, e o
   contrato de consumo está documentado (`ARCHITECTURE.md` §11). O consumidor (com
-  dedup durável por `eventId`) é escopo das Fases 10–11.
-- **3 instâncias de verdade** e os cenários T1–T5/T8 da Fase 10.
+  dedup durável por `eventId`) é escopo das Fases 11–12.
 - **Dashboards e tracing** (diferenciais opcionais do §14).
 - **Contador durável de falhas do reaper**: uma linha `PENDING` inconsistente é
   repetida indefinidamente em vez de virar `FAILED` (`ARCHITECTURE.md` §16).
+- **Prova de SIGTERM no Windows** (P8): não existe sinal de término de host; a
+  prova é do container Linux (`docs/evidencias/FASE_10.md` §6).
+- **`go mod tidy`** para remover o `testcontainers-go` que ficou baixado e não é
+  usado (Fase 12).
 - **O README da solução** (o enunciado ocupa esse nome) — a consolidação é a
-  Fase 12.
+  Fase 12, junto com os dois documentos finais (`docs/SISTEMA_EXPLICADO.md` e
+  `docs/ENTREVISTA.md`), cuja matéria-prima a Fase 10 entrega em
+  `docs/evidencias/FASE_10.md` (seção final).

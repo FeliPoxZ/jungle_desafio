@@ -438,6 +438,32 @@ falhou deixa a conexão com a transação aberta segurando o lock, e a repetiç�
 trava. O sintoma aparece longe (um `TRUNCATE` de teste morrendo com deadlock, por
 exemplo). **O retry envolve o `Run` inteiro.**
 
+### O que a prova multi-instância confirmou (Fase 10)
+
+O README §8 exige as garantias demonstradas com "pelo menos três processos
+independentes, cada um com suas próprias conexões e memória". Até a Fase 9 o
+máximo que existia era goroutine no mesmo processo e duas instâncias **lógicas**
+sobre o mesmo pool (`postgresUOW`). A Fase 10 subiu **três processos do binário**
+(portas 18091–18093, pool e `application_name` próprios) e mediu:
+
+| O que se queria saber | Como foi medido | Resultado |
+| --- | --- | --- |
+| São processos independentes? | PIDs distintos + `pg_stat_activity` agrupado por `application_name` | três conjuntos **disjuntos** de conexões; matar um remove só as dele |
+| O lock é por carteira? | uma transação do teste prende a linha da carteira A; operações em B..F rodam **com A presa** | as de B..F concluem em 14–34 ms; a de A fica bloqueada e conclui 408 ms depois da liberação |
+| Existe lock global? | `pg_stat_activity` com `wait_event_type = 'Lock'`, filtrado por `application_name LIKE 'api-%'` | **zero** esperando, com carteiras distintas em andamento |
+| O débito duplicado é impossível entre processos? | a mesma aposta 50× em round-robin pelos três (HTTP) e 50 entregas distintas na fila | um débito nos dois caminhos; 50 linhas de inbox `PROCESSED` pela fila |
+| A disputa 80+80 continua correta entre processos? | duas apostas simultâneas, uma por instância, com barreira | 1 `PROCESSED`, 1 `REJECTED`, saldo 20.00, um débito, versão 2 |
+
+O ponto que interessa para a entrevista: **não é o teste que "espera o tempo
+passar"**. A segunda operação na carteira A **não consegue** terminar enquanto a
+linha está presa — não por lentidão, mas porque o PostgreSQL a coloca em espera,
+e é o próprio banco que mostra quem está esperando. Com um lock global, as
+operações em outras carteiras não teriam concluído.
+
+O custo da serialização também foi medido (100 operações concorrentes, cliente
+local): p99 **166 ms** em carteiras distintas contra **579 ms** na mesma
+carteira — 3,5×. Um lock global faria a primeira coluna parecer a segunda.
+
 ---
 
 ## 7. Idempotência `[PRONTO]`
@@ -647,6 +673,26 @@ Provado contra o PostgreSQL e o LocalStack reais em
 `TestQuedaEntreCommitEPublicacaoOutraInstanciaAssume`,
 `TestQuedaEntrePublicacaoEMarkPublishedRepublicaComOMesmoEvento` e
 `TestDoisPublishersDisputamAMesmaOutbox`.
+
+### [PRONTO] Três publishers reais, e o limite do lote (Fase 10)
+
+A Fase 9 provou a disputa com duas instâncias **lógicas** sobre o mesmo pool. A
+Fase 10 repetiu com **três processos** do binário e `OUTBOX_BATCH_SIZE=1` — sem
+isso, o primeiro que acorda leva o lote inteiro e os outros dois viram
+espectadores, o que não é prova de disputa.
+
+Resultado: 12 eventos → **12 mensagens**, **nenhum `eventId` repetido**, **0
+pendentes**, e a soma das publicações nos logs dos três processos fechando em 12
+(`api-1=4, api-2=4, api-3=4`). A partição é a invariante do T6
+(`TestT6TresPublishersReaisDisputamAMesmaOutbox`).
+
+**E o que essa configuração NÃO garante:** a ordem por carteira. Com lote de 1,
+dois publishers podem pegar eventos consecutivos da MESMA carteira e enviá-los
+em ordem trocada — é a limitação da §16 ("ordem por carteira depende do lote"),
+agora **observada** em vez de só prevista. Por isso o teste assere a partição e
+**reporta** a ordem (preservada em 3 de 3 grupos na execução registrada), sem
+transformar a ordem em condição de aprovação naquele arranjo. Com o lote padrão,
+a ordem vem do `ORDER BY sequence` do claim e continua garantida.
 
 ### [PRONTO] O worker de referências e a retomada (Fase 9)
 
@@ -1496,6 +1542,27 @@ inteiro. `/health/ready` passou a incluir a dependência **`workers`**.
 | `PENDING` antigo sem desfecho | o reaper retoma e leva a um desfecho (hoje o estado é inalcançável por caminho normal — ver §16) | `[PRONTO]` (mecanismo) — `TestReaperRetomaPendingAntigo` |
 | Reinício da aplicação | tentativas, instantes e pendências estão no banco; nada vive em memória | `[PRONTO]` |
 
+### Os oito cenários do README §13 — todos PROVADOS (Fase 10)
+
+Cada linha diz **onde** a prova está. Os testes marcados com *(3 instâncias)*
+rodam com três **processos** independentes do binário, não com goroutines.
+
+| # | Cenário do §13 | Prova | Resultado registrado |
+| --- | --- | --- | --- |
+| 1 | a mesma aposta 50× em paralelo | `TestT1MesmaAposta50VezesEntreTresInstancias` *(3 instâncias)* e `TestT1MesmaOperacao50VezesPelaFila` *(3 consumidores)* | 1 criada + 49 replays, um débito, versão 2; na fila, 50 entregas distintas e 50 inbox `PROCESSED` com **um** débito |
+| 2 | a disputa das duas apostas de 80.00 sobre 100.00 | `TestT2DuasApostasDe80Sobre100EmInstanciasDiferentes` *(3 instâncias)* | 1 `PROCESSED`, 1 `REJECTED/INSUFFICIENT_FUNDS`, saldo 20.00, um débito, versão 2; 20 reenvios não alteram nada |
+| 3 | carteiras distintas simultaneamente | `TestT3CarteirasDistintasEmParaleloSemLockGlobal` *(3 instâncias)* | com a carteira A presa, B..F concluem em 14–34 ms; nenhum backend esperando lock; A só conclui após a liberação |
+| 4 | repetir com três instâncias independentes | a suíte inteira da Fase 10 (T1–T3, T5–T8 e a conferência) — é a rodada consolidada do T4 | três processos por cenário, com conexões e memória próprias (medido em `pg_stat_activity`) |
+| 5 | interromper depois do commit e antes do delete | `TestT5QuedaEntreCommitEDeleteReentregaReconhecida` **e** a prova de SIGTERM no container (evidências §6) | reentrega reconhecida (`attempts` 1→2), nenhum débito novo, DLQ vazia; no container, `exit=0` com `sqs_visibilidade_liberada` |
+| 6 | publishers disputando a outbox e recuperação da publicação | `TestDoisPublishersDisputamAMesmaOutbox` (Fase 9) e `TestT6TresPublishersReaisDisputamAMesmaOutbox` *(3 instâncias)* | 12 eventos → 12 mensagens, 0 duplicados, 0 pendentes, distribuição 4/4/4 |
+| 7 | reversão antes da referência | `TestREFUNDAntesDaReferenciaResolveDepois` + `TestReferenciaQueNuncaChegaExpiraEmREFERENCENOTFOUND` (Fase 9) e `TestT7REFUNDAntesDaReferenciaResolvidoPorOutraInstancia` *(3 instâncias)* | resolvida pela instância que tem o worker; expiração por TTL → `REJECTED/REFERENCE_NOT_FOUND` |
+| 8 | reiniciar preservando idempotência, pendências e consistência | `TestT8ReinicioPreservaIdempotenciaPendenciaEConsistencia` *(processo novo)* | replay devolve a mesma transação e o saldo original (75.00); a pendência é resolvida pela instância nova; reconciliação consistente |
+
+**Conferência final do §13** (saldo armazenado == soma de créditos − débitos):
+`TestConferenciaFinalCruzandoHTTPESQS`, feita de duas formas independentes — soma
+do ledger em SQL puro e o endpoint de reconciliação —, com a **mesma operação
+cruzando HTTP e SQS** ao mesmo tempo e um único débito.
+
 ---
 
 ## 14. Decisões de plataforma
@@ -1556,6 +1623,8 @@ introduzido de propósito, e todos foram corrigidos com teste que os trava.
 | 37 | 9 | **A guarda da "janela do lease" ignorava TODO trabalho da retomada** | o REFUND continuava `PENDING_REFERENCE` depois da retomada, **sem erro nenhum no log** (o worker registrava "pendente", um desfecho de sucesso). A guarda comparava o relógio com `next_resolution_attempt_at` — que o próprio `ClaimPendingReferencesDue` acabou de empurrar para o futuro como LEASE | a guarda passou a comparar o **estado e a tentativa lidos no claim** (`reference_resolution_attempt`, que o claim não altera). Efeito colateral bom: se o lease vencer no meio do processamento, o segundo worker vê a tentativa incrementada e **não consome outra** |
 | 38 | 9 | **O reaper retomava um `PENDING` e não saía do lugar** | `INVALID_TRANSITION: só é possível reagendar uma referência em PENDING_REFERENCE, estado atual PENDING` — o caminho "continua pendente" chamava `ReagendarReferencia` numa linha que ainda não tinha transitado | o desfecho pendente escolhe pelo estado: `MarkPendingReference` (transição real, de `PENDING`) ou `ReagendarReferencia` (mesmo estado, relógio andando) |
 | 39 | 9 | **`correlationId` morria no fim da requisição**; e o caminho SQS nunca o preenchia | os eventos emitidos na retomada (minutos depois, por outro processo) sairiam sem correlação — e o README §12 pede rastrear a operação por ela | migration `000005` (`wager_transactions.correlation_id`), gravada no INSERT e lida na reidratação; o caminho SQS usa o `MessageId` da entrega; sem correlação, a retomada usa o `transactionId` em vez de publicar vazio |
+| 40 | 10 | **Todas as instâncias indistinguíveis no `pg_stat_activity`**: o pool sobrescrevia o `application_name` do DSN com `"jungleg-api"` | a prova de três processos mostrou `map[jungleg-api:5]` — não havia como dizer qual processo segurava o lock de uma carteira, nem atribuir uma query culpada à instância que a emitiu. Com UMA instância, invisível desde a Fase 5 | o DSN vence o default; sem o parâmetro, o nome continua `jungleg-api` (comportamento anterior preservado). Travado por dois testes de integração em `internal/infra/postgres`; é também o instrumento de medida do T3 |
+| 41 | 10 | **O container do compose não autenticava**: o Keycloak anuncia `jwks_uri` em `http://localhost:8080/...`, que de dentro do container é o próprio container | `/health/ready` **UP** (`oidc`, `postgres`, `sqs`, `workers`) e **todo token válido** respondendo **503** `SERVICE_UNAVAILABLE` "não foi possível validar a autenticação". O sintoma aponta para o IdP caído; a causa é o endereço das chaves. Nunca apareceu porque nenhum teste subia o **container** autenticando | `OIDC_JWKS_URL` (opcional) sobrescreve o endereço do JWKS; vazio mantém o `jwks_uri` do discovery. O `iss` continua conferido contra `OIDC_ISSUER`. Compose e `.env.example` atualizados; dois testes provam o par (sem a chave ⇒ 503 classificado como indisponibilidade; com a chave ⇒ token aceito) |
 
 ---
 
@@ -1584,6 +1653,11 @@ que funciona não ajuda quem vai manter.
 | Sem introspecção de token (RFC 7662) na autenticação | A validação é **local** (assinatura + claims), que é o comportamento normal de OIDC/JWT. Consequência: revogar um token antes do `exp` não é detectado. Introspecção custaria uma ida ao IdP por requisição |
 | `azp` só é conferido com múltiplas audiences | Regra do OIDC Core §3.1.3.7. O realm deste projeto emite uma audience só, então não há o que conferir hoje |
 | Sem rate limiting por identidade | Não é exigido pelo enunciado; com o lock por carteira, o custo de uma rajada é contenção de linha, não corrupção de saldo |
+| **A queda entre o commit e o delete é REPRODUZIDA, não provocada por sinal** | A janela dura microssegundos e o Windows não tem SIGTERM de host. O que se reproduz é o **estado durável** (transação commitada + inbox `PROCESSED` + mensagem ainda na fila) com o consumidor real e só o `Delete` embrulhado; o sinal de verdade é provado no container Linux. Os dois caminhos estão nas evidências da Fase 10 |
+| **O encerramento gracioso depende do prazo do orquestrador** | Medido: `docker stop` **sem** `--timeout` matou o processo em ~3,4 s (`exit=137`) com uma mensagem em voo, e a mensagem voltou pelo `VisibilityTimeout` (60 s) em vez de pela liberação explícita. O `docker-compose.yml` define `stop_grace_period: 60s` para o serviço `api` exatamente por isso; um orquestrador sem prazo não perde dado, mas a recuperação fica mais lenta |
+| **`ChangeMessageVisibility(0)` não antecipa a entrega no LocalStack** | Medido na Fase 10: a chamada devolve sucesso e a mensagem continua invisível até o prazo original da fila. Em SQS real a chamada antecipa. Consequência para os testes: o T5 encurta o `VisibilityTimeout` da fila (2 s) em vez de empurrar a mensagem, e a suíte deixa o prazo curto no ambiente de teste |
+| **A distribuição de publicações entre as réplicas não é asserida** | Com `OUTBOX_BATCH_SIZE=1` a divisão depende do escalonamento (observado 4/4/4). A invariante que o T6 assere é a partição (12 eventos → 12 mensagens, sem repetição e sem perda); a distribuição é registrada em log |
+| **A latência medida é de cliente local, na mesma máquina dos processos** | Comparação entre duas topologias de contenção (carteiras distintas × mesma carteira), não número de produção — o §14 não pede meta de RPS, e o diferencial de carga é opcional |
 
 ---
 
@@ -1619,15 +1693,19 @@ cmd /c "docker exec -i jungleg-postgres psql -U jungleg -d jungleg < deploy/post
 
 **Números atuais:** 574 casos no domínio (Fases 1–3) + **38** testes de
 persistência (Fase 5) + 3 de `idgen` + **56 casos** do caso de uso (Fase 6) +
-**49** em `internal/infra/auth` (Fase 7) + **67** em `internal/httpapi` (Fase 7) +
+**49** em `internal/infra/auth` (Fase 7; **+2 na Fase 10**, do endereço do JWKS) +
+**67** em `internal/httpapi` (Fase 7) +
 **26** em `internal/app/inbox` (Fase 8) + **19** em `internal/consumer` (Fase 8) +
 **38** em `internal/worker` + `Retomar` (**Fase 9**) + **8** novos casos de
 configuração e composição (Fase 9) + **29 casos** de integração do caminho
 completo (Fase 6) + **30** da borda HTTP (Fase 7) + **9 funções** de consumo com
 LocalStack (Fase 8) + **8 funções** de publicação e recuperação com LocalStack
-(Fase 9) + 2 de integração do binário real. `go test -race` verde nos **17
-pacotes** com teste de unidade (18 no comando com a tag `integration`). Cobertura
-do domínio: `money` 97,9%, `wallet` 99,0%, `wagering` 100,0%.
+(Fase 9) + **11 funções** de concorrência, recuperação, conferência e latência
+com **três processos independentes** (Fase 10) + **2 funções** de
+`application_name` (Fase 10) + 2 de integração do binário real. `go test -race`
+verde nos **17 pacotes** com teste de unidade (18 no comando com a tag
+`integration`). Cobertura do domínio: `money` 97,9%, `wallet` 99,0%, `wagering`
+100,0%.
 
 **Migrations:** cinco (`000001_init`, `000002_opening_sem_jogo_e_rodada`,
 `000003_ordem_da_outbox`, `000004_inbox_attempts`,
@@ -1641,7 +1719,7 @@ Como `go test ./...` roda pacotes em processos paralelos, cada `TestMain` toma u
 lock consultivo do PostgreSQL (`pg_advisory_lock`) e espera a vez — **não é
 preciso `-p 1`**.
 
-**Evidências por fase:** `docs/evidencias/FASE_1.md` a `FASE_7.md`.
+**Evidências por fase:** `docs/evidencias/FASE_1.md` a `FASE_10.md`.
 
 **Dependências de teste:** os testes de integração da borda HTTP precisam do
 **Keycloak** de pé (o token é obtido por `client_credentials`), e o de
@@ -1650,3 +1728,21 @@ integração são **puladas** (com aviso), para `go test ./...` continuar verde 
 máquina sem Docker; sem Keycloak, os testes da borda HTTP são pulados pelo mesmo
 motivo — e o `internal/infra/auth` continua provando a criptografia com o servidor
 OIDC de teste que assina de verdade.
+
+**Fase 10 — três processos independentes.** O pacote `test/integration` compila
+`cmd/api` **uma vez por execução** (no `TestMain`) e os cenários de concorrência
+sobem **três processos** com `HTTP_ADDR` distintos (faixa 18091+), o mesmo
+`DATABASE_URL` (`jungle_test`) e as mesmas filas; `application_name=api-N` no DSN
+é o que torna as conexões de cada instância identificáveis em `pg_stat_activity`.
+O `t.Cleanup` mata cada processo (no Windows, `Kill` — terminação dura) e despeja
+o log do processo na falha. Os laços são ligados **por instância**
+(`SQS_CONSUME_TRANSACTIONS`, `OUTBOX_ENABLED`, `REFERENCE_ENABLED`): nos cenários
+de número eles ficam desligados, senão a asserção dependeria de quem chegou
+primeiro. O `-timeout` sobe para **600s**.
+
+**O ambiente de teste ajusta a fila:** `abrirSQS` deixa o `VisibilityTimeout` da
+`wager-transactions.fifo` em **2s** (o valor de produção, no compose, continua
+60s) e os cenários da Fase 10 **drenam** a fila no `t.Cleanup`, inclusive as
+mensagens em voo. Sem isso, uma mensagem recebida e não apagada reaparece no teste
+seguinte e o faz falhar por um motivo que não é dele — foi o que aconteceu na
+primeira rodada da suíte inteira (ver `FASE_10.md` §5.3).

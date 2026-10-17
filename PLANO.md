@@ -489,17 +489,69 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` feito e **validado por te
 - [x] `HTTP_STOP_TIMEOUT` para **50s** com a regra do **pior caso** (servidor + consumidor + workers) e `stop_grace_period` no compose — o defeito 33 com a terceira parcela
 - [x] Prova pelo **binário real** com os três laços (operação por HTTP e por SQS → outbox → `wallet-events.fifo`, lida de volta)
 
-### FASE 10 — Concorrência e recuperação (D2, ~3h) 🏁 nota pesada (20 + 15 + 15)
-- [ ] **T1** mesma aposta 50× em paralelo → **um** débito, saldo correto, replays devolvem mesmo resultado
-- [ ] **T2** saldo 100.00 + duas BET 80.00 simultâneas → 1 `PROCESSED`, 1 `REJECTED/INSUFFICIENT_FUNDS`, saldo 20.00, **1** lançamento; reenvios não alteram
-- [ ] **T3** carteiras distintas em paralelo (provar paralelismo: tempo/locks distintos + ausência de lock global)
-- [ ] **T4** cenários repetidos com **3 instâncias independentes** (3 containers `api` no compose com portas distintas, conexões/memória próprias)
-- [ ] **T5** interromper consumidor **depois do commit e antes do delete** → reentrega ⇒ nenhuma movimentação duplicada
-- [ ] **T6** dois publishers disputando a outbox ⇒ recuperação de publicação
-- [ ] **T7** `REFUND`/`ROLLBACK` antes da referência ⇒ resolução posterior **e** rejeição por expiração
-- [ ] **T8** reiniciar app ⇒ idempotência, pendências e consistência preservadas; interromper após `PENDING` confirmado (se houver) e outra instância retoma
-- [ ] Conferência final: saldo armazenado == soma de créditos − débitos do ledger; cenários cruzando HTTP e SQS
-- [ ] `go test -race ./...` verde nas suítes aplicáveis
+### FASE 10 — Concorrência e recuperação (D2, ~3h) 🏁 nota pesada (20 + 15 + 15) — ✅ CONCLUÍDA E VALIDADA
+> Quatro blocos, um commit cada (mais um de correção): **10a** (`3d25f5a` — infraestrutura
+> de três processos independentes), **10b** (`4694834` — T1/T2/T3), **10c** (`fddf11c` —
+> T5/T8 e T6/T7 com três instâncias), **fix do defeito 41** (`f8f375f` — endereço do
+> JWKS) e **10d** (`6b2f223` — conferência final, latência e fim do resíduo de fila).
+> **11 funções de integração novas** com três processos reais + **4 testes unitários**
+> novos (2 de `application_name`, 2 do JWKS). **2 defeitos reais corrigidos** (40 e 41).
+> Evidências em `docs/evidencias/FASE_10.md`.
+- [x] **Infraestrutura de prova multi-instância**: binário compilado **uma vez** no
+      `TestMain`; N processos com `HTTP_ADDR` próprio (faixa 18091+), `application_name`
+      por instância no DSN, log por processo despejado na falha, encerramento no
+      `t.Cleanup` e laços ligados **por instância** (`SQS_CONSUME_TRANSACTIONS`,
+      `OUTBOX_ENABLED`, `REFERENCE_ENABLED`) — **sem containers** para os cenários de
+      número (três **processos** é o que o §8 pede), e o container só na prova de sinal
+- [x] **T0 — independência medida**: PIDs distintos, **três conjuntos disjuntos de
+      conexões** em `pg_stat_activity` e a queda de uma instância sem efeito nas outras
+      (`TestTresInstanciasIndependentes`)
+- [x] **T1** a mesma aposta 50× entre os 3 processos → **um** débito, uma linha, versão 2,
+      1 resposta 201 + 49 replays com o mesmo resultado (`TestT1MesmaAposta50VezesEntreTresInstancias`)
+- [x] **T1 pela fila**: 50 entregas **distintas** com o mesmo corpo, três consumidores
+      reais → um débito e **50 linhas de inbox PROCESSED** — a dedup que barrou foi a
+      **financeira**, como o §13 pede (`TestT1MesmaOperacao50VezesPelaFila`)
+- [x] **T2** 100.00 BRL + duas BET de 80.00 simultâneas em instâncias diferentes → 1
+      `PROCESSED`, 1 `REJECTED/INSUFFICIENT_FUNDS`, saldo 20.00, **um** débito, versão 2;
+      20 reenvios que não alteram nada (`TestT2DuasApostasDe80Sobre100EmInstanciasDiferentes`)
+- [x] **T3** carteiras distintas em paralelo com **prova determinística** (linha da
+      carteira A presa por uma transação do teste; B..F concluem; A só conclui depois) +
+      `pg_stat_activity` mostrando quem espera lock e **zero** espera nas demais
+      (`TestT3CarteirasDistintasEmParaleloSemLockGlobal`)
+- [x] **T4** cenários relevantes com as três instâncias — é a rodada consolidada
+      (T1–T3, T5–T8 e a conferência rodando na mesma suíte, com três processos)
+- [x] **T5** interrupção entre o commit e o delete → reentrega reconhecida pela inbox
+      (`attempts` 1→2), nenhum débito novo, DLQ vazia
+      (`TestT5QuedaEntreCommitEDeteleteReentregaReconhecida`) **e** a prova de **SIGTERM
+      real no container Linux** (`exit=0`, `sqs_visibilidade_liberada`, `receiveCount=3`
+      e um único débito na instância nova)
+- [x] **T6** três publishers **reais** com `OUTBOX_BATCH_SIZE=1` → 12 eventos, 12
+      mensagens, 0 duplicados, 0 pendentes, distribuição 4/4/4
+      (`TestT6TresPublishersReaisDisputamAMesmaOutbox`); a ordem por carteira é
+      **reportada**, não asserida nesse arranjo (limitação do §16, agora observada)
+- [x] **T7** `REFUND` na api-1, `BET` na api-3 e a pendência resolvida pela api-2 (a
+      única com o worker) — a retomada não depende de quem recebeu a requisição
+      (`TestT7REFUNDAntesDaReferenciaResolvidoPorOutraInstancia`). A expiração por TTL
+      já estava provada na Fase 9 e repetir não acrescentaria
+- [x] **T8** reinício: replay da BET por processo novo (mesma transação, saldo 75.00),
+      `PENDING_REFERENCE` resolvida pela instância nova e reconciliação consistente
+      (`TestT8ReinicioPreservaIdempotenciaPendenciaEConsistencia`)
+- [x] **Conferência final**: saldo armazenado == soma de créditos − débitos, de **duas
+      formas independentes** (SQL puro e o endpoint), com a **mesma operação cruzando
+      HTTP e SQS** ao mesmo tempo e um único débito
+      (`TestConferenciaFinalCruzandoHTTPESQS`)
+- [x] **Latência sob concorrência** (diferencial do §14): n=100 por cenário, p50/p95/p99
+      e throughput; p99 166 ms em carteiras distintas contra 579 ms na mesma carteira
+      (`TestLatenciaSobConcorrenciaTresInstancias`)
+- [x] `go test -race` verde nas suítes aplicáveis (unidade e integração, em duas rodadas
+      da suíte inteira)
+- [x] **Defeito 40**: o pool sobrescrevia o `application_name` do DSN e as três
+      instâncias ficavam indistinguíveis no `pg_stat_activity`; corrigido (DSN vence,
+      default preservado) e travado por dois testes
+- [x] **Defeito 41**: o container entregue pelo compose **não autenticava** (o Keycloak
+      anuncia o `jwks_uri` em `localhost`, que dentro do container é o próprio
+      container) → `OIDC_JWKS_URL` configurável, compose e `.env.example` atualizados,
+      dois testes provando o par (sem a chave ⇒ 503; com a chave ⇒ token aceito)
 
 ### FASE 11 — Observabilidade e polimento (D2, ~2h)
 - [ ] Logs JSON com todos os IDs; nenhum segredo/payload financeiro completo
@@ -679,6 +731,55 @@ Formato: `[data] [fase] status — o que foi feito / decisão / bloqueio`.
   - **Evidências:** `docs/evidencias/FASE_6.md`.
   - **Correção pós-fase (bloco 6d) — ordem dos eventos na outbox:** a fase tinha deixado duas limitações registradas (o par de eventos da mesma operação empatando em `occurred_at` e a dependência do relógio). Migration 000003 acrescentou `sequence BIGINT GENERATED ALWAYS AS IDENTITY`, e a fila passou a ser lida por ela. No caminho apareceu um defeito: **`RETURNING` não garante a ordem das linhas que devolve**, então o lote chegava embaralhado — pego por um teste que falhava 1 em 5, corrigido com o `UPDATE` virando CTE e o `SELECT` de fora ordenando por `sequence`. O teste que discrimina insere dois eventos com ordem de inserção e ordem de relógio opostas (56 unitários + 29 de integração ao final).
 
+- **D3** — **FASE 10 CONCLUÍDA** — concorrência e recuperação com **três processos
+  independentes**, em quatro blocos + uma correção (commits `3d25f5a`, `4694834`,
+  `fddf11c`, `f8f375f`, `6b2f223`).
+  - **A infraestrutura de prova (10a):** `test/integration/instancias_test.go` compila
+    `cmd/api` **uma vez por execução** (no `TestMain`) e sobe N processos com porta
+    própria (faixa 18091+), `application_name` próprio no DSN (é o instrumento de
+    MEDIDA), log por processo despejado na falha, `t.Cleanup` matando tudo e laços
+    ligados **por instância**. Processos, não containers: o §8 pede "conexões e memória
+    próprias", e um processo do binário tem exatamente isso; o container entra na prova
+    de sinal, que é o que o Windows não consegue provar.
+  - **T1/T2/T3 (10b):** 50 envios da mesma aposta em round-robin pelos três processos →
+    1×201 + 49×200 replay, um débito, versão 2; 50 entregas **distintas** pela fila →
+    **50 linhas de inbox PROCESSED** e um débito (a dedup que barrou foi a financeira);
+    a disputa 80+80 entre instâncias → 1 `PROCESSED`, 1 `REJECTED`, saldo 20.00, um
+    débito; e o paralelismo entre carteiras provado por **lock construído** (linha da
+    carteira A presa; B..F concluem; A só conclui depois), não por cronômetro.
+  - **T5/T8 (10c):** a queda entre commit e delete é reproduzida pelo **estado durável**
+    (consumidor real, `Delete` embrulhado, mensagem ainda na fila) e a reentrega é
+    reconhecida pela inbox (`attempts` 1→2) sem débito novo; o reinício devolve replay
+    da BET por um processo novo e a instância nova resolve a `PENDING_REFERENCE`. T6 e
+    T7 repetidos com três instâncias (12 eventos → 12 mensagens; e a pendência resolvida
+    pela única instância com o worker).
+  - **SIGTERM real no container (evidências §6):** `docker stop --timeout 60` com
+    mensagem em voo → `exit=0` em 8,09 s, `sqs_encerramento_prazo_esgotado`,
+    `sqs_visibilidade_liberada`, pool fechado por último; a instância nova recebe com
+    `receiveCount=3` e processa **uma** vez. Sem `--timeout`, o Docker mata em ~3,4 s
+    (`exit=137`) e a mensagem volta pelo `VisibilityTimeout` — também processada uma vez.
+  - **Conferência final e latência (10d):** saldo == soma do ledger por **duas vias
+    independentes** (SQL puro e o endpoint), com a **mesma operação cruzando HTTP e SQS**;
+    e a medida do §14: p99 166 ms em carteiras distintas contra 579 ms na mesma carteira.
+  - **Dois defeitos reais corrigidos:**
+    1. **40** — o `NewPool` sobrescrevia o `application_name` do DSN: as três instâncias
+       apareciam idênticas no `pg_stat_activity` e não havia como dizer qual segurava o
+       lock de uma carteira (invisível com uma instância só, desde a Fase 5);
+    2. **41** — o **container** entregue pelo compose não autenticava: o Keycloak anuncia
+       o `jwks_uri` em `localhost:8080`, que dentro do container é o próprio container,
+       então o readiness ficava UP e todo token válido virava **503**. Corrigido com
+       `OIDC_JWKS_URL` (a configuração vence o default, o `iss` continua conferido),
+       compose e `.env.example` atualizados.
+  - **Quatro réguas erradas corrigidas antes de acusar o código:** `MaxNumberOfMessages`
+    acima de 10; espera pelos contadores aproximados do SQS (~1 min de recalibração);
+    `ChangeMessageVisibility(0)` não antecipa entrega no LocalStack (medido); e resíduo
+    de fila entre testes (o `abrirSQS` passou a deixar 2s de visibilidade no teste e os
+    cenários da Fase 10 a **drenar** a fila no cleanup, inclusive em voo).
+  - **Números:** 11 funções de integração novas + 4 testes unitários; `go test -race`
+    verde em 17 pacotes de unidade e 18 com a tag, em duas rodadas da suíte inteira;
+    nenhuma migration nova (esquema continua na versão 5).
+  - **Evidências:** `docs/evidencias/FASE_10.md` (com a seção final **MATÉRIA-PRIMA PARA
+    OS DOIS DOCUMENTOS**).
 - **D3** — **FASE 9 CONCLUÍDA** — publicação da outbox + worker de referências + reaper (4 commits: `e988d98`, `212e02b`, `45fffe2`, `8c78384`).
   - **Bloco 9a — publicador:** `worker.OutboxPublisher` (claim em transação curta → publicar FORA da transação → `MarkPublished`), com backoff exponencial + teto + jitter **dentro** do teto, **quarentena** para o que esgota as tentativas, e o adaptador `sqs.Publicar` com `MessageGroupId` = carteira, `MessageDeduplicationId` por **tentativa** e `MessageAttributes` (`eventType`/`eventId`).
   - **Bloco 9b — referências:** `Service.Retomar` (reconstrói a `Request` do banco e reusa `resolverReferencia`), TTL/máx. tentativas → `REJECTED`/`REFERENCE_NOT_FOUND`, `ReagendarReferencia` no agregado, `ClaimPendingReferencesDue` (SKIP LOCKED + lease), `ReferenceWorker`, `PendingReaper` e a migration `000005` (`correlation_id`).
@@ -719,9 +820,19 @@ Formato: `[data] [fase] status — o que foi feito / decisão / bloqueio`.
   - **Evidências:** `docs/evidencias/FASE_7.md`.
 
 ### Próximos 3 passos imediatos
-1. **Fase 10, T4/T1–T3:** subir **3 processos independentes** (`api` em portas distintas, conexões e memória próprias) e provar T1 (50× a mesma aposta → um débito), T2 (100.00 + duas 80.00 → uma `PROCESSED`, uma `REJECTED`, saldo 20.00, **um** lançamento) e T3 (carteiras distintas em paralelo, sem lock global).
-2. **Fase 10, T5/T8:** interromper o consumidor **depois do commit e antes do delete** e reiniciar a aplicação — idempotência, pendências e consistência preservadas; repetir o T6 (dois publishers, agora com 3 instâncias reais) e o T7 já provados na Fase 9.
-3. **Fase 11:** dashboards/alerta sobre as 12 métricas (já emitidas), teste de carga opcional com p50/p95/p99 e `go mod tidy` (remover `testcontainers-go`).
+1. **Fase 11 — observabilidade e polimento:** dashboard/alerta sobre as **12 métricas**
+   (todas já emitidas desde a Fase 9), revisão dos logs JSON com os cinco identificadores
+   do §12, `go vet`/`gofmt`/`go mod tidy` (remover o `testcontainers-go` que ficou baixado
+   sem uso), teste da composição Fx (`fx.ValidateApp`, start/stop, `fx.StopTimeout`,
+   liberação de recursos; `goleak` opcional) e a revisão anti-eliminatórios item por item.
+2. **Fase 12, primeiro documento — `docs/SISTEMA_EXPLICADO.md`:** montar, a partir da
+   seção **MATÉRIA-PRIMA** de `docs/evidencias/FASE_10.md` e das tabelas de decisão das
+   Fases 6–9, a explicação do básico ao avançado (dinheiro em unidades mínimas, carteira,
+   lançamento, transação/lock, idempotência, outbox → depois as ligações e as regras).
+3. **Fase 12, segundo documento — `docs/ENTREVISTA.md`:** transformar as tabelas
+   pergunta→resposta (incluindo as difíceis e as que expõem limitação) em material de
+   treino; e resolver a ⚠️ 3 (onde vive o "README da solução", já que o `README.md` da
+   raiz é o enunciado e não pode ser editado).
 
 ---
 
