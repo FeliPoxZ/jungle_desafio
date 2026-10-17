@@ -112,7 +112,24 @@ func TestMain(m *testing.M) {
 	uow = postgres.NewUnitOfWork(poolTeste)
 	servico = appwagering.New(uow, clock.System{}, idgen.New())
 
-	os.Exit(m.Run())
+	// O binário real é compilado UMA vez por execução da suíte (Fase 10): os
+	// cenários multi-instância sobem N processos deste MESMO binário. Compilar
+	// dentro de cada teste custaria segundos por cenário e permitiria que dois
+	// testes da mesma execução rodassem builds diferentes.
+	caminhoDoBinario, diretorioDoBinario, err := compilarBinarioDaSuite()
+	if err != nil {
+		fmt.Printf("falha ao compilar o binário da suíte: %v\n", err)
+		os.Exit(1)
+	}
+	binarioDaSuite = caminhoDoBinario
+
+	codigo := m.Run()
+
+	// O diretório temporário com o binário é removido no fim da execução.
+	if diretorioDoBinario != "" {
+		_ = os.RemoveAll(diretorioDoBinario)
+	}
+	os.Exit(codigo)
 }
 
 // chaveLockIntegracao identifica "a suíte de integração do jungle" no espaço de

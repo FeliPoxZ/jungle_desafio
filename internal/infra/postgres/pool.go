@@ -44,7 +44,16 @@ func NewPool(ctx context.Context, cfg *config.Config) (*Pool, error) {
 	// Instante sempre em UTC, independente do servidor.
 	poolCfg.ConnConfig.RuntimeParams["timezone"] = "UTC"
 	// Aparece no pg_stat_activity: ajuda a achar a query culpada num incidente.
-	poolCfg.ConnConfig.RuntimeParams["application_name"] = "jungleg-api"
+	//
+	// O DSN VENCE o default quando traz `application_name` (Fase 10). Antes desta
+	// correção o valor era sobrescrito sempre, e três instâncias no mesmo banco
+	// apareciam TODAS como "jungleg-api": não havia como dizer qual processo
+	// segurava o lock de uma carteira, nem atribuir uma query culpada à
+	// instância que a emitiu. Com uma instância o problema era invisível; a
+	// prova multi-instância do README §8 o expôs na primeira execução.
+	if _, definidoPeloDSN := poolCfg.ConnConfig.RuntimeParams["application_name"]; !definidoPeloDSN {
+		poolCfg.ConnConfig.RuntimeParams["application_name"] = "jungleg-api"
+	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
