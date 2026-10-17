@@ -176,7 +176,7 @@ depois: BET 40 → ROLLBACK 40 → REFUND 40  ⇒  422 ALREADY_REVERSED, saldo 1
 
 ## 6. Os defeitos encontrados
 
-**50 defeitos** documentados em [`ARCHITECTURE.md`](ARCHITECTURE.md) §15, cada um com
+**51 defeitos** documentados em [`ARCHITECTURE.md`](ARCHITECTURE.md) §15, cada um com
 sintoma, causa de fundo e correção. Os mais caros:
 
 | # | Sintoma | Causa |
@@ -196,6 +196,7 @@ sintoma, causa de fundo e correção. Os mais caros:
 | 48 | segundo `compose up` não subia a API | `migrate` devolve 1 em "nada a fazer" |
 | 49 | credenciais do broker inertes | documentado `AWS_*`, código lê `SQS_*` |
 | **50** | **REFUND depois de ROLLBACK criava dinheiro** | guarda de reversão assimétrica |
+| 51 | a aplicação não subia no host seguindo o guia | o guia mandava copiar o `.env`; a aplicação lê **ambiente** (e a porta 8080 do host é do Keycloak) |
 
 ## 7. Conformidade com o enunciado (§1–§15)
 

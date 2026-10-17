@@ -293,7 +293,7 @@ morto (44 e 45).
 decidida com o usuário), com todo comando **executado** e a saída na evidência; os
 dois documentos finais estão em [`../docs_desafio/SISTEMA_EXPLICADO.md`](../docs_desafio/SISTEMA_EXPLICADO.md)
 e [`../docs_desafio/ENTREVISTA.md`](../docs_desafio/ENTREVISTA.md); o `ARCHITECTURE.md`
-está completo (§12 com a tabela métrica → teste, §15 com os 50 defeitos, §16 com as
+está completo (§12 com a tabela métrica → teste, §15 com os 51 defeitos, §16 com as
 limitações, §17 com os números finais).
 
 ## 15. Entrega — ✅ Fase 12

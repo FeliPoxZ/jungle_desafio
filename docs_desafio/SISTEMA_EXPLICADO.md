@@ -1889,7 +1889,7 @@ que pode ser instável.
 
 ---
 
-# 8. Os problemas resolvidos: 50 defeitos reais
+# 8. Os problemas resolvidos: 51 defeitos reais
 
 Nenhum destes foi introduzido de propósito. Todos foram encontrados durante o
 desenvolvimento, corrigidos e **travados por teste** — é por isso que a lista tem
@@ -1966,6 +1966,7 @@ aparece). A "correção" é o que mudou.
 | 48 | 12 | o **segundo** `docker compose up` nunca subia a API | o job `migrate` devolve 1 quando não há nada a aplicar (contrato do golang-migrate) e o `service_completed_successfully` exige 0; no primeiro `up` havia migrations, nos seguintes não | flag `up --noop-ok` no `cmd/migrate` (contrato preservado para uso manual) + `command: ["up","--noop-ok"]` no compose |
 | 49 | 12 | credenciais do broker documentadas com o nome errado (`AWS_*`), e três variáveis reais fora do `.env.example` | a aplicação lê `SQS_ACCESS_KEY_ID`/`SQS_SECRET_ACCESS_KEY`; as `AWS_*` eram inertes, e os defaults `test` escondiam o erro | `.env.example`, compose e a tabela do README da solução corrigidos; a conferência automática fecha com 0 faltando |
 | 50 | 12 | **`REFUND` depois de `ROLLBACK` da mesma `BET` criava dinheiro** | `BET 40 → ROLLBACK 40 → REFUND 40` levava 100.00 a **140.00**; a guarda de coerência entre os dois tipos existia em uma direção só | `jaRevertida` consulta o outro tipo nos DOIS sentidos; `TestREFUNDDeBETJaDesfeitaPorROLLBACKEhRejeitado` e `...NoBanco` |
+| 51 | 12 | o guia de execução mandava copiar o `.env` e rodar no host | a aplicação lê variáveis de **ambiente**; o `.env` é do Compose. Quem copiou recebeu `DATABASE_URL é obrigatória` no boot — e `HTTP_ADDR=:8080` ainda colidiria com o Keycloak | o guia passou a exportar as variáveis (com o trecho de carregar o `.env`) e a usar `HTTP_ADDR=:8090`; o `.env.example` avisa que não é lido |
 
 **O padrão que se repete**, e que vale mais que a lista: em várias delas o sintoma
 apareceu **longe** da causa — log em `app` (27, 44), métrica na borda ou no
@@ -2048,7 +2049,7 @@ alguém prometer por você.
 
 ## 9.4 As três coisas que eu verificaria primeiro ao assumir este código
 
-1. **Existe teste para o caminho que você vai mexer?** A lição das 50 linhas do
+1. **Existe teste para o caminho que você vai mexer?** A lição das 51 linhas do
    capítulo 8 é que defeito dormente mora em caminho sem teste — e cinco defeitos
    ficaram escondidos por fases inteiras exatamente assim.
 2. **A mudança toca a ordem de alguma coisa?** A ordem do lock, a ordem dos eventos,

@@ -70,10 +70,15 @@ sobem no Compose.
 ## 3. Variáveis de ambiente
 
 A configuração é lida **apenas do ambiente** (nunca de arquivo versionado) por
-`internal/config` (`caarlos0/env`), e é **validada no boot**: configuração
-inválida impede a aplicação de subir, com todos os problemas listados de uma vez.
-O arquivo [`../.env.example`](../.env.example) tem **todos** os nomes com
-comentários; copie para `.env` se rodar a aplicação no host.
+`internal/config` (`caarlos0/env`), e é **validada no boot**: configuração inválida
+impede a aplicação de subir, com todos os problemas listados de uma vez.
+
+> ⚠️ **O arquivo `.env` NÃO é lido pela aplicação.** Ele serve ao Docker Compose
+> (substituição de `${VAR}` no `docker-compose.yml`). Se você rodar o binário direto
+> no host, **exporte as variáveis** na sessão (§6) — copiar `.env.example` para `.env`
+> não basta, e o sintoma é `DATABASE_URL é obrigatória` no boot.
+
+O arquivo [`../.env.example`](../.env.example) tem **todos** os nomes com comentários.
 
 **Obrigatórias:** `DATABASE_URL` e `OIDC_ISSUER`. As demais têm default — e os
 defaults são os valores de desenvolvimento abaixo.
@@ -305,17 +310,43 @@ A aplicação sobe com todos os laços ligados (`SQS_CONSUME_TRANSACTIONS=true`,
 
 ### No host
 
-```sh
-cp .env.example .env      # ajuste DATABASE_URL/OIDC_*/SQS_* para localhost
-go build -o bin/api.exe ./cmd/api
-./bin/api.exe
+Três cuidados: (1) o `.env` **não** é lido pela aplicação — as variáveis precisam
+estar no ambiente; (2) no host a porta **8080 já é do Keycloak**, então escolha outra
+para a API (o exemplo usa **8090**); (3) as migrations precisam ter sido aplicadas.
+
+```powershell
+# 1. infraestrutura (banco, IdP e broker)
+docker compose up -d postgres keycloak localstack
+
+# 2. migrations no banco de aplicação
+$env:DATABASE_URL='postgres://jungleg:jungleg@localhost:5432/jungleg?sslmode=disable'
+go run ./cmd/migrate up
+
+# 3. variáveis da aplicação + subir na 8090
+$env:HTTP_ADDR=':8090'
+$env:OIDC_ISSUER='http://localhost:8080/realms/jungleg'
+$env:OIDC_DISCOVERY_URL='http://localhost:8080/realms/jungleg'
+$env:OIDC_AUDIENCE='jungleg-api'
+$env:SQS_ENDPOINT='http://localhost:4566'
+go run ./cmd/api
 ```
 
-O binário aceita uma flag de verificação, usada pelo healthcheck do Compose:
+Para carregar o `.env` de uma vez (útil no dia a dia), depois de ajustar
+`HTTP_ADDR=:8090` nele:
 
-```sh
-./bin/api.exe -health-check                                    # consulta http://localhost:8080/health/ready
-./bin/api.exe -health-check -health-check-url http://127.0.0.1:8081/health/ready
+```powershell
+Get-Content .env | Where-Object { $_ -match '^\s*[A-Za-z]' } | ForEach-Object {
+  $n, $v = $_ -split '=', 2
+  [Environment]::SetEnvironmentVariable($n.Trim(), $v.Trim(), 'Process')
+}
+go run ./cmd/api
+```
+
+O binário compilado aceita uma flag de verificação, usada pelo healthcheck do Compose:
+
+```powershell
+go build -o bin/api.exe ./cmd/api
+.\bin\api.exe -health-check -health-check-url http://127.0.0.1:8090/health/ready
 ```
 
 Saída: código **0** quando o serviço responde `200`; diferente de zero caso
@@ -598,7 +629,7 @@ docker logs jungle-sigterm | grep -E 'shutdown_signal_received|sqs_visibilidade_
 | Documento | Para quem | O que tem |
 | --- | --- | --- |
 | [`README.md`](README.md) (este) | quem vai **rodar** | subir, configurar, migrar, autenticar e testar |
-| [`ARCHITECTURE.md`](ARCHITECTURE.md) | avaliador técnico | decisões, concorrência, idempotência, SQS, outbox, os 50 defeitos, limitações |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | avaliador técnico | decisões, concorrência, idempotência, SQS, outbox, os 51 defeitos, limitações |
 | [`CONFORMIDADE.md`](CONFORMIDADE.md) | avaliador | requisito do enunciado → onde está atendido, e as 23 interpretações adotadas |
 | [`EVIDENCIAS.md`](EVIDENCIAS.md) | avaliador | saída real dos testes, dos curls e do checkout limpo |
 | [`../docs_desafio/SISTEMA_EXPLICADO.md`](../docs_desafio/SISTEMA_EXPLICADO.md) | quem vai **manter** o código | do zero de vocabulário ao onde-cada-garantia-é-imposta |

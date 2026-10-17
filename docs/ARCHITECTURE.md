@@ -3,7 +3,7 @@
 ARCHITECTURE.md — DOCUMENTO DO AVALIADOR (concluído)
 ================================================================================
 Este é o registro técnico do projeto, denso e em terceira pessoa: as decisões,
-o porquê de cada uma, os 50 defeitos encontrados e corrigidos e as limitações.
+o porquê de cada uma, os 51 defeitos encontrados e corrigidos e as limitações.
 Ele está completo e atualizado até a Fase 12 (a entrega).
 
 **A documentação da entrega está em `docs/`**:
@@ -1674,6 +1674,7 @@ introduzido de propósito, e todos foram corrigidos com teste que os trava.
 | 48 | 12 | **O SEGUNDO `docker compose up` nunca subia a API** | o job `migrate` devolve 1 quando não há nada a aplicar (contrato do golang-migrate: 0 = mudou, 1 = nada a fazer), e o `depends_on: service_completed_successfully` exige 0. No primeiro `up` as migrations aplicavam (0); em todos os seguintes o job "falhava" e a API não era criada | flag `up --noop-ok` no `cmd/migrate` (contrato preservado para uso manual) e `command: ["up","--noop-ok"]` no compose. O ensaio de entrega do checkout limpo e o segundo `up` passam |
 | 49 | 12 | **Credenciais do broker documentadas com o nome errado** | o `.env.example` e o compose traziam `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, mas a aplicação monta as credenciais estáticas de `SQSConfig` — os nomes reais são `SQS_ACCESS_KEY_ID`/`SQS_SECRET_ACCESS_KEY`. As variáveis documentadas eram inertes, e os defaults `test` escondiam o erro. O mesmo script de conferência achou três variáveis reais ausentes do exemplo (`SQS_BASE_BACKOFF`, `SQS_MAX_BACKOFF`, `SQS_SHUTDOWN_GRACE`) | `.env.example`, compose e a tabela do `README.md` corrigidos; a conferência automática (61 variáveis × exemplo) fecha com 0 faltando |
 | 50 | 12 | **`REFUND` depois de `ROLLBACK` da mesma `BET` criava dinheiro** | a guarda de coerência entre `REFUND` e `ROLLBACK` existia em uma direção só: `ROLLBACK` de `BET` já estornada era recusado, mas `REFUND` de `BET` já desfeita por `ROLLBACK` era **aceito**. `BET 40 → ROLLBACK 40 → REFUND 40` levava 100.00 a **140.00**, e o ledger ficava consistente com o saldo — a reconciliação não acusaria nada. Achado ao escrever o `SISTEMA_EXPLICADO.md` (o documento expôs a assimetria), confirmado contra o container | `jaRevertida` passou a consultar o outro tipo nos DOIS sentidos; provado por `TestREFUNDDeBETJaDesfeitaPorROLLBACKEhRejeitado` (unidade) e `...NoBanco` (integração, saldo 100.00 e dois lançamentos) |
+| 51 | 12 | **O guia de execução mandava copiar o `.env` e rodar no host — e isso não funciona** | a aplicação lê **apenas variáveis de ambiente**; o `.env` é consumido pelo Compose (substituição de `${VAR}`). Quem copiasse o arquivo receberia `DATABASE_URL é obrigatória` no boot, exatamente como o usuário relatou ao simular a entrega. A segunda armadilha do mesmo trecho: `HTTP_ADDR=:8080` colide com o Keycloak no host | `docs/README.md` §6 passou a **exportar** as variáveis (e a mostrar como carregar o `.env` para a sessão), com `HTTP_ADDR=:8090`; o cabeçalho do `.env.example` diz explicitamente que a aplicação não lê o arquivo. Provado: binário no host na 8090 com readiness `UP` |
 
 ---
 
