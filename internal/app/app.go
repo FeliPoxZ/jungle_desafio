@@ -152,10 +152,20 @@ func Run(version, commit string) error {
 		slog.String("commit", commit),
 	)
 
-	// P7: o prazo de shutdown é uma OPÇÃO do Fx (`fx.StopTimeout`), avaliada na
-	// construção do app — nenhum provider do grafo consegue influenciá-la. Por
-	// isso a config é lida antes, e `HTTP_STOP_TIMEOUT` (validado em
-	// `config.Validate`) manda, em vez de uma constante no código.
+	// P7: o prazo de shutdown vem da configuração, e não de uma constante no
+	// código. Ele age em DOIS lugares, e é importante não confundi-los:
+	//
+	//   - o EFETIVO é o `shutdownCtx` criado mais abaixo com
+	//     `cfg.HTTP.StopTimeout` e passado a `fxApp.Stop` — `App.Stop` respeita o
+	//     contexto do CHAMADOR;
+	//   - a opção `fx.StopTimeout` documenta o mesmo valor e seria a que manda se
+	//     alguém trocasse este `Run` por `fxApp.Run()`. Ela também é consultável
+	//     por `fxApp.StopTimeout()`.
+	//
+	// A primeira versão da documentação dava a entender que só a opção bastava:
+	// `App.Stop(ctx)` com um hook demorado continua esperando o hook, porque o
+	// prazo não é aplicado por ela (defeito 45). O teste
+	// `TestScopeDoPrazoDeEncerramento` trava os dois lados.
 	fxApp := fx.New(
 		ModuleOptions(),
 		// Os eventos internos do Fx (boot/shutdown) saem no mesmo logger — e,
