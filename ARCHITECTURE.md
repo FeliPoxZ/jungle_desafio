@@ -516,7 +516,7 @@ de referências, que retoma uma linha `PENDING_REFERENCE` existente.
 
 ---
 
-## 8. Outbox: eventos sem perda `[PARCIAL]`
+## 8. Outbox: eventos sem perda `[PRONTO]` — Fases 6–9
 
 ### [DECISÃO] Por que outbox, e não publicar direto no SQS
 
@@ -590,13 +590,113 @@ Quem mostrou foi um teste que falhava de vez em quando (`TestOrdemDaOutboxNaoDep
 ~1 falha em 5 execuções): a primeira versão da correção trocou o `ORDER BY` e achou
 que bastava. É o defeito 19 da §15.
 
-### [PLANEJADO] Fase 9 — publisher e worker
+### [PRONTO] O publicador: publicar ANTES de marcar (Fase 9)
 
-- publisher: `ClaimBatch` → publica → `MarkPublished` / `MarkRetry` com backoff;
-- republicação com o **mesmo `eventId`** (o consumidor deduplica);
-- worker de referências: resolve `PENDING_REFERENCE` vencidas, backoff exponencial
-  com jitter, TTL → `REJECTED REFERENCE_NOT_FOUND`;
-- `PendingStats` alimenta o alerta de outbox parada.
+`internal/worker/OutboxPublisher`, ligado por `OUTBOX_ENABLED`:
+
+```
+1. ClaimBatch        (transação CURTA) → o lote é reivindicado e o LEASE é confirmado
+2. Publicar          (FORA da transação) → a mensagem vai para wallet-events.fifo
+3. MarkPublished     (context.WithoutCancel) → o evento sai dos pendentes
+   └─ falhou? → MarkRetry com backoff exponencial + teto + jitter DENTRO do teto
+   └─ esgotou ou o destino RECUSOU? → QUARENTENA (available_at no prazo longo)
+```
+
+**A ordem é a garantia.** Marcar antes de publicar diria "publiquei" antes de
+publicar: uma queda entre as duas etapas perderia o evento **para sempre**, e o
+README §5.4 e §3 proíbem as duas coisas (publicar antes do commit **e** perder
+evento confirmado). Nesta ordem, a pior falha possível é a **republicação** — o
+evento continua pendente, o lease vence e outra instância publica de novo, com o
+MESMO `eventId` no corpo.
+
+**Por que a publicação fica fora da transação:** manter as linhas (`FOR UPDATE`)
+e uma conexão do pool durante um round-trip ao broker esgotaria o pool com
+poucas instâncias; e o lease precisa estar **confirmado** para o evento voltar
+sozinho se o processo morrer.
+
+**Quarentena, e não descarte.** Esgotado `OUTBOX_MAX_ATTEMPTS` (ou na primeira
+recusa permanente do destino), o evento continua pendente com `last_error` e
+`available_at` empurrado por `OUTBOX_PARKED_BACKOFF`. Nada é apagado e nada é
+marcado como publicado: o atraso da outbox denuncia o evento emparedado, e um
+operador consegue desquarentená-lo.
+
+### [DECISÃO] O `MessageDeduplicationId` é por TENTATIVA, não por evento
+
+Se fosse o `eventId`, o SQS **engoliria a republicação** dentro da janela de 5
+minutos: o evento que voltou do lease seria deduplicado pelo broker e a mensagem
+original (já entregue) continuaria sendo a única — o contrário do que o README
+§11 pede ("republicações devem preservar o `eventId`"). A deduplicação que vale é
+a do **consumidor**, pelo `eventId` do corpo, e ela é durável, sem janela.
+
+O nonce cobre o caso em que o número da tentativa não muda: queda entre a
+publicação e o `MarkPublished` **não incrementa** `attempts` (não houve falha
+registrada), e o segundo envio teria o mesmo dedup id — e seria engolido.
+
+### [PRONTO] Recuperação de trabalho abandonado
+
+Não existe "liberar o trabalho no encerramento" para os laços da outbox: o
+**lease é a recuperação**. Três quedas cobertas pelo mesmo mecanismo:
+
+| Queda | O que acontece |
+| --- | --- |
+| entre o commit e o claim | o evento está pendente e o próximo ciclo o pega |
+| entre o claim e a publicação | o lease vence, a linha volta para o trabalho e outra instância publica |
+| entre a publicação e o `MarkPublished` | a mensagem está na fila **e** o evento volta; a republicação preserva o `eventId` e o corpo |
+
+Provado contra o PostgreSQL e o LocalStack reais em
+`TestQuedaEntreCommitEPublicacaoOutraInstanciaAssume`,
+`TestQuedaEntrePublicacaoEMarkPublishedRepublicaComOMesmoEvento` e
+`TestDoisPublishersDisputamAMesmaOutbox`.
+
+### [PRONTO] O worker de referências e a retomada (Fase 9)
+
+`internal/worker.ReferenceWorker` (`REFERENCE_ENABLED`) faz o ciclo
+`ClaimPendingReferencesDue` → `Service.Retomar` → desfecho. O claim espelha o da
+outbox: `FOR UPDATE SKIP LOCKED` + lease empurrando `next_resolution_attempt_at`.
+
+`Service.Retomar` é um caminho **separado** do `Process`: encontra a linha já
+gravada, reconstrói a `Request` das colunas persistidas e reusa
+`resolverReferencia`, `mover` e os emissores de evento — nenhuma régua de negócio
+duplicada. Os desfechos:
+
+| Desfecho | O que acontece |
+| --- | --- |
+| **resolvida** | lock da carteira → movimento → ledger → `ResolveReference` + `MarkProcessed` → eventos, na MESMA transação |
+| **pendente** | `attempt+1` + novo instante (backoff + jitter) + evento `WagerTransactionPendingReference`; **sem** tocar na carteira |
+| **rejeitada** | `MarkRejected(failureCode)` + evento de rejeição |
+| **expirada** | `attempt >= REFERENCE_MAX_ATTEMPTS` **ou** idade `>= REFERENCE_PENDING_MAX_AGE` ⇒ `REJECTED` com `REFERENCE_NOT_FOUND` (README §7) |
+| **ignorada** | a linha já terminou ou outro worker agiu entre o claim e o lock |
+
+### [DECISÃO] Duas guardas de concorrência na retomada (defeito 37)
+
+1. **lock da linha** (`GetByIDForUpdate`): em `READ COMMITTED`, o `FOR UPDATE`
+   espera e devolve a versão MAIS NOVA — quem chega segundo não reverte de novo;
+2. **estado esperado + tentativa esperada**, lidos no **claim**: o claim não mexe
+   em `reference_resolution_attempt`, então um número diferente significa "outro
+   worker já cuidou disto". É o que impede o TTL ser consumido duas vezes.
+
+A guarda **não** pode ser o `next_resolution_attempt_at`: o claim acabou de
+sobrescrevê-lo com o lease, e comparar com ele faz a retomada **ignorar todo o
+trabalho** (foi o defeito 37, encontrado no teste de integração).
+
+### [DECISÃO] TTL só decide quando a referência NÃO resolve
+
+Se a referência chegou — mesmo depois do prazo — a operação **conclui**. Rejeitar
+uma reversão cuja referência existe seria destruir informação correta para
+respeitar um relógio. O TTL existe para o que não dá para resolver.
+
+### [DECISÃO] O reaper retoma `PENDING` pelo MESMO caso de uso
+
+`internal/worker.PendingReaper` (`REFERENCE_ENABLED`) varre
+`ListPendingStale` (`PENDING` com `updated_at` mais velho que
+`REFERENCE_PENDING_MAX_AGE`) e chama o **mesmo** `Retomar`.
+
+⚠️ **Hoje esse estado é inalcançável por caminho normal**: o caso de uso grava
+`PENDING` e o estado definitivo no **mesmo commit**, então nenhuma linha `PENDING`
+é confirmada (interpretação 6 da conformidade). O reaper é a segurança extra do
+README §6.3 — o dia em que existir aceite assíncrono, ele já está lá. A prova é
+com inserção direta (`TestReaperRetomaPendingAntigo`) e pela linha presa que ele
+encontrou no banco de desenvolvimento.
 
 ### Envelope do evento `[PRONTO]`
 
@@ -610,7 +710,11 @@ que bastava. É o defeito 19 da §15.
 ```
 
 `aggregateId` é o `walletId` porque é ele o `MessageGroupId` na fila FIFO: eventos
-da mesma carteira precisam ser processados em ordem.
+da mesma carteira precisam ser processados em ordem. Os eventos emitidos na
+**retomada** carregam o `correlationId` original (coluna `correlation_id`,
+migration 000005) e `causationId` = o id da transação pendente que os originou;
+sem correlação gravada, usam o próprio `transactionId` em vez de publicar campo em
+branco.
 
 ---
 
@@ -1297,19 +1401,85 @@ consumiria nada, e responder `UP` seria falso.
 | `sqs_encerramento_*` | parada: trabalho concluído, prazo esgotado, visibilidade liberada |
 | `wager_inbox_duplicates_total`, `wager_retries_total{stage="sqs_consume"}`, `wager_dlq_messages_total` | métricas Prometheus |
 
+### Contrato de roteamento e consumo de `wallet-events.fifo` (Fase 9)
+
+O README §11 pede o destino provisionado **e o contrato documentado**. O destino é
+`wallet-events.fifo` (DLQ: `wallet-events-dlq.fifo`, `maxReceiveCount=5`), com
+`FifoQueue=true`, `ContentBasedDeduplication=false`, `VisibilityTimeout=30`,
+`ReceiveMessageWaitTimeSeconds=20`.
+
+**Roteamento (quem publica como):**
+
+| Campo | Valor | Papel |
+| --- | --- | --- |
+| `MessageGroupId` | `aggregateId` do evento = **`walletId`** | ordem por carteira: a FIFO entrega em ordem **dentro** do grupo e em paralelo entre grupos |
+| `MessageDeduplicationId` | `<eventId>-t<tentativa>-<nonce>` | **por tentativa de publicação**, para a republicação NÃO ser engolida pela janela de 5 min do broker |
+| `MessageAttributes.eventType` | o tipo do evento | filtro/roteamento no consumidor sem desserializar o corpo |
+| `MessageAttributes.eventId` | o id do evento | deduplicação barata por atributo, quando o consumidor quiser |
+| Corpo | o **snapshot** JSONB da outbox, byte a byte | o evento é o do instante do commit, não a interpretação de hoje |
+
+**Consumo (contrato que o consumidor de eventos DEVE cumprir — não implementado
+nesta fase de propósito: o README §11 pede publicação, e o consumidor de eventos
+é escopo das Fases 10–11):**
+
+1. **Deduplicar por `eventId`, com registro durável.** A entrega é "pelo menos
+   uma vez": a mesma mensagem pode chegar duas vezes (lease vencido, republicação
+   depois de queda, redrive) e o broker só deduplica por 5 minutos — a janela
+   **expira** e não é garantia nossa. O `eventId` é imutável e é a chave estável.
+2. **Ordenar por `walletVersion`, não por chegada.** O `WalletBalanceChanged`
+   carrega `walletVersion`; o consumidor que precisa reconstruir o saldo deve usar
+   a versão (e pode detectar lacuna: `version` que pula ⇒ faltou evento).
+3. **Não reordenar entre carteiras.** Cada `MessageGroupId` tem a sua ordem; não
+   há relação de ordem entre carteiras diferentes, e supor uma custaria latência.
+4. **Idempotência do lado de dentro.** Aplicar um evento duas vezes só é seguro se
+   a aplicação do consumidor for idempotente (chave = `eventId` + efeito);
+   deduplicar na chegada não substitui a idempotência de quem grava.
+5. **Mensagem envenenada não pode bloquear o grupo.** Numa fila FIFO, uma
+   mensagem em voo bloqueia as seguintes do MESMO `MessageGroupId`. O consumidor
+   deve (a) mandar explicitamente para a DLQ o que nunca vai funcionar e (b)
+   manter `VisibilityTimeout` compatível com o processamento — a mesma lição da
+   Fase 8, que custou tempo.
+6. **A leitura do payload é obrigatória.** Os `MessageAttributes` são
+   conveniência; o contrato é o corpo (envelope + `data` tipado), e um atributo
+   ausente não pode fazer o consumidor descartar o evento.
+7. **`WagerTransactionPendingReference` é informativo.** Ele diz "ainda não
+   resolveu"; a conclusão vem depois, como `WagerTransactionProcessed` ou
+   `WagerTransactionRejected`, com o MESMO `transactionId`. O consumidor que
+   contabiliza por `transactionId` precisa tratar os dois desfechos, não o
+   intermediário.
+
 ---
 
-## 12. Observabilidade `[PARCIAL]`
+## 12. Observabilidade `[PRONTO]` — Fases 7–9
 
-`[PRONTO]` log estruturado com `correlationId`/`requestId` automáticos, redação de
-dado sensível, e métricas Prometheus (`jungleg_*`).
+`[PRONTO]` log estruturado JSON com `correlationId`/`requestId` automáticos,
+redação de dado sensível, e métricas Prometheus (`jungleg_*`).
 
-`[PLANEJADO]` Fase 10: métricas de negócio (operações por tipo/status, latência,
-tamanho da outbox, idade do pendente mais antigo, DLQ) e alertas.
+**As 12 métricas do README §12 estão emitidas** (4 na borda HTTP, 3 no consumo,
+5 nos laços desta fase):
+
+| Métrica | Quem emite | Para que serve |
+| --- | --- | --- |
+| `wager_operations_total{kind,status}` | HTTP e SQS | resultado por tipo e status |
+| `wager_operation_duration_seconds{kind,status}` | HTTP e SQS | latência de processamento |
+| `wager_idempotent_replays_total` | HTTP | duplicatas (replay por chave) |
+| `wager_reconciliation_divergences_total` | HTTP | divergência de reconciliação |
+| `wager_retries_total{stage}` | SQS e laços | retries (`sqs_consume`, `outbox_claim`, `outbox_publish`, `outbox_mark`, `reference_claim`, `reaper_scan`, `worker_<laço>`) |
+| `wager_dlq_messages_total` | SQS | mensagens que foram para a DLQ |
+| `wager_inbox_duplicates_total` | SQS | reentregas reconhecidas pela inbox |
+| `wager_transaction_conflicts_total` | caso de uso | conflitos de concorrência |
+| **`wager_outbox_publish_total{result}`** | publicador | resultado da publicação (`success`/`retry`/`failed`) |
+| **`wager_outbox_pending_age_seconds`** | publicador (`PendingStats`) | **atraso da outbox**: idade do evento pendente mais antigo |
+| **`wager_outbox_publish_attempts`** | publicador | distribuição de tentativas até publicar |
+| **`wager_reference_resolution_total{result}`** | worker de referências (`resolvida`/`pendente`/`rejeitada`/`ignorada`) e reaper (`reaper_*`) | desfecho da resolução de referência |
+
+O atraso da outbox é medido a cada 15s (não a cada ciclo) e o publicador loga
+`outbox_atrasada` (WARN) quando o pendente mais antigo é mais velho que um lease
+inteiro. `/health/ready` passou a incluir a dependência **`workers`**.
 
 ---
 
-## 13. Recuperação de falhas `[PARCIAL]`
+## 13. Recuperação de falhas `[PRONTO]`
 
 | Falha | O que acontece | Estado |
 | --- | --- | --- |
@@ -1317,11 +1487,14 @@ tamanho da outbox, idade do pendente mais antigo, DLQ) e alertas.
 | Falha em qualquer passo (inclusive no último, o evento) | o commit não acontece: saldo, ledger, transação e evento voltam juntos | `[PRONTO]` |
 | Reenvio simultâneo da mesma operação | um insere; o outro recebe `23505`, repete a transação inteira e devolve o resultado persistido | `[PRONTO]` |
 | Disputa de lock na mesma carteira (`55P03`) | classificado como transitório e repetido (3 tentativas); esgotado, sobe como indisponibilidade | `[PRONTO]` |
-| Queda depois do commit, antes de publicar | evento fica na outbox e o lease expira → republica | `[PRONTO]` (mecanismo) / `[PLANEJADO]` (worker) |
-| Queda depois de publicar, antes de marcar | republica com o **mesmo `eventId`** → consumidor deduplica | `[PLANEJADO]` |
+| Queda **depois do commit, antes de publicar** | o evento fica na outbox, o lease vence e outra instância publica | `[PRONTO]` — `TestQuedaEntreCommitEPublicacaoOutraInstanciaAssume` |
+| Queda **depois de publicar, antes de marcar** | republicação com o **mesmo `eventId`** e o mesmo corpo; o consumidor deduplica | `[PRONTO]` — `TestQuedaEntrePublicacaoEMarkPublishedRepublicaComOMesmoEvento` |
+| Dois publishers na mesma outbox | `SKIP LOCKED` dá lotes disjuntos: nenhum evento perdido, nenhum publicado duas vezes | `[PRONTO]` — `TestDoisPublishersDisputamAMesmaOutbox` |
 | Mensagem reentregue pelo SQS | inbox recusa a segunda (por `consumer_name` + identificador da mensagem), com o hash do corpo distinguindo reentrega de conflito | `[PRONTO]` |
-| Referência que nunca chega | a mensagem de ENTRADA é concluída e o `PENDING_REFERENCE` fica durável; o TTL esgota no worker (Fase 9) → `REJECTED REFERENCE_NOT_FOUND` | `[PARCIAL]` |
-| `PENDING` antigo sem desfecho | reaper retoma | `[PLANEJADO]` |
+| Referência que **nunca chega** | o `PENDING_REFERENCE` é durável; o worker esgota `REFERENCE_MAX_ATTEMPTS`/`REFERENCE_PENDING_MAX_AGE` → `REJECTED REFERENCE_NOT_FOUND` + evento | `[PRONTO]` — `TestReferenciaQueNuncaChegaExpiraEmREFERENCENOTFOUND` |
+| **Reversão antes da referência** | fica `PENDING_REFERENCE` sem movimentar nada; quando a referência chega, o worker resolve com o ledger correto | `[PRONTO]` — `TestREFUNDAntesDaReferenciaResolveDepois` |
+| `PENDING` antigo sem desfecho | o reaper retoma e leva a um desfecho (hoje o estado é inalcançável por caminho normal — ver §16) | `[PRONTO]` (mecanismo) — `TestReaperRetomaPendingAntigo` |
+| Reinício da aplicação | tentativas, instantes e pendências estão no banco; nada vive em memória | `[PRONTO]` |
 
 ---
 
@@ -1380,6 +1553,9 @@ introduzido de propósito, e todos foram corrigidos com teste que os trava.
 | 34 | 8 | **A métrica de negócio não era emitida no caminho SQS** | `wager_operations_total` não existia para operações vindas da fila: o caminho PRINCIPAL do serviço ficava invisível no painel (a operação aparecia no banco e em lugar nenhum mais) | o consumidor emite a mesma métrica da borda HTTP, com `kind` lido de forma tolerante (`unknown` em vez de perder a contagem) |
 | 35 | 8 | **O contador durável de entregas nunca incrementava** | `attempts` ficava em 0 para sempre: o caminho da reentrega — o único que sobrevive quando o broker não é mais consultado — não tocava no contador | inserção grava 1 (normalizado no repositório) e a reentrega faz `attempts + 1` no SQL; `TestProcessarReentregaNaoReaplica` afirma 2 |
 | 36 | 8 | **`INSERT` ganhou coluna sem os placeholders** (introduzido na correção do 35) | `mismatched param and argument count` nos testes de integração do repositório | SQL e argumentos alinhados — pego pelos testes de `internal/infra/postgres`, que rodam no mesmo comando |
+| 37 | 9 | **A guarda da "janela do lease" ignorava TODO trabalho da retomada** | o REFUND continuava `PENDING_REFERENCE` depois da retomada, **sem erro nenhum no log** (o worker registrava "pendente", um desfecho de sucesso). A guarda comparava o relógio com `next_resolution_attempt_at` — que o próprio `ClaimPendingReferencesDue` acabou de empurrar para o futuro como LEASE | a guarda passou a comparar o **estado e a tentativa lidos no claim** (`reference_resolution_attempt`, que o claim não altera). Efeito colateral bom: se o lease vencer no meio do processamento, o segundo worker vê a tentativa incrementada e **não consome outra** |
+| 38 | 9 | **O reaper retomava um `PENDING` e não saía do lugar** | `INVALID_TRANSITION: só é possível reagendar uma referência em PENDING_REFERENCE, estado atual PENDING` — o caminho "continua pendente" chamava `ReagendarReferencia` numa linha que ainda não tinha transitado | o desfecho pendente escolhe pelo estado: `MarkPendingReference` (transição real, de `PENDING`) ou `ReagendarReferencia` (mesmo estado, relógio andando) |
+| 39 | 9 | **`correlationId` morria no fim da requisição**; e o caminho SQS nunca o preenchia | os eventos emitidos na retomada (minutos depois, por outro processo) sairiam sem correlação — e o README §12 pede rastrear a operação por ela | migration `000005` (`wager_transactions.correlation_id`), gravada no INSERT e lida na reidratação; o caminho SQS usa o `MessageId` da entrega; sem correlação, a retomada usa o `transactionId` em vez de publicar vazio |
 
 ---
 
@@ -1399,7 +1575,12 @@ que funciona não ajuda quem vai manter.
 | `next_resolution_attempt_at` fica preenchido em reversão já `PROCESSED` | Efeito de usar `MarkPendingReference` + `ResolveReference`, que é o único caminho que o agregado oferece para vincular a referência interna. A coluna só é lida para linhas `PENDING_REFERENCE`, então o valor é inerte |
 | `ListLedger` faz uma consulta a mais por página | Confere a existência da carteira antes de listar (para não devolver página vazia ambígua). É uma leitura a mais dentro da mesma transação de leitura |
 | `Reconcile` não emite métrica nem log de divergência | **Resolvido na Fase 7 na borda**: o handler emite `wager_reconciliation_divergences_total` e o log `reconciliacao_divergente`. O caso de uso continua sem conhecer Prometheus (de propósito) |
-| `ARCHITECTURE.md` sem as seções de workers | As seções 10 (HTTP) e 11 (SQS) foram fechadas nas Fases 7 e 8; o publisher da outbox e o worker de referências entram na Fase 9 |
+| O `PENDING` do reaper é inalcançável por caminho normal | O caso de uso grava `PENDING` e o estado definitivo no **mesmo commit**, então nenhuma linha `PENDING` é confirmada (interpretação 6 da conformidade). O reaper é a segurança extra do README §6.3 e é provado por inserção direta; ele existe para o dia em que houver aceite assíncrono |
+| O reaper **repete indefinidamente** uma linha que não consegue concluir | Não há contador durável de falhas para `PENDING` sem referência, e o conflito de ledger é classificado como transitório; o desfecho `FAILED` só é dado quando a carteira não existe. Encontrado no binário real, com uma linha inconsistente de teste manual antigo (ver `FASE_9.md` §6). Um contador de tentativas do reaper é trabalho da Fase 10/11 |
+| Ordem por carteira depende do lote | Com mais eventos pendentes da MESMA carteira do que `OUTBOX_BATCH_SIZE` numa rodada, dois publishers podem dividir a carteira e a ordem de ENVIO fica sujeita ao escalonamento. Na prática (batch 50) é preciso uma rajada de 50+ eventos da mesma carteira. O consumidor pode ordenar por `walletVersion` |
+| Publicação sem `SendMessageBatch` | Cada evento é um `SendMessage`. O lote existe no claim, não no envio: manter o `MarkPublished` por evento é o que torna a recuperação observável e o lease preciso |
+| O encerramento dos laços (SIGTERM) não foi provado no Windows | `Stop-Process` é terminação dura. A prova de sinal é do ambiente Linux/container (pendência P8, herdada da Fase 7) |
+| `correlation_id` é nullable | Linhas anteriores à migration 000005 (e caminhos que não propagam) ficam nulas; a retomada cai para o `transactionId`. Não é invariante financeira, é metadado de transporte |
 | Sem introspecção de token (RFC 7662) na autenticação | A validação é **local** (assinatura + claims), que é o comportamento normal de OIDC/JWT. Consequência: revogar um token antes do `exp` não é detectado. Introspecção custaria uma ida ao IdP por requisição |
 | `azp` só é conferido com múltiplas audiences | Regra do OIDC Core §3.1.3.7. O realm deste projeto emite uma audience só, então não há o que conferir hoje |
 | Sem rate limiting por identidade | Não é exigido pelo enunciado; com o lock por carteira, o custo de uma rajada é contenção de linha, não corrupção de saldo |
@@ -1440,13 +1621,17 @@ cmd /c "docker exec -i jungleg-postgres psql -U jungleg -d jungleg < deploy/post
 persistência (Fase 5) + 3 de `idgen` + **56 casos** do caso de uso (Fase 6) +
 **49** em `internal/infra/auth` (Fase 7) + **67** em `internal/httpapi` (Fase 7) +
 **26** em `internal/app/inbox` (Fase 8) + **19** em `internal/consumer` (Fase 8) +
-**29 casos** de integração do caminho completo (Fase 6) + **30** da borda HTTP
-(Fase 7) + **9 funções** de consumo com LocalStack (Fase 8) + 2 de integração do
-binário real. `go test -race` verde nos **16 pacotes** com teste de unidade (17 no comando com a
-tag `integration`, porque dois pacotes só têm teste de integração). Cobertura do domínio: `money` 97,9%, `wallet` 99,0%, `wagering` 100,0%.
+**38** em `internal/worker` + `Retomar` (**Fase 9**) + **8** novos casos de
+configuração e composição (Fase 9) + **29 casos** de integração do caminho
+completo (Fase 6) + **30** da borda HTTP (Fase 7) + **9 funções** de consumo com
+LocalStack (Fase 8) + **8 funções** de publicação e recuperação com LocalStack
+(Fase 9) + 2 de integração do binário real. `go test -race` verde nos **17
+pacotes** com teste de unidade (18 no comando com a tag `integration`). Cobertura
+do domínio: `money` 97,9%, `wallet` 99,0%, `wagering` 100,0%.
 
-**Migrations:** quatro (`000001_init`, `000002_opening_sem_jogo_e_rodada`,
-`000003_ordem_da_outbox`, `000004_inbox_attempts`). O binário `bin/migrate.exe` carrega as migrations
+**Migrations:** cinco (`000001_init`, `000002_opening_sem_jogo_e_rodada`,
+`000003_ordem_da_outbox`, `000004_inbox_attempts`,
+`000005_correlation_id`). O binário `bin/migrate.exe` carrega as migrations
 **embutidas** (`go:embed`): depois de criar uma migration nova, é preciso
 **rebuidá-lo** (`go build -o bin/migrate.exe ./cmd/migrate`) — um binário velho
 responde "schema já está atualizado" e não aplica nada.

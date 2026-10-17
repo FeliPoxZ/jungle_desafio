@@ -15,10 +15,11 @@
 >
 > **Não comece a codar sem ler as seções 3 e 3.5.**
 >
-> ⭐ **A próxima fase é a 9 (publisher da outbox + workers de referência e reaper).**
-> O prompt de abertura dela está pronto em **`PROMPT_FASE_9.md`** — autossuficiente,
-> com o escopo, os quatro blocos, os critérios de aceite e as armadilhas. Use-o como
-> primeira mensagem da nova conversa; este arquivo continua sendo o handoff completo.
+> ⭐ **A próxima fase é a 10 (concorrência e recuperação: 3 instâncias, T1–T8).**
+> A Fase 9 está CONCLUÍDA: a outbox publica de verdade em `wallet-events.fifo`, o
+> worker de referências dá desfecho a `PENDING_REFERENCE`, o reaper retoma
+> `PENDING` e o runner supervisiona os três laços. Provas em
+> `docs/evidencias/FASE_9.md`.
 
 ---
 
@@ -54,13 +55,14 @@ solução + `ARCHITECTURE.md`.
 | Fase 6 (caso de uso `wagering.Service`) | ✅ **CONCLUÍDA E VALIDADA** em 3 blocos: 6a (`Process`), 6b (`OpenWallet`), 6c (leituras + `Reconcile`) — 55 casos unitários, 27 de integração, **6 defeitos reais corrigidos** |
 | Fase 7 (HTTP + autenticação) | ✅ **CONCLUÍDA E VALIDADA** em 5 blocos (7a–7e) + P1 — **49 casos** em `internal/infra/auth`, **67** em `internal/httpapi`, **30** de integração da borda HTTP (Keycloak real), **2** do binário real, **8 defeitos reais corrigidos** |
 | Fase 8 (SQS + inbox) | ✅ **CONCLUÍDA E VALIDADA** em 2 blocos (8a/8b e 8e) — **26 casos** em `internal/app/inbox`, **19** em `internal/consumer`, **9 funções** de integração com o **LocalStack real**; **8 defeitos reais corrigidos** (um de ambiente: as filas nunca eram criadas; três que só apareceram ao rodar o binário) |
-| Fase 9 (publisher da outbox + worker de referências) | ⬅ **PRÓXIMA** |
+| Fase 9 (publicador da outbox + worker de referências + reaper) | ✅ **CONCLUÍDA E VALIDADA** em 4 blocos (9a–9d) — **38 casos unitários** novos, **8 funções** de integração com PostgreSQL + LocalStack reais, prova pelo **binário real** com os três laços; **3 defeitos reais corrigidos** (dois só apareceram rodando a retomada contra o banco) |
 | Fases 10–12 | ⬜ Não iniciadas (ver checklist no `PLANO.md` §3) |
 
 **Domínio (Fases 1–3): 574 casos. Persistência (Fase 5): 38. Caso de uso (Fase 6):
 55 unitários + 27 de integração. Borda HTTP (Fase 7): 116 unitários + 32 de
 integração. Consumo por SQS (Fase 8): 45 unitários + 9 funções de integração.
-`go test -race` verde em 16 pacotes com teste de unidade (17 no comando com a tag
+Publicação e laços (Fase 9): 38 unitários + 8 funções de integração.
+`go test -race` verde em 17 pacotes com teste de unidade (18 no comando com a tag
 `integration`). Árvore git limpa.**
 
 > ⚠️ Os **três** pacotes de integração usam o mesmo banco de teste e truncam
@@ -84,6 +86,11 @@ integração. Consumo por SQS (Fase 8): 45 unitários + 9 funções de integraç
 ### Histórico de commits (mais recente primeiro)
 
 ```
+8c78384 test(fase9): prova as recuperacoes com LocalStack e PostgreSQL reais              ← FASE 9d
+45fffe2 feat(app): liga os lacos da fase 9 no Fx com supervisao e readiness honesto       ← FASE 9c
+212e02b feat(worker): adiciona o worker de referencias e o reaper de PENDING             ← FASE 9b
+e988d98 feat(outbox): adiciona o publicador de eventos da outbox                          ← FASE 9a
+577ea27 docs(handoff): prepara o prompt de abertura da Fase 9 e atualiza o proximo passo
 aec7cbe docs(fase8): corrige a contagem de pacotes e de defeitos no handoff e na arquitetura
 ec551b2 fix(sqs): corrige tres defeitos que so apareceram ao rodar o binario
 8a69ab9 docs(fase8): registra as evidencias do consumo por SQS e atualiza os documentos
@@ -122,7 +129,7 @@ b046e6a feat(money): completa o value object com aritmetica, comparacao e serial
 1eef5b2 chore(setup): fundacao do projeto com Fx, config validada, HTTP e observabilidade
 ```
 
-> ✅ **As Fases 0 a 8 estão commitadas e validadas. Não revalide nem recommite.**
+> ✅ **As Fases 0 a 9 estão commitadas e validadas. Não revalide nem recommite.**
 
 ---
 
@@ -515,6 +522,52 @@ readiness: {"oidc":"UP","postgres":"UP","sqs":"UP"}
 
 ---
 
+## 6c. ✅ CONCLUÍDA: FASE 9 — publicação da outbox + referências (o que acabou de ser feito)
+
+> **Estado: CONCLUÍDA E VALIDADA em 4 blocos.** Evidências em
+> `docs/evidencias/FASE_9.md`; as decisões estão no `ARCHITECTURE.md` §8 e §11.
+
+| Bloco | Commit | O que entregou |
+| --- | --- | --- |
+| **9a** | `e988d98` | porta `Publicador` + `OutboxPublisher` (claim → publicar → marcar), backoff com teto e jitter, **quarentena**, adaptador SQS com `MessageGroupId`/`MessageDeduplicationId` por tentativa e `MessageAttributes`, 10 casos unitários e 2 funções de integração |
+| **9b** | `212e02b` | `Service.Retomar` (o caminho da referência, com TTL, reagendamento e duas guardas), `ReagendarReferencia` no domínio, `ClaimPendingReferencesDue` + `ListPendingStale` no repositório, `ReferenceWorker` e `PendingReaper`, migration `000005` (`correlation_id`), 17 casos novos |
+| **9c** | `45fffe2` | `worker.Runner` com supervisão e restart com backoff, readiness de `workers`, `workersModule` no Fx, `WORKERS_SHUTDOWN_GRACE`, `HTTP_STOP_TIMEOUT` para 50s com a regra do **pior caso**, `stop_grace_period` no compose |
+| **9d** | `8c78384` | 6 funções de integração com PostgreSQL + LocalStack reais (disputa, duas quedas, T7 inteiro, reaper) e a correção dos **defeitos 37 e 38** |
+
+**O caminho, em uma frase por peça:**
+
+```
+app/wagering (Process)  → grava o evento na outbox NA MESMA transação (Fase 6)
+worker.OutboxPublisher  → ClaimBatch → publica FORA da tx → MarkPublished
+                          (falhou? MarkRetry com backoff; esgotou? quarentena)
+infra/sqs.Publicar      → wallet-events.fifo, grupo = carteira, dedup por tentativa
+worker.ReferenceWorker  → ClaimPendingReferencesDue → Service.Retomar → desfecho
+app/wagering (Retomar)  → reconstrói a Request do banco, reusa resolverReferencia
+worker.PendingReaper    → ListPendingStale → o MESMO Retomar
+worker.Runner           → supervisão + readiness + encerramento com prazo
+```
+
+**Os três defeitos que só apareceram rodando (37, 38 e 39):**
+
+1. **37** — a guarda da "janela do lease" comparava o relógio com
+   `next_resolution_attempt_at`, que o próprio claim **acaba de** empurrar para o
+   futuro: a retomada ignorava **todo** trabalho, sem erro no log. Corrigido para
+   comparar estado e tentativa lidos no claim.
+2. **38** — o caminho "continua pendente" chamava `ReagendarReferencia` numa linha
+   `PENDING` (do reaper) e estourava `INVALID_TRANSITION`. Corrigido escolhendo
+   `MarkPendingReference` ou `ReagendarReferencia` pelo estado de partida.
+3. **39** — `correlationId` não era persistido e o caminho SQS nunca o preenchia:
+   os eventos da retomada sairiam sem correlação. Corrigido com a migration
+   `000005` + `MessageId` da entrega como correlação no SQS.
+
+> ⚠️ **O `PENDING` do reaper é inalcançável por caminho normal** (o caso de uso
+> grava `PENDING` e o estado definitivo no mesmo commit). Ele é a segurança extra
+> do README §6.3, provada por inserção direta. E o reaper **repete** uma linha
+> inconsistente em vez de marcá-la `FAILED` — limitação registrada no
+> `ARCHITECTURE.md` §16.
+
+---
+
 ## 7. PENDÊNCIAS CONHECIDAS
 
 Do `CONTEXTO.md` §4: **P1 a P5 e P7 foram resolvidas na Fase 7** (P1 `-health-check`,
@@ -537,54 +590,56 @@ tratado com `TrimSpace` e testado, `Movement` resolvendo a versão do UPDATE con
 corrigida (defeito 21).
 
 **Abertas:**
-- **`ARCHITECTURE.md` está atualizado até a Fase 8** — as §10 (HTTP e autenticação)
-  e §11 (consumo do SQS) estão completas. Falta a parte de workers (publisher da
-  outbox e worker de referências — Fase 9) e a observabilidade de negócio (Fase 11);
+- **`ARCHITECTURE.md` está atualizado até a Fase 9** — §8 (publicação/outbox),
+  §11 (consumo do SQS + contrato de `wallet-events.fifo`), §12 (observabilidade
+  completa), §13 (recuperação) e §15/§16 (defeitos 37–39 e limitações). Falta a
+  parte de dashboards/alerta (Fase 11) e a de 3 instâncias (Fase 10);
+- **limitação nova da Fase 9:** o reaper repete indefinidamente uma linha
+  `PENDING` que não consegue concluir (sem contador durável de falhas do reaper);
+- **limitação nova da Fase 9:** a ordem por carteira depende do lote — mais
+  eventos pendentes da mesma carteira que `OUTBOX_BATCH_SIZE` numa rodada podem
+  ser divididos entre dois publishers (o consumidor pode ordenar por
+  `walletVersion`);
+- **sem prova de SIGTERM no Windows** (P8): o `Stop-Process` é terminação dura; a
+  prova de sinal é do ambiente Linux/container;
 - `testcontainers-go` foi baixado e **não é usado** (os testes apontam para o Postgres do
   compose via `TEST_DATABASE_URL`). Remover com `go mod tidy` na Fase 12;
-- **métricas de negócio**: 7 das 12 já são emitidas (4 pela borda HTTP, 3 pelo
-  consumidor). Conflitos, atraso da outbox e idade do pendente entram nas Fases 9–11;
+- **métricas de negócio**: **12 das 12 já são emitidas** (4 pela borda HTTP, 3
+  pelo consumidor, 5 pelos laços da Fase 9). Falta só dashboard/alerta (Fase 11);
 - `migrate.exe` sobrando na raiz (além de `bin/migrate.exe`): lixo de build, só limpar;
 - **`bin/migrate.exe` carrega as migrations embutidas** (`go:embed`): depois de criar ou alterar
   uma migration, é preciso rebuidá-lo, senão ele responde "schema já está atualizado" e não
-  aplica nada (aconteceu na 000002 e de novo na 000004);
-- a ordem dos eventos na outbox **foi resolvida** (bloco 6d, migration 000003): a fila é lida
-  por `sequence`, e o lote sai ordenado por ela. Ficou registrada em `ARCHITECTURE.md` §8 a
-  armadilha que apareceu no caminho — **`RETURNING` não garante a ordem das linhas**, então o
-  `UPDATE` do `ClaimBatch` virou CTE com `SELECT ... ORDER BY sequence` de fora;
-- o **`wager_transactions` de `OPENING`** tem `game_id` e `round_id` vazios por decisão
-  (migration 000002); a reversão dessa migration exige decidir o que fazer com essas linhas — a
-  condição está documentada no próprio `.down.sql`;
-- **a URL da fila é derivada do endpoint** (`<endpoint>/000000000000/<nome>`) para o
-  LocalStack. Em produção (sem `SQS_ENDPOINT`) o que sobra é o NOME, e a resolução
-  teria de vir do `GetQueueUrl` do SDK — não exercitado (limitação registrada no
-  `ARCHITECTURE.md` §16);
-- **sem prova de ordem por carteira no consumo**: os testes usam um
-  `MessageGroupId` por mensagem (para não ficarem reféns dos próprios resíduos), o
-  que **não** exercita a ordem dentro do grupo. A ordem é garantida pela fila FIFO +
-  `aggregateId = walletId` dos eventos; a prova de ordem por carteira é a Fase 10.
+  aplica nada (aconteceu na 000002, na 000004 e de novo na 000005);
+- a ordem dos eventos na outbox **foi resolvida** (bloco 6d, migration 000003) e a
+  **publicação** preserva a ordem por carteira (Fase 9); a prova com 3 instâncias
+  é a Fase 10;
+- **`wallet-events.fifo`** agora recebe eventos; **não há consumidor** de eventos
+  nesta entrega (decisão de escopo: o README §11 pede publicação + contrato
+  documentado). O contrato de consumo está no `ARCHITECTURE.md` §11.
 
 ---
 
-## 8. CHECKLIST DE ARRANQUE PARA A NOVA CONVERSA (Fase 9)
+## 8. CHECKLIST DE ARRANQUE PARA A NOVA CONVERSA (Fase 10)
 
-> ⭐ **O prompt de abertura da Fase 9 está em `PROMPT_FASE_9.md`** — autossuficiente,
-> com o escopo do §11 do README, os quatro blocos, os critérios de aceite, as
-> armadilhas de ambiente e o formato da primeira resposta esperada. Use-o como
-> primeira mensagem; o checklist abaixo é o resumo operacional.
+> ⭐ **A Fase 9 está concluída.** O prompt de abertura da Fase 10 deve cobrir os 8
+> cenários do README §13 (T1–T8) e a exigência do §8: "as garantias devem ser
+> demonstradas com pelo menos **três processos independentes**, cada um com suas
+> próprias conexões e memória".
 
-- [ ] Ler `README.md` (**§11, §12, §13 e §14 — a fase**; o enunciado é a fonte de verdade), `ARCHITECTURE.md` (§8 ordem da outbox, §11 consumo, §15 defeitos, §16 limitações), `docs/CONFORMIDADE_README.md` §11, `PLANO.md` §3 (Fase 9) e `docs/evidencias/FASE_8.md`
-- [ ] Confirmar containers de pé (`docker ps`) e **as QUATRO filas** (`awslocal sqs list-queues`) — sem `wallet-events.fifo` o publisher não tem para onde publicar
-- [ ] **Confirmar com o usuário que a estratégia continua** (seção 3.1): a IA escreve o código e explica depois
-- [ ] **9a** `worker.OutboxPublisher` + a porta `Publicador` e o adaptador SQS: `ClaimBatch` → publicar → `MarkPublished`; falha → `MarkRetry` com backoff exponencial + teto + jitter; **publicar ANTES de marcar**; `MarkPublished` com `context.WithoutCancel`
-- [ ] **9b** `worker.ReferenceWorker`: `ListPendingReferencesDue`, reconstruir o `Request` das colunas persistidas, `resolverReferencia`, e ramificar em resolvida (movimento + eventos) / pendente (attempt+1 + backoff + evento) / rejeitada / expirada (`REFERENCE_NOT_FOUND`). Mais o `PendingReaper` para `PENDING` antigo
-- [ ] **9c** `worker.Runner` com `errgroup` (publisher + referências + reaper conforme a config), backoff em falha de laço, shutdown limpo, registro no Fx e no grupo `health_checkers`, e a validação de que ligar worker com os DEFAULTS não impede o boot (defeito 33)
-- [ ] **9d** Testes: publicar de verdade em `wallet-events.fifo` e ler de volta; crash entre commit e publish; crash entre publish e `MarkPublished` **republicando com o mesmo `eventId`**; dois publishers disputando a mesma outbox; lease expirado recuperado; `REFUND` antes da referência resolve depois; expiração vira `REJECTED`; reaper retoma `PENDING` antigo
-- [ ] Métricas do §12 desta fase: atraso da outbox (`PendingStats`), resultados de publicação, retries, conflitos e idade do pendente mais antigo
-- [ ] **Prova pelo binário real** com os workers ligados (operação → evento na outbox → publicado na fila) — foi assim que apareceram 3 dos 8 defeitos da Fase 8
+- [ ] Ler `README.md` (**§8 concorrência, §13 verificação, §14 critérios**), `ARCHITECTURE.md` (§6 locks, §8 outbox, §11 SQS, §15 defeitos, §16 limitações), `docs/evidencias/FASE_9.md` e `PLANO.md` §3 (Fase 10)
+- [ ] **T1** mesma aposta 50× em paralelo (HTTP e SQS) → um débito, replays devolvem o mesmo resultado
+- [ ] **T2** saldo 100.00 + duas BET 80.00 simultâneas → 1 `PROCESSED`, 1 `REJECTED/INSUFFICIENT_FUNDS`, saldo 20.00, **um** lançamento
+- [ ] **T3** carteiras distintas em paralelo (provar paralelismo: tempos/locks distintos, ausência de lock global)
+- [ ] **T4** repetir T1–T3 com **3 instâncias** (3 processos/containers `api`, conexões e memória próprias)
+- [ ] **T5** interromper o consumidor **depois do commit e antes do delete** → reentrega sem movimentação duplicada
+- [x] **T6** dois publishers disputando a outbox → **já provado na Fase 9** (`TestDoisPublishersDisputamAMesmaOutbox`); na Fase 10, repetir com 3 instâncias reais
+- [x] **T7** `REFUND`/`ROLLBACK` antes da referência → **já provado na Fase 9** (resolução posterior **e** rejeição por expiração, em teste de integração e no binário real)
+- [ ] **T8** reiniciar a aplicação → idempotência, pendências e consistência preservadas
+- [ ] Conferência final: saldo armazenado == soma de créditos − débitos do ledger, em cenários cruzando HTTP e SQS
+- [ ] Latência da borda sob concorrência (p50/p95/p99) — diferencial do §14, com comando reproduzível
 - [ ] Aceitar contestação do usuário: se ele questionar e estiver certo, **admitir e corrigir**
 - [ ] Depois de aprovado, commitar (um bloco por vez, com a mensagem contando a história)
-- [ ] Atualizar `docs/evidencias/FASE_9.md`, `ARCHITECTURE.md`, `docs/CONFORMIDADE_README.md`, `PROXIMO_PASSO.md`, `PLANO.md` e `.env.example`
+- [ ] Atualizar `docs/evidencias/FASE_10.md`, `ARCHITECTURE.md`, `docs/CONFORMIDADE_README.md`, `PROXIMO_PASSO.md`, `PLANO.md`
 - [ ] Lembrar do **compromisso final** (seção 3.5): `docs/SISTEMA_EXPLICADO.md` e `docs/ENTREVISTA.md`
 
-**As Fases 0 a 8 estão commitadas e validadas. Não revalide nem recommite.**
+**As Fases 0 a 9 estão commitadas e validadas. Não revalide nem recommite.**

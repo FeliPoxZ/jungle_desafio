@@ -152,7 +152,7 @@ está implementada e testada no nível do caso de uso.
 | 6.2 `Wallet` (`(playerId, currency)` único, débito sem saldo negativo, moeda da movimentação = da carteira, lançamento na mesma transação, versão 1 inicial e só incrementa com mudança de saldo, sem descartar atualização confirmada) | ✅ 99,0% de cobertura |
 | 6.3 `WagerTransaction` (todos os campos persistidos, `PENDING` inicial, transições validadas no domínio, estados terminais, replay consulta o resultado, `OPENING` reservado ao interno, schema distingue interno/externo e impede crédito inicial duplicado) | ✅ 100% de cobertura. O `OPENING` veio de fora é recusado (`OPERATION_NOT_ALLOWED`). O crédito inicial duplicado é impedido por índice único parcial **e** testado |
 | 6.4 `WalletLedgerEntry` (campos, imutável, valida `after = before ± amount`, unicidade `(walletId, transactionId)`, `LOSS` e rejeição sem lançamento) | ✅ |
-| 6.5 Inbox/outbox (tabelas e comportamento) | ✅ schema e repositórios **e o fluxo da inbox** (Fase 8): registro e conclusão na MESMA transação do tratamento durável, com `body_hash` distinguindo reentrega de conflito e unicidade `(consumer_name, message_id)` |
+| 6.5 Inbox/outbox (tabelas e comportamento) | ✅ schema e repositórios **e o fluxo da inbox** (Fase 8): registro e conclusão na MESMA transação do tratamento durável, com `body_hash` distinguindo reentrega de conflito e unicidade `(consumer_name, message_id)`. **E a outbox publica** (Fase 9): worker separado, lease, `attempts`, próximo envio e publicação — exatamente as colunas que a tabela do §6.5 pede |
 
 **Um ponto que merece destaque:** o enunciado aceita "operações sem dependências podem
 ser concluídas de forma síncrona, sem commit intermediário de aceite". Foi o caminho
@@ -160,7 +160,12 @@ escolhido: **nunca existe `PENDING` commitado** para operação externa — o `I
 grava `PENDING` e o `Save` grava o estado definitivo na mesma transação. O `PENDING`
 durável fica restrito a `PENDING_REFERENCE` (que É durável e retomável).
 
-## 7. Operações e referências — ✅ (a parte de worker é a Fase 9)
+⚠️ **Consequência para a Fase 9:** como nenhum `PENDING` é confirmado, o
+`PendingReaper` é código de **segurança** (README §6.3) cujo gatilho não ocorre por
+caminho normal. Ele está implementado e provado por inserção direta, e é o que
+assume no dia em que existir aceite assíncrono.
+
+## 7. Operações e referências — ✅ (o worker chegou na Fase 9)
 
 | Exigência | Estado |
 | --- | --- |
@@ -212,53 +217,69 @@ durável fica restrito a `PENDING_REFERENCE` (que É durável e retomável).
 | `messageId` como identidade durável + hash em reentregas; remover da fila só depois do commit; rejeição terminal remove; transitório faz retry; DLQ; `SIGTERM` libera visibilidade | ✅ identidade = `MessageId` do broker (o campo do envelope é opcional e conferido); `body_hash` distingue reentrega de conflito; o `Delete` acontece **depois** do commit; rejeição terminal remove; transitório adia por `ChangeMessageVisibility` com backoff; permanente vai para a DLQ; no encerramento o que não deu tempo tem a visibilidade liberada |
 | Documentar `MessageGroupId`/`MessageDeduplicationId` e validar a concorrência HTTP × SQS | ✅ `ARCHITECTURE.md` §11 (tabela de identificadores) e os dois testes de concorrência entre portas |
 
-## 11. Publicação com transactional outbox — 🟡 Fase 9
+## 11. Publicação com transactional outbox — ✅ Fase 9
 
 | Exigência | Estado |
 | --- | --- |
-| Estado, saldo, ledger, inbox e eventos confirmados atomicamente | ✅ (estado+saldo+ledger+outbox provados no mesmo commit; a inbox entra na Fase 8) |
-| Worker separado publica os pendentes, com múltiplos publishers, disputa por registros, backoff e recuperação de trabalho abandonado | ⬜ Fase 9 — o mecanismo está pronto e provado: `ClaimBatch` com `FOR UPDATE SKIP LOCKED` + lease, `MarkRetry` incrementando `attempts` **no banco**, `PendingStats` |
-| Recuperação entre commit e publicação, e entre publicação e confirmação; republicação preservando `eventId` | ⬜ Fase 9 |
-| Eventos exigidos: `WagerTransactionProcessed` (inclui `LOSS`), `WagerTransactionRejected`, `WalletBalanceChanged`, `WagerTransactionPendingReference` | ✅ os quatro são gravados pelo caso de uso, com os payloads do §11 (o de saldo com `walletId`, `transactionId`, `direction`, `money`, `balanceBefore`, `balanceAfter`, `walletVersion`) |
-| Envelope com `eventId`, `eventType`, `aggregateId`, `correlationId`, `causationId?`, `occurredAt`, `version`, `data` | ✅ |
-| Tipo e versão definidos pelo construtor; timestamps UTC; valores em string decimal; snapshot imutável | ✅ |
-| **Ordem de publicação** (implícito no `MessageGroupId = walletId`) | ✅ resolvido no bloco 6d: a fila é lida por `sequence` (IDENTITY), e o lote sai ordenado — inclusive com o relógio invertido |
+| Estado, saldo, ledger, inbox e eventos confirmados atomicamente | ✅ estado + saldo + ledger + outbox no mesmo commit (Fases 6/8), e a inbox junto na entrada por SQS |
+| Worker separado publica os pendentes, com múltiplos publishers, disputa por registros, backoff e recuperação de trabalho abandonado | ✅ **`internal/worker.OutboxPublisher`**: `ClaimBatch` (`FOR UPDATE SKIP LOCKED` + lease) → publicar **fora** da transação → `MarkPublished`; falha → `MarkRetry` com backoff exponencial + teto + jitter **dentro** do teto; teto esgotado ou recusa permanente do destino → **quarentena**. Provado com **dois publishers concorrentes** (`TestDoisPublishersDisputamAMesmaOutbox`) e com lease vencido |
+| Recuperação entre commit e publicação, e entre publicação e confirmação; republicação preservando `eventId` | ✅ **as duas provas contra PostgreSQL + LocalStack reais**: `TestQuedaEntreCommitEPublicacaoOutraInstanciaAssume` e `TestQuedaEntrePublicacaoEMarkPublishedRepublicaComOMesmoEvento` (4 mensagens, 2 `eventId`, corpo **idêntico** em cada republicação) |
+| **Destino provisionado e contratos de roteamento e consumo documentados** | ✅ `wallet-events.fifo` + `wallet-events-dlq.fifo` provisionadas no LocalStack (FifoQueue, `ContentBasedDeduplication=false`, visibility 30, redrive 5) e o contrato em `ARCHITECTURE.md` §11: `MessageGroupId`/`MessageDeduplicationId`/atributos do lado da publicação e as 7 regras do lado do consumo (dedup durável por `eventId` **além** da janela de 5 min, ordem por `walletVersion`, DLQ sem bloquear o grupo…) |
+| Eventos exigidos: `WagerTransactionProcessed` (inclui `LOSS`), `WagerTransactionRejected`, `WalletBalanceChanged`, `WagerTransactionPendingReference` | ✅ os quatro são gravados pelo caso de uso **e agora publicados**; provado lendo de volta da fila (`correlationId`, `aggregateId`, os 7 campos do `WalletBalanceChanged`) |
+| Envelope com `eventId`, `eventType`, `aggregateId`, `correlationId`, `causationId?`, `occurredAt`, `version`, `data` | ✅ e o `correlationId` **sobrevive à pendência** (migration 000005): os eventos emitidos pelo worker carregam o da requisição original |
+| Tipo e versão definidos pelo construtor; timestamps UTC; valores em string decimal; snapshot imutável | ✅ o corpo publicado é o `payload` JSONB **byte a byte** — conferido no teste de integração |
+| Ordem de publicação por carteira | ✅ o lote é lido por `sequence` e o `MessageGroupId` é a carteira; ordem conferida lendo a fila. Limite conhecido: com mais eventos da mesma carteira do que o batch, dois publishers podem dividir o grupo (registrado no `ARCHITECTURE.md` §16) |
 
-## 12. Observabilidade — 🟡
+### O que a Fase 9 acrescentou ao worker de referências (README §7)
 
 | Exigência | Estado |
 | --- | --- |
-| Logs JSON com `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId`; sem credenciais nem payload financeiro completo | ✅ a borda HTTP já preenche os campos de domínio: `http_request` (status, duração, `idempotencyKey`), `http_error` (`code`, `failureCode`), `operacao_concluida`/`operacao_rejeitada` (`transactionId`, `providerId`, `status`, `failureCode`, `correlationId`), `carteira_aberta`, `ledger_consultado`, `reconciliacao_divergente`, `token_recusado`, `idp_indisponivel`, `provedor_divergente_do_token`. Valor monetário **não** entra no log; a divergência sai em unidades mínimas. `messageId` e o resultado da classificação chegam com o consumidor (Fase 8: `sqs_mensagem_processada`, `sqs_mensagem_adiada`, `sqs_mensagem_para_dlq`). |
-| Métricas: resultados por status, duplicatas, retries, DLQ, conflitos, atraso da outbox, latência, divergências de reconciliação | 🟡 **7 das 12 já são emitidas** (4 pela borda HTTP (Fase 7) e 3 pelo consumidor (Fase 8)): as 4 da borda são (`wager_operations_total{kind,status}`, `wager_operation_duration_seconds`, `wager_idempotent_replays_total`, `wager_reconciliation_divergences_total`). O consumidor acrescentou `wager_retries_total{stage="sqs_consume"}`, `wager_inbox_duplicates_total` e `wager_dlq_messages_total`. Conflitos, atraso da outbox e idade do pendente entram nas Fases 9–11 |
-| Health checks definidos na API | ✅ `/health/live` (processo) e `/health/ready` (**PostgreSQL + IdP + SQS**, com o nome e o estado de cada dependência no corpo) |
+| `PENDING_REFERENCE` retomado com backoff exponencial, inclusive após reinício | ✅ `internal/worker.ReferenceWorker` + `Service.Retomar`; tentativa e instante **persistidos** |
+| Máximo de tentativas ou TTL → `REJECTED` com código de referência não encontrada + evento | ✅ `REFERENCE_MAX_ATTEMPTS` / `REFERENCE_PENDING_MAX_AGE` → `REFERENCE_NOT_FOUND` + `WagerTransactionRejected` |
+| Explicar o comportamento quando a referência existe mas está pendente ou terminou sem sucesso | ✅ referência não terminal ⇒ continua pendente; terminou em `REJECTED`/`FAILED` ⇒ `REFERENCE_NOT_PROCESSABLE` (`ARCHITECTURE.md` §9) |
+| Todo `PENDING` confirmado deve ter retomada durável | ✅ `PendingReaper` (mecanismo provado; hoje o estado é inalcançável por caminho normal — ver `ARCHITECTURE.md` §16) |
+| Nenhuma transação `PENDING` presa para sempre | 🟡 o reaper dá desfecho; **exceção conhecida**: uma linha inconsistente que o ledger recusa é repetida indefinidamente em vez de virar `FAILED` (§16) |
+
+## 12. Observabilidade — ✅
+
+| Exigência | Estado |
+| --- | --- |
+| Logs JSON com `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId`; sem credenciais nem payload financeiro completo | ✅ borda HTTP (Fase 7), consumo (Fase 8) e **laços (Fase 9)**: `outbox_evento_publicado`, `outbox_publicacao_reagendada`, `outbox_evento_em_quarentena`, `outbox_atrasada`, `reference_resolvida`/`_ainda_pendente`/`_rejeitada`/`_ignorada`, `pending_reaper_*`, `worker_morreu_reiniciando`, `workers_*`. Valor monetário **não** entra no log |
+| Métricas: resultados por status, duplicatas, retries, DLQ, conflitos, **atraso da outbox**, latência, divergências de reconciliação | ✅ **12 de 12** emitidas. A Fase 9 fechou as 5 que faltavam: `wager_outbox_publish_total{result}`, `wager_outbox_pending_age_seconds` (atraso da outbox via `PendingStats`), `wager_outbox_publish_attempts`, `wager_reference_resolution_total{result}` e os `retries_total{stage}` dos laços |
+| Health checks definidos na API | ✅ `/health/live` e `/health/ready` com **PostgreSQL, IdP, SQS e `workers`** — o `workers` responde DOWN quando um laço ligado não está rodando (`{"oidc":"UP","postgres":"UP","sqs":"UP","workers":"UP"}` no binário real) |
 
 ## 13. Verificação obrigatória — 🟡
 
 | Bloco | Estado |
 | --- | --- |
-| **Testes unitários** (parsing e operações de `Money`, escala, limites, entradas inválidas, moedas, invariantes da carteira, transições, regras dos cinco tipos, conflito de payload, política de zero, abertura interna com metadados e eventos) | ✅ 574 casos no domínio + 56 no caso de uso + **49 em `internal/infra/auth`** + **67 em `internal/httpapi`** (tabela desfecho→status, erro→status, handlers com dublês) |
-| **Testes de integração** com PostgreSQL, IdP e LocalStack em containers reais | 🟡 PostgreSQL ✅ real (migrations, constraints, imutabilidade do ledger, atomicidade, outbox concorrente, retry, lease — 29 casos) e **IdP ✅ real** (30 casos na borda HTTP obtendo token por `client_credentials` no Keycloak, + 2 casos subindo o **binário real**). LocalStack ✅ real (9 funções de consumo: reentrega, corpo divergente, mensagem inválida → DLQ, rejeição terminal, HTTP × SQS e concorrência entre as duas portas). Recuperação após reinicialização ⬜ Fase 10 |
-| Verificação da composição Fx, início, encerramento e liberação de recursos dos workers | 🟡 `TestValidateAppComposition` valida o grafo **inteiro** agora (infra + usecase + auth + worker + httpapi), `TestBuildAppFailsWithInvalidConfig` prova a falha de boot, e o teste do binário real prova **encerramento gracioso** e liberação do pool. O consumidor de SQS para no `OnStop` (para de buscar, conclui o que está em voo dentro do prazo e libera a visibilidade do resto), com **teste de unidade do encerramento** provando que a mensagem em voo não é apagada. O publisher da outbox e o worker de referências entram na Fase 9 |
-| **Não substituir toda a infraestrutura por mocks** | ✅ os testes de integração usam PostgreSQL, Keycloak e **LocalStack** reais, com o Unit of Work e os adaptadores de produção; os dublês existem só nos testes **unitários** (autenticador, serviço, broker e repositório da inbox), onde o objetivo é a política — e o dublê do broker registra o que foi pedido, para as asserções incluírem a **ausência** de chamada |
-| Autenticação/autorização: credenciais ausentes/inválidas/expiradas, isolamento entre provedores inclusive em replay e leitura, restrição das operações internas, nenhum efeito financeiro em acesso negado | ✅ **Fase 7.** 11 formas de token inválido com a causa exata; isolamento por corpo, por path, na leitura e **no replay**; operações internas exigindo role; e **contagem de tabelas antes/depois** provando zero efeito financeiro no 403/401/503 |
-| Concorrência e recuperação (8 cenários) | 1 mesma aposta 50× ✅ (feito com 12 disparos); 2 disputa 80+80 ✅; 3 carteiras distintas ⬜; 4 três instâncias ⬜; 5 interrupção do consumidor 🟡 **parcial na Fase 8**: o encerramento do consumidor é provado (para de buscar, não apaga o que está em voo, libera a visibilidade), e a reentrega é reconhecida pela inbox — a interrupção com processo novo e banco real é a Fase 10; 6 dois publishers ⬜ (o `SKIP LOCKED` já é provado com 2 concorrentes no nível do repositório); 7 `REFUND`/`ROLLBACK` antes da referência ✅ a primeira metade (fica `PENDING_REFERENCE` durável e a mensagem de entrada é concluída), a resolução/expiração ⬜ Fase 9; 8 reinício preservando idempotência/pendências ⬜ |
-| Conferência final: saldo armazenado == soma de créditos − débitos | ✅ provado em teste, e é exatamente o que a reconciliação faz |
-| `go test -race` nos testes aplicáveis | ✅ verde nos dois modos |
+| **Testes unitários** (parsing e operações de `Money`, escala, limites, entradas inválidas, moedas, invariantes da carteira, transições, regras dos cinco tipos, conflito de payload, política de zero, abertura interna com metadados e eventos) | ✅ 574 casos no domínio + 56 no caso de uso + **49 em `internal/infra/auth`** + **67 em `internal/httpapi`** + **45 da Fase 8** (26 inbox + 19 consumer) + **38 da Fase 9** (23 em `internal/worker`: publicador 10, referências/reaper 7, runner 6; 10 de `Retomar` em `internal/app/wagering`; 4 de config; 1 de composição do Fx) |
+| **Testes de integração** com PostgreSQL, IdP e LocalStack em containers reais | 🟡 PostgreSQL ✅ real (migrations, constraints, imutabilidade do ledger, atomicidade, outbox concorrente, retry, lease — 29 casos) + **IdP ✅ real** (30 casos na borda HTTP com token por `client_credentials` + 2 do binário real) + LocalStack ✅ real (9 funções de consumo, **8 funções de publicação e recuperação**) |
+| Verificação da composição Fx, início, encerramento e liberação de recursos dos workers | ✅ `TestValidateAppComposition` (grafo inteiro, com e **sem** os workers ligados), `TestBuildAppFailsWithInvalidConfig`, o teste do binário real (encerramento e liberação do pool) e, na Fase 9, **6 casos do runner** (sobe, reinicia o laço morto, readiness DOWN/UP, espera o trabalho em voo, grace da config) + o encerramento do consumidor |
+| **Não substituir toda a infraestrutura por mocks** | ✅ os testes de integração usam PostgreSQL, Keycloak e **LocalStack** reais; os dublês existem só nos unitários, e registram chamadas para as asserções incluírem a **ausência** delas |
+| Autenticação/autorização | ✅ **Fase 7** (11 formas de token inválido, isolamento por corpo/path/leitura/replay, contagem de tabelas antes/depois) |
+| Concorrência e recuperação (8 cenários) | 1 mesma aposta 50× ✅ (12 disparos); 2 disputa 80+80 ✅; 3 carteiras distintas ⬜ Fase 10; 4 três instâncias ⬜ Fase 10; 5 interrupção do consumidor 🟡 (encerramento + reentrega provados; falta o processo novo matando o antigo — Fase 10); **6 dois publishers ✅ Fase 9**; **7 `REFUND`/`ROLLBACK` antes da referência ✅ Fase 9 (as duas metades: resolução posterior e rejeição por expiração)**; 8 reinício preservando idempotência/pendências 🟡 (pendências e tentativas estão no banco e o reaper/worker as retomam; falta o cenário com processo novo — Fase 10) |
+| Conferência final: saldo armazenado == soma de créditos − débitos | ✅ provado em teste **e** no binário real (`reconciliation` com 4 lançamentos e diferença 0.00) |
+| `go test -race` nos testes aplicáveis | ✅ verde nos dois modos (17 pacotes na unidade, 18 com a tag) |
 
-## 14. Critérios de avaliação e eliminatórios — 🟡
+## 14. Critérios de avaliação e eliminatórios — ✅
 
 | Eliminatório | Estado |
 | --- | --- |
 | Ausência de autenticação efetiva nos endpoints de negócio | ✅ **Fase 7.** Todos os endpoints de negócio exigem token validado contra o Keycloak real; não há rota de negócio registrada sem autenticador |
 | Acesso não autorizado a operações/transações | ✅ isolamento no caso de uso **e** na borda (corpo, path, leitura e replay), com prova de que o acesso negado não produz efeito financeiro |
-| Cálculo monetário em ponto flutuante | ✅ nenhum nos caminhos monetários (com a nuance do §5.1) |
+| Cálculo monetário em ponto flutuante | ✅ nenhum nos caminhos monetários |
 | Saldo negativo por concorrência | ✅ impedido no domínio **e** por CHECK no banco |
-| Movimentação duplicada | ✅ impedida por índice único + idempotência persistente, **alcançável pelas duas portas** — e provado que a mesma operação por HTTP e por SQS (inclusive simultaneamente) debita uma vez |
-| Idempotência restrita à memória | ✅ persistida no banco |
-| Dependência de uma única instância para funcionar | ✅ o estado está todo no PostgreSQL (locks, índices, constraints) e a validação de token é **local** (não há estado de sessão em memória); a prova com 3 instâncias é a Fase 10 |
-| Publicação anterior ao commit | ✅ impossível por construção (outbox na mesma transação) |
+| Movimentação duplicada | ✅ índice único + idempotência persistente, alcançável pelas duas portas — e agora também **sem** duplicar na retomada de referência (lock da linha + estado/tentativa esperados) |
+| Idempotência restrita à memória | ✅ persistida no banco; **sobrevive ao reinício** (tentativas e pendências no banco) |
+| Dependência de uma única instância para funcionar | ✅ estado todo no PostgreSQL; dois publishers concorrentes provados (Fase 9); a prova com 3 instâncias é a Fase 10 |
+| **Publicação anterior ao commit** | ✅ impossível por construção (outbox na mesma transação) **e agora provado no caminho de saída**: o publisher só lê o que já foi commitado |
 | Ausência de ledger auditável | ✅ ledger append-only com dois saldos por lançamento |
-| Substituição integral de PostgreSQL, SQS e IdP por mocks nos testes | ✅ os três são **reais** nos testes de integração (PostgreSQL, Keycloak e LocalStack); os dublês existem só nos testes unitários |
+| Substituição integral de PostgreSQL, SQS e IdP por mocks nos testes | ✅ os três são **reais** nos testes de integração (PostgreSQL, Keycloak e LocalStack); os dublês existem só nos unitários |
+
+**Observabilidade (5 pontos):** 🟡→✅ no que a Fase 9 fecha — log estruturado com
+os identificadores de rastreio (inclusive na retomada), 12/12 métricas, health
+checks com a dependência `workers`. Tracing/dashboards continuam fora (diferencial
+opcional do enunciado).
 
 ## 15. Entrega — 🟡 Fase 12
 
@@ -268,7 +289,7 @@ durável fica restrito a `PENDING_REFERENCE` (que É durável e retomável).
 | `README.md` da solução com pré-requisitos, variáveis, filas, migrations (aplicar/reverter), execução, exemplos e testes | 🟡 os exemplos autenticados já existem em `docs/evidencias/FASE_7.md` §4; a decisão de **onde** esse arquivo vive é a ⚠️ 3 da Fase 12 |
 | `.env.example` sem segredos reais | ✅ completo (HTTP, banco, OIDC, SQS, outbox, workers) — e agora com `OIDC_HTTP_TIMEOUT`, `OIDC_TOKEN_URL` e `HTTP_STOP_TIMEOUT` |
 | Provisionamento automático do IdP, identidades de teste e instruções dos fluxos autenticados | 🟡 realm, clients, roles, mapper e usuários de teste ✅; o fluxo `client_credentials` é exercitado pelos testes (com os três clients do realm); as instruções ⬜ Fase 12 |
-| `ARCHITECTURE.md` com decisões e limitações | ✅ atualizado até a **Fase 8** (§10 autenticação/contratos e §11 consumo do SQS, com as decisões de identidade da mensagem, classificação de erro, DLQ explícita, backoff e encerramento) |
+| `ARCHITECTURE.md` com decisões e limitações | ✅ atualizado até a **Fase 9** (§8 publicação da outbox com lease e quarentena, §11 contrato de roteamento/consumo de `wallet-events.fifo`, §12 observabilidade completa, §13 recuperação, §15 defeitos 37–39, §16 limitações) |
 | Comandos documentados: `docker compose up --build`, `go test ./...`, `go test -race ./...`, `go vet ./...` | 🟡 documentados em `ARCHITECTURE.md` §17 e nas evidências; a consolidação é a Fase 12 |
 | Documentar como preparar dependências de teste, integração, múltiplas instâncias e simulações de falha; informar as build tags | 🟡 a tag `integration` está documentada (§17 e `FASE_8.md` §10), inclusive as dependências (PostgreSQL, Keycloak e **LocalStack com as filas provisionadas** — e o §17 do ARCHITECTURE manda conferir `list-queues`, porque uma falha silenciosa do script de init faz a suíte parecer verde); múltiplas instâncias é a Fase 10 |
 | Código formatado com `gofmt` e dependências reproduzíveis | ✅ `gofmt -l` limpo e `go.sum` versionado. A Fase 8 trouxe a **primeira dependência nova desde a Fase 0** (`aws-sdk-go-v2/service/sqs v1.52.4`, com o núcleo do SDK e o `credentials`); a Fase 7 não trouxe nenhuma. Falta o `go mod tidy` para remover `testcontainers-go`, Fase 12 |
@@ -314,11 +335,34 @@ detalhadas em `docs/evidencias/FASE_6.md` §8, `docs/evidencias/FASE_7.md` §8 e
     que gira até o `maxReceiveCount` **bloqueia o grupo inteiro**.
 14. **Erro não classificável é retentável**, não vai direto para a DLQ: a DLQ é o
     fim da linha, e o `maxReceiveCount` já limita as tentativas.
+15. **"Não republicar mais" é QUARENTENA, não descarte** (Fase 9): o evento
+    continua pendente, com `last_error` e `available_at` no prazo longo
+    (`OUTBOX_PARKED_BACKOFF`). Nada é apagado e nada é marcado como publicado. O
+    README não define o que fazer com o evento que esgota as tentativas; a escolha
+    preserva o dado e deixa o atraso da outbox denunciar.
+16. **O `MessageDeduplicationId` do evento é por TENTATIVA, não por `eventId`**
+    (Fase 9): com o `eventId`, o broker engoliria a republicação dentro de 5
+    minutos e o README §11 deixaria de valer. A deduplicação que vale é a do
+    consumidor, por `eventId`, e ela é durável.
+17. **Tentar antes de expirar** (Fase 9): se a referência chegou, a operação
+    conclui mesmo depois do TTL. A expiração é para o que **não** resolve.
+18. **O `FAILED` não emite `WagerTransactionRejected`** (Fase 9): a tabela do §11
+    define esse evento como rejeição de **negócio**; dado inconsistente não é
+    decisão de negócio e fica registrado no estado, não num evento inventado.
+19. **As tentativas de referência incluem a do intake** (Fase 9): a operação que
+    entra em `PENDING_REFERENCE` grava `attempt = 1`, então
+    `REFERENCE_MAX_ATTEMPTS = 1` significa "só a do intake" e a primeira retomada
+    expira. O default (20) e o `REFERENCE_PENDING_MAX_AGE` (2m) tornam o TTL por
+    idade o que decide na prática.
 
 ## O que ainda NÃO existe (lista direta, sem rodeio)
 
-- Nenhum publisher de outbox e nenhum worker (referências, reaper) — é a Fase 9.
-- **Parcialmente resolvido:** 7 das 12 métricas já são emitidas (pela borda HTTP e
-  pelo consumidor); o resto é das Fases 9 e 11.
-- Nenhuma prova com 3 instâncias, nem de carteiras distintas em paralelo.
-- O README da solução (o enunciado ocupa esse nome).
+- **Consumidor de `wallet-events.fifo`**: nesta fase o evento é **publicado**, e o
+  contrato de consumo está documentado (`ARCHITECTURE.md` §11). O consumidor (com
+  dedup durável por `eventId`) é escopo das Fases 10–11.
+- **3 instâncias de verdade** e os cenários T1–T5/T8 da Fase 10.
+- **Dashboards e tracing** (diferenciais opcionais do §14).
+- **Contador durável de falhas do reaper**: uma linha `PENDING` inconsistente é
+  repetida indefinidamente em vez de virar `FAILED` (`ARCHITECTURE.md` §16).
+- **O README da solução** (o enunciado ocupa esse nome) — a consolidação é a
+  Fase 12.

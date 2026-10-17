@@ -467,15 +467,27 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` feito e **validado por te
 - [ ] `SIGTERM`: para de buscar (`ReceiveMessage` cancelado), conclui o lote em andamento dentro do prazo (`fx.StopTimeout`), senão **libera visibilidade** (`ChangeMessageVisibility 0`) para reentrega segura
 - [ ] Testes de integração: reentrega da mesma mensagem (`messageId` igual → inbox dedup), hash divergente em reentrega, rejeição terminal deleta, transitório reentrega, mensagem inválida → DLQ, concorrência HTTP×SQS para a mesma operação
 
-### FASE 9 — Outbox publisher + worker de referências (D2, ~3h) ⬅ PRÓXIMA
-> **Prompt de abertura pronto em `PROMPT_FASE_9.md`.** Quatro blocos (9a publicador,
-> 9b worker de referências + reaper, 9c runner/composição, 9d testes e prova de infra
-> real), com os critérios de aceite derivados do README §11/§12/§13.
-- [ ] `worker.OutboxPublisher`: loop com `ClaimBatch`/lease/publish/`MarkPublished`/`MarkRetry`; N publishers concorrentes; recuperação de lease expirado; republicação com mesmo `eventId`
-- [ ] `worker.ReferenceWorker`: busca `PENDING_REFERENCE` vencidas (`next_attempt_at <= now`, `FOR UPDATE SKIP LOCKED`), tenta resolver, backoff exponencial + jitter, TTL/máx. tentativas → `REJECTED REFERENCE_NOT_FOUND` + evento
-- [ ] `worker.PendingReaper`: retoma `PENDING` antigos (segurança extra item 6.3)
-- [ ] `worker.Runner`: supervisão com `errgroup`, backoff em falha de loop, logs e métricas; shutdown limpo
-- [ ] Testes: 2 publishers disputando a mesma outbox (nenhuma publicação duplicada perdida; disputa provada); crash entre commit e publish; crash entre publish e `MarkPublished` (republica com mesmo `eventId`); REFUND antes da referência ⇒ resolve depois; expiração ⇒ `REJECTED`
+### FASE 9 — Outbox publisher + worker de referências (D2, ~3h) — ✅ CONCLUÍDA E VALIDADA
+> Quatro blocos, um commit cada: **9a** (`e988d98` — publicador + adaptador SQS),
+> **9b** (`212e02b` — `Retomar`, worker de referências, reaper, migration 000005),
+> **9c** (`45fffe2` — runner, Fx, readiness, config e compose) e **9d** (`8c78384`
+> — integração com PostgreSQL + LocalStack reais). **38 casos unitários** novos e
+> **8 funções** de integração; prova pelo **binário real**. **3 defeitos reais
+> corrigidos** (37, 38 e 39). Evidências em `docs/evidencias/FASE_9.md`.
+- [x] `worker.OutboxPublisher`: loop com `ClaimBatch`/lease/publish/`MarkPublished`/`MarkRetry`; N publishers concorrentes; recuperação de lease expirado; republicação com mesmo `eventId`
+- [x] **Publicar ANTES de marcar** (`MarkPublished` com `context.WithoutCancel`) e a publicação **fora** da transação
+- [x] Backoff exponencial com teto e **jitter dentro do teto** (defeito 32 travado por teste)
+- [x] **Quarentena** para o que esgota as tentativas ou é recusado pelo destino (`OUTBOX_PARKED_BACKOFF`) — nada é descartado nem marcado como publicado
+- [x] `worker.ReferenceWorker`: `ClaimPendingReferencesDue` (`FOR UPDATE SKIP LOCKED` + lease), reconstrução da `Request` das colunas persistidas, `Service.Retomar`, backoff exponencial com jitter, TTL (`REFERENCE_MAX_ATTEMPTS`/`REFERENCE_PENDING_MAX_AGE`) → `REJECTED`/`REFERENCE_NOT_FOUND` + evento
+- [x] `worker.PendingReaper`: retoma `PENDING` antigo pelo **mesmo** caso de uso (mecanismo provado por inserção direta; o estado é inalcançável por caminho normal — documentado)
+- [x] `worker.Runner`: supervisão com restart e backoff, readiness por laço, encerramento com prazo único (`WORKERS_SHUTDOWN_GRACE`)
+- [x] **Duas guardas de concorrência** na retomada (lock da linha + estado/tentativa lidos no claim) — o defeito 37 nasceu exatamente daqui
+- [x] `ReagendarReferencia` no agregado (a máquina de estados não tem, e não deve ter, auto-laço)
+- [x] Migration `000005_correlation_id`: o `correlationId` sobrevive à pendência (defeito 39) e o caminho SQS passa a preenchê-lo
+- [x] Testes: 2 publishers na mesma outbox; crash entre commit e publish; crash entre publish e `MarkPublished` (mesmo `eventId`, corpo idêntico); lease expirado; `REFUND` antes da referência resolve depois; expiração ⇒ `REJECTED`; reaper retoma `PENDING`
+- [x] Métricas do §12 desta fase: atraso da outbox (`PendingStats`), resultados de publicação (3 estados), tentativas, resolução de referência
+- [x] `HTTP_STOP_TIMEOUT` para **50s** com a regra do **pior caso** (servidor + consumidor + workers) e `stop_grace_period` no compose — o defeito 33 com a terceira parcela
+- [x] Prova pelo **binário real** com os três laços (operação por HTTP e por SQS → outbox → `wallet-events.fifo`, lida de volta)
 
 ### FASE 10 — Concorrência e recuperação (D2, ~3h) 🏁 nota pesada (20 + 15 + 15)
 - [ ] **T1** mesma aposta 50× em paralelo → **um** débito, saldo correto, replays devolvem mesmo resultado
@@ -667,6 +679,18 @@ Formato: `[data] [fase] status — o que foi feito / decisão / bloqueio`.
   - **Evidências:** `docs/evidencias/FASE_6.md`.
   - **Correção pós-fase (bloco 6d) — ordem dos eventos na outbox:** a fase tinha deixado duas limitações registradas (o par de eventos da mesma operação empatando em `occurred_at` e a dependência do relógio). Migration 000003 acrescentou `sequence BIGINT GENERATED ALWAYS AS IDENTITY`, e a fila passou a ser lida por ela. No caminho apareceu um defeito: **`RETURNING` não garante a ordem das linhas que devolve**, então o lote chegava embaralhado — pego por um teste que falhava 1 em 5, corrigido com o `UPDATE` virando CTE e o `SELECT` de fora ordenando por `sequence`. O teste que discrimina insere dois eventos com ordem de inserção e ordem de relógio opostas (56 unitários + 29 de integração ao final).
 
+- **D3** — **FASE 9 CONCLUÍDA** — publicação da outbox + worker de referências + reaper (4 commits: `e988d98`, `212e02b`, `45fffe2`, `8c78384`).
+  - **Bloco 9a — publicador:** `worker.OutboxPublisher` (claim em transação curta → publicar FORA da transação → `MarkPublished`), com backoff exponencial + teto + jitter **dentro** do teto, **quarentena** para o que esgota as tentativas, e o adaptador `sqs.Publicar` com `MessageGroupId` = carteira, `MessageDeduplicationId` por **tentativa** e `MessageAttributes` (`eventType`/`eventId`).
+  - **Bloco 9b — referências:** `Service.Retomar` (reconstrói a `Request` do banco e reusa `resolverReferencia`), TTL/máx. tentativas → `REJECTED`/`REFERENCE_NOT_FOUND`, `ReagendarReferencia` no agregado, `ClaimPendingReferencesDue` (SKIP LOCKED + lease), `ReferenceWorker`, `PendingReaper` e a migration `000005` (`correlation_id`).
+  - **Bloco 9c — composição:** `worker.Runner` com supervisão e restart, readiness de `workers`, `workersModule` no Fx, `WORKERS_SHUTDOWN_GRACE` e `HTTP_STOP_TIMEOUT` de 50s com a regra do **pior caso** (o defeito 33 com a terceira parcela), `stop_grace_period` no compose.
+  - **Bloco 9d — prova real:** 8 funções de integração com PostgreSQL + LocalStack (disputa de dois publishers, as duas quedas, T7 inteiro, reaper) e a prova pelo **binário real** com os três laços.
+  - **Três defeitos reais encontrados e corrigidos:**
+    1. **a guarda da "janela do lease" ignorava TODO trabalho** (a coluna que a guarda lia é a que o claim acabou de sobrescrever) — corrigida para comparar estado e tentativa lidos no claim;
+    2. **o reaper retomava um `PENDING` e estourava `INVALID_TRANSITION`** — o desfecho pendente passou a escolher `MarkPendingReference` ou `ReagendarReferencia` pelo estado;
+    3. **o `correlationId` morria no fim da requisição** e o caminho SQS nunca o preenchia — migration 000005 + `MessageId` da entrega.
+  - **Números:** 38 casos unitários novos e 8 funções de integração; `go test -race` verde em **17 pacotes** de unidade (18 com a tag).
+  - **Evidências:** `docs/evidencias/FASE_9.md`.
+
 - **D2** — **FASE 8 CONCLUÍDA** — consumo do SQS com inbox transacional (2 commits: `c81e7de`, `eaf52a0`).
   - **Bloco 8a/8b — ganchos + consumo:** `ProcessWithHooks` com `OnBegin`/`OnCommit` (o registro da inbox entra na MESMA transação do saldo, do ledger e dos eventos, como o README §6.5 exige), `app/inbox` (tradução estrita + política de dedup), `internal/consumer` (laço, semáforo, retry por visibilidade, DLQ, encerramento), `internal/infra/sqs` (adaptador) e o módulo Fx `worker` com readiness do SQS.
   - **Bloco 8e — prova com infra real:** 9 funções de integração contra o **LocalStack**, incluindo a equivalência HTTP × SQS do hash canônico e as duas portas concorrentes.
@@ -695,9 +719,9 @@ Formato: `[data] [fase] status — o que foi feito / decisão / bloqueio`.
   - **Evidências:** `docs/evidencias/FASE_7.md`.
 
 ### Próximos 3 passos imediatos
-1. **Nós:** Fase 9 — `worker.OutboxPublisher`: loop com `ClaimBatch`/lease/`Publish`/`MarkPublished`/`MarkRetry`, N publishers concorrentes e recuperação de lease expirado (o mecanismo de banco já está pronto e provado desde a Fase 5/6d).
-2. **Nós:** `worker.ReferenceWorker` (resolver `PENDING_REFERENCE` vencidas, backoff exponencial com jitter, TTL → `REJECTED REFERENCE_NOT_FOUND` + evento) e o `worker.Runner` com `errgroup`, no mesmo padrão de encerramento do consumidor da Fase 8.
-3. **Nós:** provar a publicação repetida preservando o `eventId`, o crash entre publish e `MarkPublished`, dois publishers na mesma outbox e a expiração de referência — contra **LocalStack e PostgreSQL reais** (a fila `wallet-events.fifo` e a DLQ dela já estão provisionadas).
+1. **Fase 10, T4/T1–T3:** subir **3 processos independentes** (`api` em portas distintas, conexões e memória próprias) e provar T1 (50× a mesma aposta → um débito), T2 (100.00 + duas 80.00 → uma `PROCESSED`, uma `REJECTED`, saldo 20.00, **um** lançamento) e T3 (carteiras distintas em paralelo, sem lock global).
+2. **Fase 10, T5/T8:** interromper o consumidor **depois do commit e antes do delete** e reiniciar a aplicação — idempotência, pendências e consistência preservadas; repetir o T6 (dois publishers, agora com 3 instâncias reais) e o T7 já provados na Fase 9.
+3. **Fase 11:** dashboards/alerta sobre as 12 métricas (já emitidas), teste de carga opcional com p50/p95/p99 e `go mod tidy` (remover `testcontainers-go`).
 
 ---
 
