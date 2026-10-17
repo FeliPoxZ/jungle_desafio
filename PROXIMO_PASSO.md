@@ -10,7 +10,7 @@
 > 3. `docs/CONFORMIDADE_README.md` — o que do enunciado já está atendido, o que falta e em que fase
 > 4. `CONTEXTO.md` (raiz) — estado geral, ambiente, decisões congeladas, pendências
 > 5. `PLANO.md` §3 — checklist por fase
-> 6. `docs/evidencias/FASE_1.md` a `FASE_7.md` — provas do que já funciona
+> 6. `docs/evidencias/FASE_1.md` a `FASE_8.md` — provas do que já funciona
 > 7. `docs/LEDGER_VS_WALLET.md` — a distinção central do domínio financeiro
 >
 > **Não comece a codar sem ler as seções 3 e 3.5.**
@@ -48,13 +48,15 @@ solução + `ARCHITECTURE.md`.
 | Fase 5 (persistência `pgx` + Unit of Work) | ✅ **CONCLUÍDA E VALIDADA** — 38 testes (25 de integração), `-race` verde, 4 defeitos reais corrigidos |
 | Fase 6 (caso de uso `wagering.Service`) | ✅ **CONCLUÍDA E VALIDADA** em 3 blocos: 6a (`Process`), 6b (`OpenWallet`), 6c (leituras + `Reconcile`) — 55 casos unitários, 27 de integração, **6 defeitos reais corrigidos** |
 | Fase 7 (HTTP + autenticação) | ✅ **CONCLUÍDA E VALIDADA** em 5 blocos (7a–7e) + P1 — **49 casos** em `internal/infra/auth`, **67** em `internal/httpapi`, **30** de integração da borda HTTP (Keycloak real), **2** do binário real, **8 defeitos reais corrigidos** |
-| Fase 8 (SQS + inbox) | ⬅ **PRÓXIMA** |
-| Fases 9–12 | ⬜ Não iniciadas (ver checklist no `PLANO.md` §3) |
+| Fase 8 (SQS + inbox) | ✅ **CONCLUÍDA E VALIDADA** em 2 blocos (8a/8b e 8e) — **26 casos** em `internal/app/inbox`, **19** em `internal/consumer`, **9 funções** de integração com o **LocalStack real**; **4 defeitos reais corrigidos** (um deles de ambiente: as filas nunca eram criadas) |
+| Fase 9 (publisher da outbox + worker de referências) | ⬅ **PRÓXIMA** |
+| Fases 10–12 | ⬜ Não iniciadas (ver checklist no `PLANO.md` §3) |
 
 **Domínio (Fases 1–3): 574 casos. Persistência (Fase 5): 38. Caso de uso (Fase 6):
 55 unitários + 27 de integração. Borda HTTP (Fase 7): 116 unitários + 32 de
-integração. `go test -race` verde em 15 pacotes de unidade e nos 3 de integração.
-Árvore git limpa.**
+integração. Consumo por SQS (Fase 8): 45 unitários + 9 funções de integração.
+`go test -race` verde em 17 pacotes de unidade e nos 3 de integração. Árvore git
+limpa.**
 
 > ⚠️ Os **três** pacotes de integração usam o mesmo banco de teste e truncam
 > tabelas. Cada `TestMain` toma um lock consultivo (`pg_advisory_lock`) e espera a
@@ -63,10 +65,18 @@ integração. `go test -race` verde em 15 pacotes de unidade e nos 3 de integra�
 > ⚠️ Os testes de integração da **borda HTTP** precisam do **Keycloak de pé**: o
 > token é obtido por `client_credentials` no realm `jungleg` (nada é forjado). Sem
 > Keycloak, eles são **pulados** com aviso.
+>
+> ⚠️ Os testes de **consumo** precisam do **LocalStack com as filas criadas**. Se
+> `docker exec jungleg-localstack awslocal sqs list-queues` voltar vazio, o script
+> de init falhou e os testes vão falhar por isso — **não** por defeito de código
+> (foi o que aconteceu até a Fase 8: o script não tinha shebang nem bit de
+> execução, e o LocalStack registrava `Exec format error` no stage READY).
 
 ### Histórico de commits (mais recente primeiro)
 
 ```
+eaf52a0 test(sqs): prova o consumo com LocalStack real e corrige dois defeitos de identidade  ← FASE 8e
+c81e7de feat(inbox): adiciona o consumo por SQS com inbox na mesma transacao do tratamento     ← FASE 8a/8b
 cc986df docs(fase7): registra as evidencias da Fase 7 e atualiza arquitetura e conformidade
 31cf6b5 feat(api): adiciona a flag -health-check usada pelo healthcheck do compose      ← P1
 343ec51 test(http): prova a fase 7 com o Keycloak e o PostgreSQL reais                  ← FASE 7e
@@ -100,7 +110,7 @@ b046e6a feat(money): completa o value object com aritmetica, comparacao e serial
 1eef5b2 chore(setup): fundacao do projeto com Fx, config validada, HTTP e observabilidade
 ```
 
-> ✅ **As Fases 0 a 7 estão commitadas e validadas. Não revalide nem recommite.**
+> ✅ **As Fases 0 a 8 estão commitadas e validadas. Não revalide nem recommite.**
 
 ---
 
@@ -264,21 +274,58 @@ Os testes de integração **truncam tabelas**: apontar para `jungleg` apagaria d
 Sempre usar o banco separado:
 
 ```powershell
-docker compose up -d postgres
+docker compose up -d postgres keycloak localstack
 $env:DATABASE_URL='postgres://jungleg:jungleg@localhost:5432/jungleg?sslmode=disable'
 $env:TEST_DATABASE_URL='postgres://jungleg:jungleg@localhost:5432/jungle_test?sslmode=disable'
+go build -o bin\migrate.exe .\cmd\migrate\   # migrations EMBUTIDAS: recompilar
 .\bin\migrate.exe up
+
 go test -count=1 -race ./...
+
+# integração: banco separado, IdP REAL e SQS REAL
+$env:OIDC_ISSUER='http://localhost:8080/realms/jungleg'
+$env:OIDC_DISCOVERY_URL='http://localhost:8080/realms/jungleg'
+$env:OIDC_AUDIENCE='jungleg-api'
+$env:SQS_ENDPOINT='http://localhost:4566'
+docker exec jungleg-localstack awslocal sqs list-queues   # as filas precisam existir
 go test -count=1 -race -tags=integration -timeout 300s ./...
 ```
 
 ### 4.4. Line endings e outras ferramentas
 
 - Scripts shell, SQL e Dockerfile rodam em Linux nos containers: garantir **LF** (o
-  `.gitattributes` já normaliza).
+  `.gitattributes` já normaliza) **e o bit de execução** — o LocalStack **executa**
+  os scripts de `init/ready.d`, e sem shebang + `chmod +x` ele falha com
+  `Exec format error` (foi o defeito 28, e as filas nunca eram criadas);
 - Go **1.26.5** · PowerShell **5.1** (sem `&&`, sem ternário) · git 2.52.0
 - **`make` NÃO está instalado** — os alvos do Makefile são documentação executável
 - **`package main` não pode ser importado nem testado** → toda lógica em `internal/`
+- **`bin/migrate.exe` carrega as migrations EMBUTIDAS** (`go:embed`): depois de
+  criar ou alterar uma migration é preciso **recompilá-lo**, senão ele responde
+  "schema já está atualizado" e não aplica nada;
+- Redirecionar arquivo para dentro do container precisa de `cmd.exe`:
+  `cmd /c "docker exec -i jungleg-postgres psql ... < arquivo.sql"`;
+- **`docker exec` + `awslocal`**: use `2>&1 | Select-String ...`; o PowerShell
+  trata o stderr do comando como erro e o exit code fica 1 mesmo quando o comando
+  funcionou.
+
+### 4.5. As filas do SQS (checagem obrigatória antes de confiar em teste verde)
+
+```powershell
+docker exec jungleg-localstack awslocal sqs list-queues
+```
+
+Se voltar **vazio**, o script de provisionamento não rodou — e os testes de
+consumo vão falhar (ou pior: passar sem exercitar nada). Para provisionar na mão:
+
+```powershell
+docker compose run --rm localstack-init
+# ou, dentro do container:
+docker exec jungleg-localstack sh /etc/localstack/init/ready.d/init-queues.sh
+```
+
+As filas esperadas: `wager-transactions.fifo`, `wager-transactions-dlq.fifo`,
+`wallet-events.fifo`, `wallet-events-dlq.fifo`.
 
 ---
 
@@ -343,171 +390,88 @@ Detalhamento completo em `PLANO.md` §1 (A1–A14). O que afeta as Fases 6–7:
 | A12 | Eventos com envelope: `eventId`, `eventType`, `aggregateId` (= `walletId`), `correlationId`, `causationId?`, `occurredAt`, `version`, `data` |
 
 ---
+## 6. ✅ CONCLUÍDA: FASE 7 — HTTP + autenticação (registro)
 
-## 6. ✅ CONCLUÍDA: FASE 7 — HTTP + autenticação
+> **Estado: CONCLUÍDA E VALIDADA em 5 blocos + 1 pendência.** Evidências em
+> `docs/evidencias/FASE_7.md`; as decisões estão no `ARCHITECTURE.md` §10.
 
-> **Estado: CONCLUÍDA E VALIDADA em 5 blocos + 1 pendência.** A descrição abaixo é
-> o **registro** do que foi feito (o plano original), não uma tarefa pendente.
-> Evidências completas em `docs/evidencias/FASE_7.md`.
->
-> | Bloco | Commit | O que entregou |
-> | --- | --- | --- |
-> | composição | `ec6c014` | Fx com `infra` + `usecase`, `StopTimeout` da config (P7), readiness de Postgres e IdP (P5) |
-> | **7a** | `1d43174` | `internal/infra/auth`: OIDC real (discovery, JWKS com cache/rotação, RS256, `alg` fixo, `kid` obrigatório, 401 × 503) |
-> | **7b/7d** | `95e85bb` | os 7 endpoints do §9, DTOs, mapeamento de desfecho/erro em status, rotas por role (P2 e P4) |
-> | **7e** | `343ec51` | integração com **Keycloak real** (token por `client_credentials`) e PostgreSQL; binário real |
-> | **P1** | `31cf6b5` | `-health-check` para o healthcheck do compose |
->
-> **9 defeitos reais corrigidos:** dois de código dormentes desde a Fase 0
-> (`RequestSize(0)` recusando todo corpo e a ordem `AccessLog` × `Recoverer`),
-> quatro de composição Fx, um de healthcheck (P1), três asserções de teste com a
-> régua errada e o **defeito 27** — o log de acesso saindo em texto enquanto o boot
-> saía em JSON, que só apareceu ao **rodar o binário**. Lista completa no
-> `ARCHITECTURE.md` §15 (defeitos 20 a 27) e no `FASE_7.md` §6.
-
-### 6.1. O que a Fase 6 deixou pronto (não reimplementar)
-
-`internal/app/wagering` tem o caso de uso COMPLETO. A Fase 7 é a borda: traduzir
-HTTP em `Request`/`OpenWalletRequest` e o desfecho em resposta.
-
-| Necessidade do handler | O que usar |
-| --- | --- |
-| Operação do provedor | `servico.Process(ctx, appwagering.Request{...})` → `Result` + erro |
-| Abertura de carteira | `servico.OpenWallet(ctx, appwagering.OpenWalletRequest{...})` → `OpenWalletResult` |
-| Leitura interna | `GetTransaction`, `GetWallet`, `ListLedger` |
-| Leitura do provedor | `GetProviderTransaction(providerID, id)` e `GetByProviderExternalID(providerID, externalID)` — **já aplicam o isolamento** (operação de outro provedor = "não encontrado") |
-| Reconciliação | `Reconcile(ctx, walletID)` → `Reconciliation` |
-| Código de falha | `domainerrors.CodeOf(err)` — é `failureCode` no corpo de erro |
-| Idempotência do corpo | `Request.IdempotencyKey` vem do header; o serviço recusa chave vazia com `IDEMPOTENCY_KEY_REQUIRED` |
-
-`app/ports` ganhou `Clock` (implementação em `platform/clock.System`) e os
-repositórios ganharam `GetByReferenceAndKind` e `CountByWallet`.
-
-### 6.2. O que JÁ EXISTIA em `internal/httpapi` (a Fase 0 deixou pronto)
-
-Foi tudo **estendido**, nada recriado:
-
-| Já existe | Onde |
-| --- | --- |
-| Middlewares: `RequestID`, `RealIP`, `Recoverer`, `AccessLog`, `Timeout`, `MaxBody` | `middleware.go`, `recover.go` |
-| `APIError` com construtores tipados (`ErrBadRequest`, `ErrFailureBadRequest`, `ErrUnauthorized`, `ErrForbidden`, `ErrNotFound`, `ErrConflict`, `ErrUnprocessable`, `ErrUnavailable` com `Retry-After`, `ErrInternal`) e `WriteError` | `response.go` |
-| `decodeJSON` estrito (campo desconhecido, chave repetida, `Content-Type`) | `response.go` |
-| `Routes{Public, Internal, Provider}` + interface `Autenticador` | `router.go` |
-| `/health/live`, `/health/ready` (com `health_checkers`), `/metrics` | `health.go`, `router.go` |
-
-O que faltava naquele momento — e o que cada bloco fez: o **`Autenticador` de
-verdade** (7a), os **handlers** com DTOs e o **mapeamento desfecho→status** (7b), o
-**módulo Fx do caso de uso** (composição) e as pendências **P1/P2/P4/P5/P7**.
-
-### 6.3. O mapeamento desfecho → HTTP (é o que o avaliador cobra)
-
-| Situação | Status | Corpo |
+| Bloco | Commit | O que entregou |
 | --- | --- | --- |
-| Operação nova concluída | `201` | `{transactionId,status,balance,idempotentReplay:false}` |
-| Replay idempotente | `200` | idem com `idempotentReplay:true` — **saldo do processamento original** |
-| `PENDING_REFERENCE` | `202` | `{transactionId,status:"PENDING_REFERENCE",failureCode:null}` |
-| Rejeição de negócio | `422` | `{transactionId,status:"REJECTED",failureCode}` |
-| Abertura de carteira | `201` | `{id,playerId,balance,version}` (+ `idempotentReplay` no reenvio) |
-| Reconciliação | `200` | `{walletId,storedBalance,calculatedBalance,difference,consistent,checkedEntries}` |
-| Ledger paginado | `200` | `{entries:[...],nextCursor}` |
+| composição | `ec6c014` | Fx com `infra` + `usecase`, `StopTimeout` da config (P7), readiness de Postgres e IdP (P5) |
+| **7a** | `1d43174` | `internal/infra/auth`: OIDC real (discovery, JWKS com cache/rotação, RS256, `alg` fixo, `kid` obrigatório, 401 × 503) — **sem dependência nova** |
+| **7b/7d** | `95e85bb` | os 7 endpoints do §9, DTOs, mapeamento de desfecho/erro em status, rotas por role (P2 e P4) |
+| **7e** | `343ec51` | integração com **Keycloak real** (token por `client_credentials`) e PostgreSQL; binário real |
+| **P1** | `31cf6b5` | `-health-check` para o healthcheck do compose |
 
-Erros (`WriteError` + `domainerrors.CodeOf`):
+O que ficou pronto e é usado pela Fase 8: `Autenticador` (OIDC), `Routes` com
+`Authenticator`, `processing de desfecho→status`, `Handlers` com `WageringService`,
+health checkers no grupo do Fx, e o logger único por processo.
 
-| Erro | Status |
-| --- | --- |
-| `ErrIdempotencyConflict`, `ErrWalletAlreadyExists` | `409` |
-| `ErrWalletNotFound`, `ErrTransactionNotFound` | `404` |
-| Códigos de entrada inválida (`INVALID_REQUEST`, `IDEMPOTENCY_KEY_REQUIRED`, `INVALID_AMOUNT`, `REFERENCE_REQUIRED`, `INVALID_TRANSACTION`, `INVALID_CURRENCY`, cursor inválido) | `400` |
-| `OPERATION_NOT_ALLOWED` (`OPENING` de fora) | `403` |
-| `ports.IsRetryable(err)` (transitório esgotado) | `503` + `Retry-After` |
-| Qualquer outro | `500` (sem vazar stack nem erro de driver) |
+---
 
-⚠️ **Nunca** mapear `error` de infraestrutura para `4xx`: a diferença entre
-"o cliente errou" e "o serviço está indisponível" é contrato (README §9).
+## 6b. ✅ CONCLUÍDA: FASE 8 — consumo do SQS (o que acabou de ser feito)
 
-### 6.4. Autenticação e isolamento (A10 — é eliminatório)
+> **Estado: CONCLUÍDA E VALIDADA em 2 blocos.** Evidências em
+> `docs/evidencias/FASE_8.md`; as decisões estão no `ARCHITECTURE.md` §11.
 
-- OIDC discovery + JWKS com cache e rotação; valida `iss`, `aud`, `exp`, `nbf`, `alg` `RS256`;
-- **o `providerId` vem do TOKEN**, nunca do corpo: `POST /wagering/transactions` com
-  `providerId` diferente do claim ⇒ `403`; `GET /providers/:providerId/...` idem;
-- `POST /wallets`, `GET /wallets*`, `POST /wallets/:id/reconciliation` ⇒ role `internal`
-  (provedor recebe `403` **sem efeito financeiro**);
-- token ausente/inválido ⇒ `401`;
-- IdP indisponível ⇒ `503` e **nenhum efeito financeiro** (o teste tem que conferir o banco);
-- os endpoints públicos seguem públicos: `/health/live`, `/health/ready`, `/metrics`.
+| Bloco | Commit | O que entregou |
+| --- | --- | --- |
+| **8a/8b** | `c81e7de` | ganchos transacionais no caso de uso, `internal/app/inbox`, `internal/consumer`, `internal/infra/sqs`, migration 000004 (`inbox.attempts`), módulo Fx `worker`, readiness do SQS, e a correção do script de filas (shebang + bit de execução) |
+| **8e** | `eaf52a0` | integração contra o **LocalStack real** (9 funções) e a correção dos dois defeitos de identidade da mensagem |
 
-### 6.5. Pendências desta fase — ✅ TODAS RESOLVIDAS
+**O caminho, em uma frase por peça:**
 
-| Pendência | Como ficou |
-| --- | --- |
-| **P1** | `cmd/api -health-check` existe, com a URL derivada de `HTTP_ADDR`; provado subindo o **binário real** (`TestBinarioRealHealthCheckEShutdown`) |
-| **P4** | `POST /wallets` no caminho do enunciado; o mount `/internal/wallets` saiu |
-| **P5** | Postgres **e IdP** no grupo `health_checkers` (o do IdP fura o cache de discovery de propósito). O SQS entra na Fase 8, junto com o cliente |
-| **P2** | `AccessLog` passou a envolver o `Recoverer`: antes, o log registrava **200** para uma requisição que respondeu **500** (defeito 21 da §15) |
-| **P7** | `StopTimeout` vem de `HTTP_STOP_TIMEOUT`, lido **antes** do grafo, e a config exige que ele cubra o `HTTP_SHUTDOWN_TIMEOUT` |
-
-### 6.6. Fx — como ficou
-
-- `fx.Module("infra")`: o pool (`*postgres.Pool`, com `Close` no `Lifecycle`),
-  `ports.UnitOfWork` (alias de `postgres.NewUnitOfWork`) e o `*auth.Verifier`;
-- `fx.Module("usecase")`: `ports.Clock`, `idgen.Generator` e `appwagering.New`;
-- `fx.Module("auth")`: `*auth.Autenticador` + health checker do IdP no grupo;
-- `fx.Module("httpapi")`: `*httpapi.Routes`, `*http.Server`, `*httpapi.Handlers`,
-  o registro das rotas e o `runHTTPServer`;
-- `app.ValidateApp()` valida o **grafo inteiro** sem subir nada — e agora ele cobre
-  todos os módulos de produção.
-
-Três armadilhas do Fx que custaram tempo e estão documentadas na §10 do
-`ARCHITECTURE.md`: `Provide` recebe construtor (não valor) e casa por tipo **exato**
-(interface × concreto); grupo é `fx.Annotate(fn, fx.ResultTags(...))` e o `group`
-pertence ao **campo** de uma struct `fx.In`; e o pool precisa de
-`context.Background()` com prazo, não do contexto de start.
-
-### 6.7. Testes que a fase TEM — onde estão
-
-| O que a fase precisava | Onde está |
-| --- | --- |
-| OIDC de teste **assinando de verdade** | `internal/infra/auth/oidc_testserver_test.go` (chave RSA de 2048 bits gerada no teste, JWKS servido localmente) |
-| token ausente / inválido / expirado / assinatura de outra chave / role errada / provedor errado | `internal/infra/auth/{verifier,middleware}_test.go` (11 formas de token inválido com a causa exata) |
-| **isolamento** entre provedores, inclusive em replay, e o corpo não escolhendo o provedor | `test/integration/http_integration_test.go` + dublês em `internal/httpapi/handlers_test.go` |
-| **sem efeito financeiro** em acesso negado | `test/integration/...`: contagem de `wallets`, `wager_transactions` e `wallet_ledger_entries` antes/depois do 401/403/503 |
-| contrato de status completo | `internal/httpapi/erros_test.go` (unitário) + 11 subtests de contrato na integração |
-| IdP fora ⇒ `503` | unitário (verificador e middleware) e integração (com saldo e ledger conferidos) |
-| **Keycloak real** (a prova principal que o README §13 pede) | `test/integration/...`: token por `client_credentials` nos três clients do realm |
-
-### 6.8. Checkpoint que FOI executado
-
-```powershell
-$env:GOMODCACHE='E:\jungleg\.gocache\mod'; $env:GOCACHE='E:\jungleg\.gocache\build'; $env:GOPATH='E:\jungleg\.gocache\gopath'
-docker compose up -d postgres
-# migrations EMBUTIDAS no binário: rebuilde depois de criar/alterar migration
-go build -o bin\migrate.exe .\cmd\migrate\
-$env:DATABASE_URL='postgres://jungleg:jungleg@localhost:5432/jungleg?sslmode=disable'
-.\bin\migrate.exe up
-go build ./... ; go vet ./... ; go vet -tags=integration ./... ; gofmt -l .\internal\ .\cmd\ .\migrations\ .\test\
-go test -count=1 -race ./...
-$env:TEST_DATABASE_URL='postgres://jungleg:jungleg@localhost:5432/jungle_test?sslmode=disable'
-go test -count=1 -race -tags=integration -timeout 300s ./...
+```
+internal/infra/sqs    → protocolo do broker (receber/apagar/adiar/enviar em lote)
+internal/app/inbox    → tradução (envelope → Request, régua estrita) + política de dedup
+internal/consumer     → laço, semáforo, retry por visibilidade, DLQ, encerramento
+app/wagering          → o MESMO caso de uso do HTTP, com ganchos que registram a inbox
 ```
 
-> `gofmt -l .` na raiz lista o cache de módulos (`.gocache/mod`) — formatar
-> dependência de terceiros não é nosso. Por isso a checagem é escopada.
+**O que a próxima fase (9) vai usar daqui:**
 
-> **Nota para a próxima fase:** a integração da borda HTTP precisa do **Keycloak
-> de pé**, porque o token é obtido de verdade (`client_credentials`). Sem ele, os
-> testes são pulados — e aí a fase pareceria verde sem provar nada. Conferir
-> `docker ps` antes de confiar no resultado.
+- o **consumidor** é o modelo do loop de worker (contexto cancelável, semáforo,
+  encerramento com prazo e liberação de trabalho);
+- o **readiness** já aceita um checker novo: registrar o worker de referências é
+  `fx.Provide` + `group:"health_checkers"`;
+- a **outbox** (`ClaimBatch`, lease, `MarkRetry`, `MarkPublished`) está pronta e
+  provada no repositório desde a Fase 5/6d — falta o loop que publica;
+- a tabela `inbox_messages` já tem `attempts` e os status `RECEIVED`/`PROCESSED`/
+  `REJECTED`/`FAILED`;
+- `wager_retries_total{stage}`, `wager_dlq_messages_total` e
+  `wager_outbox_publish_total{result}` já existem como métricas.
 
-Os commits que fecharam o bloco:
-```
-ec6c014 feat(app): compoe a aplicacao com Fx e configura o encerramento e o readiness
-1d43174 feat(auth): adiciona autenticacao OIDC com validacao real de token e provider do token
-95e85bb feat(http): adiciona os endpoints de wagering e carteira com autenticacao OIDC
-343ec51 test(http): prova a fase 7 com o Keycloak e o PostgreSQL reais
-31cf6b5 feat(api): adiciona a flag -health-check usada pelo healthcheck do compose
-cc986df docs(fase7): registra as evidencias da Fase 7 e atualiza arquitetura e conformidade
-```
+### 6b.1. Os dois defeitos de identidade da mensagem (para não repetir)
 
+1. **A identidade durável do consumo é o `MessageId` DO BROKER**, não o
+   `messageId` do envelope: quem atribui esse valor é o broker, no envio, e o
+   produtor não tem como conhecê-lo antes. O campo do envelope é **opcional** e,
+   quando presente, é conferido contra o da entrega (divergência ⇒ mensagem
+   inválida, permanente).
+2. **O `return operacao{}, nil` que abortava o parsing** (introduzido na correção
+   do item 1) devolvia requisição VAZIA com erro `nil` — o sintoma era
+   `IDEMPOTENCY_KEY_REQUIRED` para um corpo que TINHA a chave. **Lição:** o teste
+   de integração diz QUE algo está errado; o teste de unidade com o corpo REAL
+   entregue pelo broker diz ONDE. O arquivo `internal/app/inbox/payload_real_test.go`
+   existe por isso.
+
+### 6b.2. Armadilhas do LocalStack que custaram tempo
+
+- **`FIFO` + `MessageGroupId` repetido = mensagem bloqueada.** Uma mensagem em voo
+  (recebida e não removida) **bloqueia as seguintes do mesmo grupo** até o
+  visibility timeout. O sintoma é `Receive` devolvendo **zero** com mensagem
+  parada na fila — nada parecido com a causa. Testes devem usar um grupo por
+  mensagem;
+- **`MessageDeduplicationId` repetido entre execuções**: o SQS deduplica por 5
+  minutos e devolve o `MessageId` da mensagem ORIGINAL (já consumida). Use um
+  nonce;
+- **visibility timeout**: a fila do compose usa 60s; o ambiente de TESTE usa 2s
+  para a suíte não ficar refém dos próprios resíduos;
+- **as filas precisam existir**: `docker exec jungleg-localstack awslocal sqs
+  list-queues`. Vazio = o script de init falhou, e nenhum teste de consumo tem
+  validade;
+- **`localstack/localstack:latest` é Pro** e morre com "License activation
+  failed": a versão está **pinada** em `4.0.3` no compose.
 ---
 
 ## 7. PENDÊNCIAS CONHECIDAS
@@ -532,41 +496,48 @@ tratado com `TrimSpace` e testado, `Movement` resolvendo a versão do UPDATE con
 corrigida (defeito 21).
 
 **Abertas:**
-- **`ARCHITECTURE.md` está atualizado até a Fase 7** — a §10 (HTTP e autenticação)
-  saiu de `[PLANEJADO]` e está completa. Falta apenas a §11 (SQS — Fase 8) e a parte
-  de observabilidade de negócio dos workers (Fases 8–9 e 11);
+- **`ARCHITECTURE.md` está atualizado até a Fase 8** — as §10 (HTTP e autenticação)
+  e §11 (consumo do SQS) estão completas. Falta a parte de workers (publisher da
+  outbox e worker de referências — Fase 9) e a observabilidade de negócio (Fase 11);
 - `testcontainers-go` foi baixado e **não é usado** (os testes apontam para o Postgres do
   compose via `TEST_DATABASE_URL`). Remover com `go mod tidy` na Fase 12;
-- **métricas de negócio** (`wager_operations_total{kind,status}`, `wager_idempotent_replays_total`)
-  ficaram para a Fase 11 de propósito, para o caso de uso não nascer acoplado ao Prometheus —
-  inclusive o **log e a métrica de divergência da reconciliação**;
+- **métricas de negócio**: 7 das 12 já são emitidas (4 pela borda HTTP, 3 pelo
+  consumidor). Conflitos, atraso da outbox e idade do pendente entram nas Fases 9–11;
 - `migrate.exe` sobrando na raiz (além de `bin/migrate.exe`): lixo de build, só limpar;
 - **`bin/migrate.exe` carrega as migrations embutidas** (`go:embed`): depois de criar ou alterar
   uma migration, é preciso rebuidá-lo, senão ele responde "schema já está atualizado" e não
-  aplica nada (aconteceu na 000002);
+  aplica nada (aconteceu na 000002 e de novo na 000004);
 - a ordem dos eventos na outbox **foi resolvida** (bloco 6d, migration 000003): a fila é lida
   por `sequence`, e o lote sai ordenado por ela. Ficou registrada em `ARCHITECTURE.md` §8 a
   armadilha que apareceu no caminho — **`RETURNING` não garante a ordem das linhas**, então o
   `UPDATE` do `ClaimBatch` virou CTE com `SELECT ... ORDER BY sequence` de fora;
 - o **`wager_transactions` de `OPENING`** tem `game_id` e `round_id` vazios por decisão
   (migration 000002); a reversão dessa migration exige decidir o que fazer com essas linhas — a
-  condição está documentada no próprio `.down.sql`.
+  condição está documentada no próprio `.down.sql`;
+- **a URL da fila é derivada do endpoint** (`<endpoint>/000000000000/<nome>`) para o
+  LocalStack. Em produção (sem `SQS_ENDPOINT`) o que sobra é o NOME, e a resolução
+  teria de vir do `GetQueueUrl` do SDK — não exercitado (limitação registrada no
+  `ARCHITECTURE.md` §16);
+- **sem prova de ordem por carteira no consumo**: os testes usam um
+  `MessageGroupId` por mensagem (para não ficarem reféns dos próprios resíduos), o
+  que **não** exercita a ordem dentro do grupo. A ordem é garantida pela fila FIFO +
+  `aggregateId = walletId` dos eventos; a prova de ordem por carteira é a Fase 10.
 
 ---
 
-## 8. CHECKLIST DE ARRANQUE PARA A NOVA CONVERSA (Fase 8 — SQS + inbox)
+## 8. CHECKLIST DE ARRANQUE PARA A NOVA CONVERSA (Fase 9 — publisher da outbox + worker de referências)
 
-- [ ] Ler `README.md` (o enunciado é a fonte de verdade), `ARCHITECTURE.md` (§10 e §11), `PLANO.md` §3 (Fase 8), `docs/CONFORMIDADE_README.md` §10 e `docs/evidencias/FASE_7.md`
-- [ ] Confirmar containers de pé (`docker ps`) — **incluindo o Keycloak**, que os testes da borda HTTP usam
-- [ ] **Confirmar com o usuário que a estratégia mudou** (seção 3.1): a IA escreve o código e explica depois
-- [ ] **Reusar** `appwagering.Process` — o consumidor de SQS compartilha o MESMO caso de uso do HTTP (é o que garante a equivalência das duas portas, README §10)
-- [ ] Fluxo da inbox: `InsertIfAbsent` (`consumerName`, `messageId`) na **mesma transação** do tratamento durável (README §6.5); hash do corpo para distinguir reentrega de conflito real
-- [ ] Remover a mensagem da fila **só depois do commit**; rejeição terminal remove; transitório não remove (backoff por visibility); permanente ou `ApproximateReceiveCount > MaxReceiveCount` vai para a DLQ
-- [ ] `SIGTERM`: parar de buscar, concluir o lote no prazo, senão **liberar visibilidade** (`ChangeMessageVisibility 0`) para reentrega segura
-- [ ] Registrar o **SQS no grupo `health_checkers`** (fecha a P5) e documentar `MessageGroupId` (`walletId`) e `MessageDeduplicationId`
-- [ ] Testes de integração contra o **LocalStack real**: reentrega da mesma mensagem, hash divergente, rejeição terminal, transitório, mensagem inválida → DLQ, e o cenário cruzando **HTTP × SQS** para a mesma operação (prova a equivalência do hash)
+- [ ] Ler `README.md` (o enunciado é a fonte de verdade — §11 é a fase), `ARCHITECTURE.md` (§11 e a parte de outbox da §8), `PLANO.md` §3 (Fase 9), `docs/CONFORMIDADE_README.md` §11 e `docs/evidencias/FASE_8.md`
+- [ ] Confirmar containers de pé (`docker ps`) e **as filas** (`awslocal sqs list-queues`) — sem fila, o publisher não tem para onde publicar
+- [ ] **Confirmar com o usuário que a estratégia continua** (seção 3.1): a IA escreve o código e explica depois
+- [ ] `worker.OutboxPublisher`: loop com `ClaimBatch`/lease/`Publish`/`MarkPublished`/`MarkRetry` — o mecanismo já está pronto e provado no repositório desde a Fase 5; falta o loop
+- [ ] N publishers concorrentes disputando a outbox (`FOR UPDATE SKIP LOCKED`), com **recuperação de lease expirado**
+- [ ] Publicação **repetida** preservando o `eventId`; `MessageGroupId = aggregateId` (a carteira) e `MessageDeduplicationId = eventId`
+- [ ] `worker.ReferenceWorker`: `PENDING_REFERENCE` vencidas (`next_attempt_at <= now`, `SKIP LOCKED`), backoff exponencial com jitter, TTL/máx. tentativas → `REJECTED REFERENCE_NOT_FOUND` + evento
+- [ ] `worker.Runner`: supervisão com `errgroup`, backoff em falha de loop, log e métrica, shutdown limpo (mesmo padrão do consumidor da Fase 8)
+- [ ] Testes: crash entre commit e publish; crash entre publish e `MarkPublished` (republica com o mesmo `eventId`); dois publishers na mesma outbox sem publicação perdida nem duplicada a rigor (o consumidor do outro lado deduplica por `eventId`); `REFUND` antes da referência resolve depois; expiração vira `REJECTED`
 - [ ] Aceitar contestação do usuário: se ele questionar e estiver certo, **admitir e corrigir**
 - [ ] Depois de aprovado, commitar (um bloco por vez, com a mensagem contando a história)
 - [ ] Lembrar do **compromisso final** (seção 3.5): `docs/SISTEMA_EXPLICADO.md` e `docs/ENTREVISTA.md`
 
-**As Fases 0 a 7 estão commitadas e validadas. Não revalide nem recommite.**
+**As Fases 0 a 8 estão commitadas e validadas. Não revalide nem recommite.**

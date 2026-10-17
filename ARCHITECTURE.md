@@ -22,8 +22,9 @@ Serviço em Go que processa operações financeiras de provedores de jogos
 precisão monetária, idempotência persistente, ledger append-only, concorrência
 sem perda de atualização, entrega de eventos sem perda e recuperação de falhas.
 
-**Estado atual:** Fases 0–7 concluídas (domínio + schema + persistência + caso de
-uso + API HTTP autenticada). O consumo por SQS e os workers entram nas Fases 8–9.
+**Estado atual:** Fases 0–8 concluídas (domínio + schema + persistência + caso de
+uso + API HTTP autenticada + consumo por SQS). Os workers de publicação e de
+referências entram na Fase 9.
 
 **Índice de estado:**
 
@@ -38,7 +39,7 @@ uso + API HTTP autenticada). O consumo por SQS e os workers entram nas Fases 8�
 | Idempotência | `[PRONTO]` — persistência + decisão de replay no caso de uso |
 | Caso de uso da aplicação | `[PRONTO]` — `Process`, `OpenWallet`, leituras e `Reconcile` (Fase 6) |
 | HTTP + autenticação | `[PRONTO]` — Fase 7 (§10) |
-| Consumo do SQS (inbox) | `[PLANEJADO]` — Fase 8 |
+| Consumo do SQS (inbox) | `[PRONTO]` — Fase 8 (§11) |
 | Outbox publisher e worker de referências | `[PLANEJADO]` — Fase 9 |
 
 ---
@@ -823,7 +824,7 @@ divergência ficam na borda e na Fase 11 — o caso de uso devolve o resultado.
   Prometheus;
 - **publicação dos eventos**: é do worker (Fase 9) — aqui os eventos **entram** na
   outbox, na mesma transação;
-- **consumo por SQS**: Fase 8, compartilhando ESTE caso de uso.
+- **consumo por SQS**: Fase 8 — implementado em `app/inbox` + `internal/consumer`, compartilhando ESTE caso de uso com ganchos transacionais (§11).
 
 ---
 
@@ -1113,16 +1114,188 @@ monetário **não** entra no log (payload financeiro completo é proibido pelo �
 
 ---
 
-## 11. Consumo do SQS `[PLANEJADO]` — Fase 8
+## 11. Consumo do SQS `[PRONTO]` — Fase 8
 
-- long polling (`WaitTimeSeconds=20`), prefetch limitado por semáforo;
-- **inbox** compartilhando o **mesmo** `wagering.Service` do HTTP — uma regra de
-  negócio, duas portas de entrada;
-- transitório ⇒ não deleta, backoff por visibility;
-- permanente ou `ApproximateReceiveCount > 5` ⇒ DLQ;
-- `SIGTERM` ⇒ para de buscar, conclui o lote no prazo, senão **libera
-  visibilidade** (`ChangeMessageVisibility 0`) para reentrega segura — melhor
-  reprocessar (é idempotente) do que perder.
+### Uma regra de negócio, duas portas de entrada
+
+```
+HTTP  ──► internal/httpapi ──┐
+                             ├──► app/wagering.Process (MESMA transação, mesmas garantias)
+SQS   ──► internal/consumer ─┘        ▲
+              │                       │
+              └──► app/inbox ─────────┘   (inbox + dedup + tradução)
+                        ▲
+              internal/infra/sqs  (protocolo do broker)
+```
+
+O consumidor chama `ProcessWithHooks` — a **mesma** função que o HTTP usa por
+dentro — com ganchos que registram a inbox **dentro da transação** da operação.
+Isso é o que o README §10 exige ("HTTP e SQS devem compartilhar o caso de uso e as
+garantias de idempotência financeira"): não é "duas implementações parecidas", é
+o mesmo código com um gancho a mais.
+
+### [DECISÃO] Ganchos transacionais, e não uma transação em volta
+
+```
+1. uow.Run abre a transação
+2. OnBegin   → SELECT inbox por (consumer, messageId)
+                 já PROCESSED/REJECTED com o MESMO hash → ErrIdempotentSkip (replay)
+                 MESMO id com hash DIFERENTE           → conflito (permanente)
+                 não existe                            → INSERT (RECEIVED)
+3. ...todo o trabalho do domínio (lock, saldo, ledger, eventos)...
+4. OnCommit  → UPDATE da inbox (PROCESSED / REJECTED)
+5. COMMIT
+```
+
+**Por que assim, e não "grava na inbox, depois processa":** entre as duas
+transações existe uma janela em que uma queda deixa o débito feito **sem**
+registro (ou o registro sem o débito). O README §6.5 pede explicitamente que o
+registro da inbox e a conclusão durável **compartilhem a transação SQL** das
+alterações de domínio, do ledger e dos eventos — e a única forma de garantir isso
+é o registro acontecer dentro do `uow.Run` da operação.
+
+**O `Process` do HTTP não paga nada por isso:** `Process(ctx, req)` é
+`ProcessWithHooks(ctx, req, nil)`.
+
+### [DECISÃO] A identidade durável da mensagem é o `MessageId` do broker
+
+O README §10 diz "use o `messageId` do envelope como identidade durável da
+mensagem para o consumidor". A implementação adota o `MessageId` **do broker**, com
+o campo do envelope **opcional** e conferido contra ele.
+
+| | Envelope (`messageId`) | Broker (`MessageId`) |
+| --- | --- | --- |
+| Quem atribui | o produtor | o SQS, no `SendMessage` |
+| Sobrevive a reenvio? | sim (é o mesmo valor) | **não** (cada envio gera outro) |
+| O produtor consegue preencher? | só se INVENTAR um segundo identificador | — |
+
+O produtor **não tem como conhecer** o `MessageId` antes de enviar: ele existe
+apenas na resposta do `SendMessage`. Exigir o campo no envelope obrigaria a manter
+dois identificadores para a mesma mensagem, e aí eles podem divergir — que é
+exatamente o que aconteceu quando a primeira versão exigia a coincidência: o
+consumo recusou **toda** mensagem (defeito 28 da §15).
+
+A régua final: **o campo do envelope, quando presente, precisa coincidir** com o
+da entrega; divergência é mensagem inválida (permanente → DLQ); e a identidade
+registrada na inbox é a da entrega.
+
+### [DECISÃO] O que é transitório e o que é permanente
+
+| Situação | Destino | Por quê |
+| --- | --- | --- |
+| operação concluída (ou replay) | **remove** | commit feito; a mensagem não tem mais o que fazer |
+| rejeição de negócio (`REJECTED`) | **remove** | terminal e auditável: reenviar não muda a decisão (README §10) |
+| referência pendente (`PENDING_REFERENCE`) | **remove** | o estado está durável no banco; o worker de referências assume (Fase 9) |
+| falha transitória (banco, lock, conexão) | **adia** | repetir resolve |
+| conflito de unicidade | **adia** | no nosso schema, `23505` significa "alguém chegou primeiro" — a segunda passada decide |
+| mensagem inválida (corpo ilegível, campo ausente, `OPENING` de fora) | **DLQ** | repetir não conserta |
+| corpo divergente para o mesmo registro | **DLQ** | não é reentrega: é mensagem forjada ou bug de produtor |
+| recusa por ENTRADA (nada foi gravado) | **DLQ** | a mesma mensagem reenviada continuaria inválida |
+| erro **desconhecido** | **adia** | a DLQ é o fim da linha; o `maxReceiveCount` é o teto |
+
+A régua é conservadora de propósito no último caso: mandar para a DLQ algo que
+talvez funcionasse na segunda tentativa **perde trabalho**, enquanto tentar de
+novo custa tempo — e o broker já limita as tentativas.
+
+### [DECISÃO] DLQ explícita, além do redrive
+
+O `RedrivePolicy` da fila cobre "tentou demais". Mas a mensagem que **nunca** vai
+funcionar ficaria sendo recebida e devolvida até estourar o `maxReceiveCount` — e
+numa fila FIFO isso é pior do que parece: mensagens do mesmo `MessageGroupId` são
+entregues **em ordem**, então uma mensagem envenenada **bloqueia o grupo inteiro**
+enquanto gira.
+
+O consumidor manda para a DLQ explicitamente (`Send` + `Delete`) na primeira
+detecção de erro permanente, com o `MessageGroupId` preservado e um
+`MessageDeduplicationId` derivado do identificador da mensagem (a DLQ também é
+FIFO). O redrive continua sendo a rede de segurança para o que escapou.
+
+### [DECISÃO] O retry é `ChangeMessageVisibility` com backoff exponencial
+
+Nada é removido da fila num retry: a mensagem fica **invisível** pelo prazo
+calculado e volta sozinha.
+
+```
+base * 2^(recebimentos-1), limitado a MaxBackoff, com jitter de 0 a 25%
+SUBTRAÍDO (nunca acima do teto)
+```
+
+- **exponencial**: um SQS fora do ar não deve ser martelado a cada segundo;
+- **teto**: sem ele, a décima tentativa adiaria a mensagem por horas e a fila
+  pareceria travada;
+- **jitter**: sem ele, todas as instâncias que falharam no mesmo instante voltariam
+  no mesmo instante.
+
+O jitter é subtraído **dentro** do teto. A primeira versão somava depois do limite
+e ultrapassava o `MaxBackoff` — o teste de teto pegou (defeito 29).
+
+### [DECISÃO] `context.WithoutCancel` no processamento, e o encerramento
+
+Quando o SIGTERM chega, o `Run` cancela o contexto de **busca**. Se o
+processamento usasse o mesmo contexto, a transação em andamento seria **abortada
+no meio** — o oposto do que o encerramento quer. O processamento roda com
+`context.WithoutCancel`, e o teto de tempo é imposto pelo encerramento:
+
+```
+1. o contexto cancela → o Receive volta
+2. o laço SAI antes de processar o próximo lote   ← "pare de buscar trabalho"
+3. o trabalho em voo é aguardado por SQS_SHUTDOWN_GRACE
+4. o que sobrou tem a visibilidade LIBERADA (ChangeMessageVisibility 0)
+   → reentrega imediata, em vez de esperar o visibility timeout inteiro
+```
+
+**O `sync.Once` por entrega** é o que impede a mesma mensagem de ser apagada **e**
+devolvida: quem decide o destino primeiro vence, o outro não faz nada. Sem ele, o
+encerramento poderia liberar a visibilidade de uma mensagem que a goroutine acabou
+de remover — e ela reapareceria depois de já ter sido tratada.
+
+### [DECISÃO] `attempts` incrementado no banco (migration 000004)
+
+`attempts = attempts + 1` em SQL, não a partir do valor lido: duas instâncias
+recebendo a mesma mensagem ao mesmo tempo gravariam o **mesmo** valor final em vez
+de somar as duas entregas. Mesma decisão do `MarkRetry` da outbox.
+
+O contador é do CONSUMIDOR (por `consumer_name` + `message_id`), e existe porque o
+`ApproximateReceiveCount` do broker **se perde** quando a mensagem é removida ou
+vai para a DLQ: sem ele, investigar uma mensagem morta não diria se ela foi
+recebida duas ou vinte vezes.
+
+### Filas, FIFO e os dois identificadores de grupo
+
+| Item | Valor | Por quê |
+| --- | --- | --- |
+| `MessageGroupId` (envio pelo provedor) | a **carteira** | ordem por carteira; duas operações da mesma carteira não podem ser invertidas |
+| `MessageDeduplicationId` (envio) | explícito, do produtor | `ContentBasedDeduplication=false`: a deduplicação que vale é a NOSSA (chave financeira + inbox), não a do broker |
+| `MessageGroupId` (DLQ) | preservado | a DLQ também é FIFO |
+| `MessageDeduplicationId` (DLQ) | `dlq-<messageId>` | reenvio do mesmo lixo não cria uma segunda entrada |
+| `VisibilityTimeout` | 60s (fila) / configurável | o processamento inclui transação no Postgres |
+| `WaitTimeSeconds` | 20s | long polling: sem ele, cada chamada vazia volta na hora e o consumidor martela a API |
+
+### Concorrência
+
+O semáforo (`SQS_CONSUMER_CONCURRENCY`, padrão 8) é o teto de trabalho simultâneo:
+sem ele, lotes de 10 com N instâncias estourariam o pool de conexões do banco — o
+consumidor viraria o gargalo do próprio serviço. A coordenação entre entradas
+(HTTP × SQS × instâncias) continua sendo o **lock da carteira** e as constraints,
+não o consumidor.
+
+### Readiness do SQS (fecha a P5)
+
+`GET /health/ready` consulta a **fila específica** (`GetQueueAttributes`), e não
+"o SQS responde": com a fila ausente — ambiente mal provisionado — o serviço não
+consumiria nada, e responder `UP` seria falso.
+
+### Observabilidade do consumo
+
+| Sinal | Quando |
+| --- | --- |
+| `sqs_mensagem_processada` (messageId, status, failureCode, replay, receiveCount, duração) | commit feito; a mensagem foi removida |
+| `sqs_mensagem_adiada` (motivo, receiveCount, backoff) | retry por visibilidade |
+| `sqs_mensagem_para_dlq` (messageId, receiveCount, erro) | erro permanente |
+| `sqs_mensagem_classificada` (DEBUG) | desfecho da classificação, para diagnóstico de bancada |
+| `sqs_receive_falhou`, `sqs_delete_falhou`, `sqs_visibility_falhou`, `sqs_dlq_envio_falhou` | falhas do broker |
+| `sqs_encerramento_*` | parada: trabalho concluído, prazo esgotado, visibilidade liberada |
+| `wager_inbox_duplicates_total`, `wager_retries_total{stage="sqs_consume"}`, `wager_dlq_messages_total` | métricas Prometheus |
 
 ---
 
@@ -1146,8 +1319,8 @@ tamanho da outbox, idade do pendente mais antigo, DLQ) e alertas.
 | Disputa de lock na mesma carteira (`55P03`) | classificado como transitório e repetido (3 tentativas); esgotado, sobe como indisponibilidade | `[PRONTO]` |
 | Queda depois do commit, antes de publicar | evento fica na outbox e o lease expira → republica | `[PRONTO]` (mecanismo) / `[PLANEJADO]` (worker) |
 | Queda depois de publicar, antes de marcar | republica com o **mesmo `eventId`** → consumidor deduplica | `[PLANEJADO]` |
-| Mensagem reentregue pelo SQS | inbox recusa a segunda | `[PRONTO]` (mecanismo) |
-| Referência que nunca chega | TTL esgota → `REJECTED REFERENCE_NOT_FOUND` | `[PLANEJADO]` |
+| Mensagem reentregue pelo SQS | inbox recusa a segunda (por `consumer_name` + identificador da mensagem), com o hash do corpo distinguindo reentrega de conflito | `[PRONTO]` |
+| Referência que nunca chega | a mensagem de ENTRADA é concluída e o `PENDING_REFERENCE` fica durável; o TTL esgota no worker (Fase 9) → `REJECTED REFERENCE_NOT_FOUND` | `[PARCIAL]` |
 | `PENDING` antigo sem desfecho | reaper retoma | `[PLANEJADO]` |
 
 ---
@@ -1198,6 +1371,11 @@ introduzido de propósito, e todos foram corrigidos com teste que os trava.
 | 25 | 7 | `-health-check` não existia, e a primeira versão exigia a configuração inteira | o healthcheck do compose apontava para uma flag inexistente (contêiner `unhealthy`); e um processo curto de verificação não deve depender de `DATABASE_URL`/`OIDC_ISSUER` para dar veredito sobre o **serviço** | modo healthcheck que não carrega a config e consulta o próprio `/health/ready` |
 | 26 | 7 | **Três asserções de teste erradas** (régua, não código) | (a) esperava envelope de erro na rejeição 422; (b) usava `cursor=%%%`, que é texto literal válido e devolvia página vazia; (c) tratava a mesma identidade externa em dois provedores como conflito, quando a identidade financeira é o PAR `(providerId, externalTransactionId)` | as três corrigidas, com o motivo escrito no próprio teste |
 | 27 | 7 | **Dois loggers no mesmo processo**: o log de acesso saía em TEXTO e o boot em JSON | `app.Run` montava o próprio `slog.NewJSONHandler` enquanto o resto do grafo recebia `observability.NewLogger(cfg)` (texto em `local`). O `/health/live` respondia `200` mas o `http_request` saía fora do formato estruturado que o README §12 exige — e o defeito **não aparecia em teste nenhum**, porque nenhum olhava o stdout do processo | um logger por processo, vindo da config; `local` = texto, produção = JSON (provado nos dois modos) |
+| 28 | 8 | **As filas do LocalStack NUNCA eram criadas**: o `init-queues.sh` não tinha shebang nem bit de execução no git | `docker logs jungleg-localstack` trazia, nas TRÊS subidas, `stage=READY, state=ERROR: [Errno 8] Exec format error`, e `list-queues` respondia vazio. Nada quebrava porque nenhum teste usava SQS — a evidência da Fase 4 dizia "filas provisionadas" com base no script **existir**. O LocalStack roda os scripts de `init/ready.d` **executando o arquivo**, não via `sh arquivo` | shebang `#!/bin/sh` + `git update-index --chmod=+x`, provado reiniciando o container (as filas passaram a ser criadas no stage READY) |
+| 29 | 8 | **A inbox não tinha `attempts`** (migration 000004) | o PLANO previa "o attempts da inbox incrementa" e a tabela da Fase 4 não tinha a coluna; o `ApproximateReceiveCount` do broker **se perde** quando a mensagem é removida ou vai para a DLQ, então investigar uma mensagem morta não diria se ela foi recebida duas ou vinte vezes | coluna com CHECK de não-negatividade, índice parcial de diagnóstico e `CountAttempt` incrementando **em SQL** |
+| 30 | 8 | **A identidade da mensagem no envelope não pode ser a do consumo** | com o `messageId` do envelope exigido e conferido contra o da entrega, o consumo recusou TODA mensagem: o produtor não tem como conhecer o `MessageId` antes do `SendMessage` — ele só existe na resposta do envio | identidade durável = `MessageId` **do broker**; campo do envelope **opcional** e conferido quando presente (divergência ⇒ mensagem inválida) |
+| 31 | 8 | **`return` que abortava o parsing** (introduzido na correção do 30) | `return operacao{}, nil` no caminho do envelope sem `messageId` devolvia uma requisição VAZIA com erro `nil`; o sintoma era `IDEMPOTENCY_KEY_REQUIRED` para um corpo que TINHA a chave. Localizado por um teste de unidade que roda o **corpo exato** entregue pelo broker (`payload_real_test.go`): o teste de integração disse **que** algo estava errado, o unitário com o corpo real disse **onde** | o `messageId` do envelope é opcional e o parsing segue |
+| 32 | 8 | **Jitter do backoff somado DEPOIS do teto** | o atraso ultrapassava o `MaxBackoff` (62s com teto de 60s), e o limite de `VisibilityTimeout` do SQS voltaria a ser alcançável por acidente | jitter **subtraído dentro** do teto (0 a 25% para baixo) |
 
 ---
 
@@ -1217,7 +1395,7 @@ que funciona não ajuda quem vai manter.
 | `next_resolution_attempt_at` fica preenchido em reversão já `PROCESSED` | Efeito de usar `MarkPendingReference` + `ResolveReference`, que é o único caminho que o agregado oferece para vincular a referência interna. A coluna só é lida para linhas `PENDING_REFERENCE`, então o valor é inerte |
 | `ListLedger` faz uma consulta a mais por página | Confere a existência da carteira antes de listar (para não devolver página vazia ambígua). É uma leitura a mais dentro da mesma transação de leitura |
 | `Reconcile` não emite métrica nem log de divergência | **Resolvido na Fase 7 na borda**: o handler emite `wager_reconciliation_divergences_total` e o log `reconciliacao_divergente`. O caso de uso continua sem conhecer Prometheus (de propósito) |
-| `ARCHITECTURE.md` sem as seções de SQS e workers | As seções 11 (Fase 8) e as partes de worker da 8/9 seguem `[PLANEJADO]`; a 10 (HTTP) foi fechada na Fase 7 |
+| `ARCHITECTURE.md` sem as seções de workers | As seções 10 (HTTP) e 11 (SQS) foram fechadas nas Fases 7 e 8; o publisher da outbox e o worker de referências entram na Fase 9 |
 | Sem introspecção de token (RFC 7662) na autenticação | A validação é **local** (assinatura + claims), que é o comportamento normal de OIDC/JWT. Consequência: revogar um token antes do `exp` não é detectado. Introspecção custaria uma ida ao IdP por requisição |
 | `azp` só é conferido com múltiplas audiences | Regra do OIDC Core §3.1.3.7. O realm deste projeto emite uma audience só, então não há o que conferir hoje |
 | Sem rate limiting por identidade | Não é exigido pelo enunciado; com o lock por carteira, o custo de uma rajada é contenção de linha, não corrupção de saldo |
@@ -1231,7 +1409,7 @@ $env:GOMODCACHE='E:\jungleg\.gocache\mod'
 $env:GOCACHE='E:\jungleg\.gocache\build'
 $env:GOPATH='E:\jungleg\.gocache\gopath'
 
-docker compose up -d postgres keycloak
+docker compose up -d postgres keycloak localstack
 $env:DATABASE_URL='postgres://jungleg:jungleg@localhost:5432/jungleg?sslmode=disable'
 .\bin\migrate.exe up
 
@@ -1244,6 +1422,10 @@ $env:TEST_DATABASE_URL='postgres://jungleg:jungleg@localhost:5432/jungle_test?ss
 $env:OIDC_ISSUER='http://localhost:8080/realms/jungleg'
 $env:OIDC_DISCOVERY_URL='http://localhost:8080/realms/jungleg'
 $env:OIDC_AUDIENCE='jungleg-api'
+$env:SQS_ENDPOINT='http://localhost:4566'
+# as filas precisam EXISTIR: se `list-queues` estiver vazio, o script de init
+# falhou (ver o log do LocalStack) e os testes de consumo vão falhar por isso
+docker exec jungleg-localstack awslocal sqs list-queues
 go test -count=1 -race -tags=integration -timeout 300s ./...
 
 # as 32 operações inválidas que o banco precisa recusar
@@ -1252,14 +1434,15 @@ cmd /c "docker exec -i jungleg-postgres psql -U jungleg -d jungleg < deploy/post
 
 **Números atuais:** 574 casos no domínio (Fases 1–3) + **38** testes de
 persistência (Fase 5) + 3 de `idgen` + **56 casos** do caso de uso (Fase 6) +
-**49 casos** em `internal/infra/auth` (Fase 7) + **67 casos** em
-`internal/httpapi` (Fase 7) + **29 casos** de integração do caminho completo
-(Fase 6) + **30 casos** de integração da borda HTTP (Fase 7) + 2 de integração do
-binário real. `go test -race` verde nos **15 pacotes** de unidade e nos **3** de
+**49** em `internal/infra/auth` (Fase 7) + **67** em `internal/httpapi` (Fase 7) +
+**26** em `internal/app/inbox` (Fase 8) + **19** em `internal/consumer` (Fase 8) +
+**29 casos** de integração do caminho completo (Fase 6) + **30** da borda HTTP
+(Fase 7) + **9 funções** de consumo com LocalStack (Fase 8) + 2 de integração do
+binário real. `go test -race` verde nos **17 pacotes** de unidade e nos **3** de
 integração. Cobertura do domínio: `money` 97,9%, `wallet` 99,0%, `wagering` 100,0%.
 
-**Migrations:** três (`000001_init`, `000002_opening_sem_jogo_e_rodada`,
-`000003_ordem_da_outbox`). O binário `bin/migrate.exe` carrega as migrations
+**Migrations:** quatro (`000001_init`, `000002_opening_sem_jogo_e_rodada`,
+`000003_ordem_da_outbox`, `000004_inbox_attempts`). O binário `bin/migrate.exe` carrega as migrations
 **embutidas** (`go:embed`): depois de criar uma migration nova, é preciso
 **rebuidá-lo** (`go build -o bin/migrate.exe ./cmd/migrate`) — um binário velho
 responde "schema já está atualizado" e não aplica nada.

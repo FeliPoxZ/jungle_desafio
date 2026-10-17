@@ -441,7 +441,23 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` feito e **validado por te
 - [x] Testes: servidor OIDC de teste com **assinatura real** (chave RSA de 2048 bits) **e** o Keycloak do container como prova principal — token ausente/inválido/expirado/role errada/provedor errado; isolamento em replay e leitura; nenhum efeito financeiro em acesso negado (contagem de tabelas)
 - [x] P1 (`-health-check`, provado com o binário real), P4 (`POST /wallets`), P5 (health checkers), P7 (`StopTimeout` da config)
 
-### FASE 8 — SQS: consumidor, inbox, retry, DLQ (D2, ~4h)
+### FASE 8 — SQS: consumidor, inbox, retry, DLQ (D2, ~4h) — ✅ CONCLUÍDA E VALIDADA
+> Dois blocos, um commit cada: **8a/8b** (`c81e7de` — ganchos transacionais, `app/inbox`,
+> `internal/consumer`, `internal/infra/sqs`, migration 000004, módulo Fx `worker`) e
+> **8e** (`eaf52a0` — integração com LocalStack real + correção dos dois defeitos de
+> identidade da mensagem). **45 casos unitários** (26 em `app/inbox`, 19 em
+> `internal/consumer`) e **9 funções** de integração. **4 defeitos reais corrigidos**,
+> um deles de ambiente (as filas **nunca** eram criadas). Evidências em
+> `docs/evidencias/FASE_8.md`.
+- [x] `internal/infra/sqs`: receber/apagar/adiar/enviar em lote, com `MessageGroupId` preservado e `MessageDeduplicationId` derivado na DLQ
+- [x] `internal/consumer`: long polling, semáforo de concorrência e processamento por goroutine
+- [x] Fluxo da inbox (A11) compartilhando **o mesmo** `wagering.Service` do HTTP — **provado** com a mesma operação pelas duas portas (inclusive simultâneas) debitando **uma** vez
+- [x] Retry: transitório adia por `ChangeMessageVisibility` com backoff exponencial (teto + jitter **dentro** do teto)
+- [x] DLQ: explícita para erro permanente (`Send`+`Delete`, para não bloquear o grupo FIFO no redrive) **e** o redrive do broker como rede de segurança
+- [x] `SIGTERM`: para de buscar, conclui o que está em voo dentro do prazo, senão **libera visibilidade** (`ChangeMessageVisibility 0`) — com `sync.Once` por entrega para não apagar e devolver a mesma mensagem
+- [x] Testes de integração contra o **LocalStack real**: reentrega (mesmo identificador e mesma operação), corpo divergente, rejeição terminal, mensagem inválida → DLQ, e HTTP × SQS (sequencial e concorrente)
+- [x] Readiness do **SQS** (fecha a P5) e a documentação de `MessageGroupId`/`MessageDeduplicationId` (`ARCHITECTURE.md` §11)
+- [x] Extra: migration 000004 (`inbox.attempts`) e a correção do `init-queues.sh` (shebang + bit de execução)
 - [ ] `sqsx.Producer`: `SendMessage` FIFO (`MessageGroupId`, `MessageDeduplicationId`, `MessageAttributes` com `eventType`/`eventId`)
 - [ ] `sqsx.QueueProvisioner`: cria filas/DLQ/redrive se ausentes (usado por `localstack-init` e por flag de boot); usado no readiness
 - [ ] `sqsx.Consumer`: long polling (`WaitTimeSeconds=20`), batch, prefetch **limitado** (semáforo = `MaxConcurrency`), `VisibilityTimeout` compatível com o processamento
@@ -648,6 +664,17 @@ Formato: `[data] [fase] status — o que foi feito / decisão / bloqueio`.
   - **Evidências:** `docs/evidencias/FASE_6.md`.
   - **Correção pós-fase (bloco 6d) — ordem dos eventos na outbox:** a fase tinha deixado duas limitações registradas (o par de eventos da mesma operação empatando em `occurred_at` e a dependência do relógio). Migration 000003 acrescentou `sequence BIGINT GENERATED ALWAYS AS IDENTITY`, e a fila passou a ser lida por ela. No caminho apareceu um defeito: **`RETURNING` não garante a ordem das linhas que devolve**, então o lote chegava embaralhado — pego por um teste que falhava 1 em 5, corrigido com o `UPDATE` virando CTE e o `SELECT` de fora ordenando por `sequence`. O teste que discrimina insere dois eventos com ordem de inserção e ordem de relógio opostas (56 unitários + 29 de integração ao final).
 
+- **D2** — **FASE 8 CONCLUÍDA** — consumo do SQS com inbox transacional (2 commits: `c81e7de`, `eaf52a0`).
+  - **Bloco 8a/8b — ganchos + consumo:** `ProcessWithHooks` com `OnBegin`/`OnCommit` (o registro da inbox entra na MESMA transação do saldo, do ledger e dos eventos, como o README §6.5 exige), `app/inbox` (tradução estrita + política de dedup), `internal/consumer` (laço, semáforo, retry por visibilidade, DLQ, encerramento), `internal/infra/sqs` (adaptador) e o módulo Fx `worker` com readiness do SQS.
+  - **Bloco 8e — prova com infra real:** 9 funções de integração contra o **LocalStack**, incluindo a equivalência HTTP × SQS do hash canônico e as duas portas concorrentes.
+  - **Quatro defeitos reais encontrados e corrigidos:**
+    1. **as filas nunca eram criadas** — o `init-queues.sh` não tinha shebang nem bit de execução no git, e o LocalStack registrava `Exec format error` no stage READY (o erro estava no log nas três subidas; nada quebrava porque nenhum teste usava SQS);
+    2. **a inbox não tinha `attempts`** — migration 000004, com o incremento em SQL (o `ApproximateReceiveCount` do broker se perde quando a mensagem é removida ou vai para a DLQ);
+    3. **a identidade da mensagem não pode ser a do envelope** — o produtor não tem como conhecer o `MessageId` antes do `SendMessage`; a identidade durável do consumo é a do broker, e o campo do envelope é opcional e conferido;
+    4. **o `return` que abortava o parsing** (introduzido na correção do 3) devolvia requisição VAZIA com erro `nil` — o sintoma era `IDEMPOTENCY_KEY_REQUIRED` para um corpo que tinha a chave, e foi um teste de unidade com o **corpo real** entregue pelo broker que localizou.
+  - **Números:** 45 casos unitários novos e 9 funções de integração; `go test -race` verde em **17 pacotes** de unidade e nos **3** de integração.
+  - **Evidências:** `docs/evidencias/FASE_8.md`.
+
 - **D2** — **FASE 7 CONCLUÍDA** — API HTTP autenticada, em 5 blocos + 1 pendência (6 commits: `ec6c014`, `1d43174`, `95e85bb`, `343ec51`, `31cf6b5`, `cc986df`).
   - **Bloco 7a — autenticação OIDC:** `internal/infra/auth` com discovery, JWKS com cache e rotação, assinatura RS256 conferida por `crypto/rsa`, `iss`/`aud`/`exp`/`nbf` validados, `alg` **fixo** (nunca o do header), `kid` obrigatório e duas classes de erro (**401** token ruim × **503** IdP fora). **Sem dependência nova.**
   - **Bloco 7b/7d — a borda:** os 7 endpoints do §9, DTOs estritos, tabela desfecho→status (`201`/`200`/`202`/`422`/`503`) e erro→status; rotas por role (`internal` × `provider`); `providerId` do **token**; operação alheia em **404**. P2 e P4 resolvidas no caminho.
@@ -665,9 +692,9 @@ Formato: `[data] [fase] status — o que foi feito / decisão / bloqueio`.
   - **Evidências:** `docs/evidencias/FASE_7.md`.
 
 ### Próximos 3 passos imediatos
-1. **Nós:** Fase 8 — consumidor de SQS com inbox (`InsertIfAbsent` na MESMA transação do tratamento durável), retry por visibility timeout, DLQ, e `SIGTERM` liberando visibilidade do lote em andamento.
-2. **Nós:** reusar `appwagering.Process` (a mesma função do HTTP) e registrar o SQS no grupo `health_checkers` (fecha a P5).
-3. **Nós:** provar a **equivalência HTTP × SQS** do hash canônico — a mesma operação pelas duas portas gera um débito só — e os cenários de reentrega e DLQ contra o LocalStack real.
+1. **Nós:** Fase 9 — `worker.OutboxPublisher`: loop com `ClaimBatch`/lease/`Publish`/`MarkPublished`/`MarkRetry`, N publishers concorrentes e recuperação de lease expirado (o mecanismo de banco já está pronto e provado desde a Fase 5/6d).
+2. **Nós:** `worker.ReferenceWorker` (resolver `PENDING_REFERENCE` vencidas, backoff exponencial com jitter, TTL → `REJECTED REFERENCE_NOT_FOUND` + evento) e o `worker.Runner` com `errgroup`, no mesmo padrão de encerramento do consumidor da Fase 8.
+3. **Nós:** provar a publicação repetida preservando o `eventId`, o crash entre publish e `MarkPublished`, dois publishers na mesma outbox e a expiração de referência — contra **LocalStack e PostgreSQL reais** (a fila `wallet-events.fifo` e a DLQ dela já estão provisionadas).
 
 ---
 

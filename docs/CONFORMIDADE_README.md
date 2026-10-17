@@ -14,10 +14,12 @@
 > | ⬜ | pendente, com a fase que entrega |
 > | ⚠️ | risco ou decisão aberta que precisa de resposta |
 >
-> **Estado na última verificação:** Fases 0 a **7** concluídas (blocos 7a–7e:
-> autenticação OIDC, endpoints do §9, composição Fx, pendências P1/P2/P4/P5/P7 e
-> testes com Keycloak e PostgreSQL reais). Schema na versão **3**. `go test -race`
-> verde em 15 pacotes de unidade e nos 3 de integração.
+> **Estado na última verificação:** Fases 0 a **8** concluídas. A Fase 8 entregou o
+> consumidor de SQS com inbox na mesma transação do tratamento, retry por
+> visibilidade, DLQ explícita, encerramento seguro e readiness do SQS — provado
+> contra o **LocalStack real**. Schema na versão **4**
+> (`000004_inbox_attempts`). `go test -race` verde em 17 pacotes de unidade e nos
+> 3 de integração.
 
 ---
 
@@ -36,8 +38,8 @@
 | Outbox (gravação + ordem) | ✅ | `internal/app/wagering/events.go` + `ClaimBatch` |
 | **HTTP (contratos §9)** | ✅ **Fase 7** | `internal/httpapi` — 7 rotas + health + métricas |
 | **Autenticação (OIDC)** | ✅ **Fase 7** — era **eliminatório** | `internal/infra/auth` (validação real contra o Keycloak) |
-| **Consumidor SQS + inbox** | ⬜ **Fase 8** | filas provisionadas; tabela `inbox_messages` existe |
-| **Publisher da outbox + workers** | ⬜ **Fase 9** | `ClaimBatch`/lease/`MarkRetry` prontos |
+| **Consumidor SQS + inbox** | ✅ **Fase 8** | `internal/consumer` + `internal/app/inbox`, com integração contra o LocalStack |
+| **Publisher da outbox + workers** | ⬜ **Fase 9** | `ClaimBatch`/lease/`MarkRetry` prontos; a fila de eventos e a DLQ dela estão provisionadas |
 | Prova com 3 instâncias | ⬜ **Fase 10** | |
 | Métricas de negócio alimentadas | 🟡 **Fase 11** | 4 das 12 já emitidas **pela borda HTTP** (Fase 7); o resto é 8–11 |
 | README da solução + `.env.example` | 🟡 **Fase 12** | `.env.example` existe; ver ⚠️ 3 |
@@ -92,7 +94,7 @@ está implementada e testada no nível do caso de uso.
 | A identidade autenticada determina o `providerId` | ✅ o `providerId` sai do **token**; o corpo só pode confirmá-lo, e divergência responde **403 sem chamar o caso de uso** (teste unitário + integração) |
 | Provedores acessam só as próprias transações, inclusive em replay | ✅ no caso de uso e na borda: `:providerId` do path divergente ⇒ 403; operação alheia consultada pela própria rota ⇒ **404** (não 403, que confirmaria a existência); o replay devolve o resultado **daquele** provedor |
 | Operações de carteira restritas ao serviço interno | ✅ `POST /wallets`, `GET /wallets*`, `/reconciliation` e a leitura interna por id exigem role `internal`. Teste de integração prova **403 com zero efeito financeiro** (contagem de tabelas antes/depois) |
-| Acesso à mensageria controlado por credenciais e políticas do broker | ⬜ Fase 8 (filas FIFO + DLQ já provisionadas; o consumidor entra lá) |
+| Acesso à mensageria controlado por credenciais e políticas do broker | ✅ o acesso é por credenciais do broker (`SQS_ACCESS_KEY_ID`/`SQS_SECRET_ACCESS_KEY`, com as de teste no compose) e as políticas da fila estão declaradas no provisionamento (FIFO, DLQ com `maxReceiveCount`). As validações de DOMÍNIO continuam no consumidor, como o §10 exige |
 | Escolha do IdP e modelo de permissões justificados no `ARCHITECTURE.md` | ✅ `ARCHITECTURE.md` §10 (era `[PLANEJADO]`): escolha do Keycloak, roles `internal`/`provider`, `provider_id` do token, duas classes de erro (401 x 503), cache/rotação de chave e as limitações registradas |
 | Rejeição de credenciais ausentes, inválidas ou expiradas | ✅ token ausente, malformado, expirado, `nbf` no futuro, emissor errado, audience errada, `kid` inexistente, assinatura de outra chave, `alg: none` e `alg: HS256` — 11 casos, cada um afirmando a causa exata |
 | IdP indisponível não pode gerar efeito financeiro | ✅ discovery/JWKS fora ⇒ **503** com `Retry-After`, e teste de integração confere saldo e ledger intactos |
@@ -102,13 +104,13 @@ está implementada e testada no nível do caso de uso.
 | Situação que o enunciado exige suportar | Estado |
 | --- | --- |
 | Recebimento repetido por **HTTP** | ✅ replay por chave/idempotência, e o reenvio simultâneo é repetido e devolve o resultado persistido (provado com 12 disparos) |
-| Recebimento repetido por **SQS** | ⬜ Fase 8 (a deduplicação por inbox tem tabela e repositório prontos) |
+| Recebimento repetido por **SQS** | ✅ **Fase 8**: a inbox deduplica por `(consumer_name, messageId)` na MESMA transação do tratamento, com o hash do corpo distinguindo reentrega (mesmo hash) de conflito real (hash diferente). Provado contra o LocalStack: reentrega com o mesmo identificador e a mesma operação enviada duas vezes debitam **uma** vez |
 | Reversão que chega antes da transação referenciada | ✅ `PENDING_REFERENCE` persistida + evento + `202`, com `next_resolution_attempt_at` no futuro; a retomada é do worker (Fase 9) |
 | Processamento simultâneo de operações da mesma carteira | ✅ lock de linha + versão; provado (cenário do README e 12 disparos) |
-| Encerramento abrupto antes ou depois do commit | ✅ antes: rollback (nada fica — provado com a outbox quebrada); depois: o evento fica na outbox e o lease expira (worker é a Fase 9) |
+| Encerramento abrupto antes ou depois do commit | ✅ antes: rollback (nada fica — provado com a outbox quebrada); depois: o evento fica na outbox e o lease expira (worker é a Fase 9). **No consumo (Fase 8):** a mensagem cujo commit não aconteceu volta para a fila (visibilidade liberada), e a que commitou mas não foi removida é reconhecida pela inbox |
 | Publicação repetida de um evento | ✅ `eventId` estável na outbox; republicação com o mesmo id — o publisher é a Fase 9 |
 | Indisponibilidade temporária do PostgreSQL | ✅ erros transitórios classificados (`55P03`, deadlocks, conexão) e repetidos até 3 vezes; esgotado ⇒ erro transitório (503 na borda) |
-| Indisponibilidade temporária do SQS | ⬜ Fase 8/9 (o retry com backoff já tem colunas e `MarkRetry`) |
+| Indisponibilidade temporária do SQS | 🟡 **consumo** ✅ (o `Receive` que falha registra e espera; falha de tratamento adia por `ChangeMessageVisibility` com backoff exponencial). **Publicação** ⬜ Fase 9 |
 
 ## 4. Stack — ✅ (com duas observações)
 
@@ -150,7 +152,7 @@ está implementada e testada no nível do caso de uso.
 | 6.2 `Wallet` (`(playerId, currency)` único, débito sem saldo negativo, moeda da movimentação = da carteira, lançamento na mesma transação, versão 1 inicial e só incrementa com mudança de saldo, sem descartar atualização confirmada) | ✅ 99,0% de cobertura |
 | 6.3 `WagerTransaction` (todos os campos persistidos, `PENDING` inicial, transições validadas no domínio, estados terminais, replay consulta o resultado, `OPENING` reservado ao interno, schema distingue interno/externo e impede crédito inicial duplicado) | ✅ 100% de cobertura. O `OPENING` veio de fora é recusado (`OPERATION_NOT_ALLOWED`). O crédito inicial duplicado é impedido por índice único parcial **e** testado |
 | 6.4 `WalletLedgerEntry` (campos, imutável, valida `after = before ± amount`, unicidade `(walletId, transactionId)`, `LOSS` e rejeição sem lançamento) | ✅ |
-| 6.5 Inbox/outbox (tabelas e comportamento) | ✅ schema e repositórios; o **fluxo** da inbox é a Fase 8 |
+| 6.5 Inbox/outbox (tabelas e comportamento) | ✅ schema e repositórios **e o fluxo da inbox** (Fase 8): registro e conclusão na MESMA transação do tratamento durável, com `body_hash` distinguindo reentrega de conflito e unicidade `(consumer_name, message_id)` |
 
 **Um ponto que merece destaque:** o enunciado aceita "operações sem dependências podem
 ser concluídas de forma síncrona, sem commit intermediário de aceite". Foi o caminho
@@ -197,18 +199,18 @@ durável fica restrito a `PENDING_REFERENCE` (que É durável e retomável).
 | Replay devolve o saldo do processamento original | ✅ provado na borda: `200` com `idempotentReplay: true` e o saldo de 975.00 mesmo depois de a carteira ter mudado |
 | Documentar códigos e corpos para entrada inválida, conflito, rejeição, pendente e indisponibilidade | ✅ implementado **e documentado** (`ARCHITECTURE.md` §10, com as duas tabelas): `201`/`200`/`202`/`422`/`409`/`404`/`400`/`403`/`503`/`500`, com `code` e `failureCode` estáveis |
 | Reconciliação: `storedBalance`, `calculatedBalance`, `difference`, `consistent`, `checkedEntries`, visão consistente, sem alterar saldo | ✅ implementado e provado na borda (975.00/975.00/0.00/true/2), com **log de divergência** e métrica `wager_reconciliation_divergences_total` |
-| `GET /health/live` e `/health/ready` (readiness de PostgreSQL e SQS) | ✅ readiness de **PostgreSQL e IdP** registrados no grupo `health_checkers` (P5 parcial: o SQS entra na Fase 8, junto com o cliente) |
+| `GET /health/live` e `/health/ready` (readiness de PostgreSQL e SQS) | ✅ **P5 fechada**: PostgreSQL, IdP e **SQS** (a fila específica, por `GetQueueAttributes`) registrados no grupo `health_checkers`. Um readiness que respondesse UP com a fila ausente mandaria tráfego para uma instância que não consome nada |
 | `docker compose up --build` sobe o `api` saudável | ✅ P1 resolvida: a flag `-health-check` existe e foi provada **subindo o binário real** |
 
-## 10. Consumidor SQS — ⬜ Fase 8
+## 10. Consumidor SQS — ✅ Fase 8
 
 | Exigência | Estado |
 | --- | --- |
-| Provisionar `wager-transactions.fifo` + DLQ com redrive | ✅ `deploy/localstack/init-queues.sh`: FIFO, `ContentBasedDeduplication=false`, `VisibilityTimeout=60`, `ReceiveMessageWaitTimeSeconds=20`, DLQ com `maxReceiveCount` |
-| Corpo da mensagem com envelope + `data` | ⬜ Fase 8 (o `Request` do caso de uso já é o mesmo tipo que o HTTP vai produzir) |
-| HTTP e SQS compartilhando o caso de uso e as garantias | ✅ por construção (um único `Service`); a ligação é a Fase 8 |
-| `messageId` como identidade durável + hash em reentregas; remover da fila só depois do commit; rejeição terminal remove; transitório faz retry; DLQ; `SIGTERM` libera visibilidade | ⬜ Fase 8 (tabela `inbox_messages` + `InsertIfAbsent` com `ON CONFLICT DO NOTHING` já prontos) |
-| Documentar `MessageGroupId`/`MessageDeduplicationId` e validar a concorrência HTTP × SQS | ⬜ Fase 8 |
+| Provisionar `wager-transactions.fifo` + DLQ com redrive | ✅ FIFO, `ContentBasedDeduplication=false`, `VisibilityTimeout=60`, `ReceiveMessageWaitTimeSeconds=20`, DLQ com `maxReceiveCount=5`. **Corrigido na Fase 8:** o script não tinha shebang nem bit de execução, e as filas **nunca** eram criadas (o LocalStack registrava `Exec format error` no stage READY) — provado reiniciando o container |
+| Corpo da mensagem com envelope + `data` | ✅ `internal/app/inbox` decodifica com a MESMA régua estrita do HTTP (campo desconhecido é erro) e produz o mesmo `Request` do caso de uso |
+| HTTP e SQS compartilhando o caso de uso e as garantias | ✅ **provado**: `TestSQSESHTTPCompartilhamAIdempotencia` envia a MESMA operação pelas duas portas e confere **um** débito; `TestSQSConcorrenteComHTTPNaoDuplicaDebito` faz as duas ao mesmo tempo |
+| `messageId` como identidade durável + hash em reentregas; remover da fila só depois do commit; rejeição terminal remove; transitório faz retry; DLQ; `SIGTERM` libera visibilidade | ✅ identidade = `MessageId` do broker (o campo do envelope é opcional e conferido); `body_hash` distingue reentrega de conflito; o `Delete` acontece **depois** do commit; rejeição terminal remove; transitório adia por `ChangeMessageVisibility` com backoff; permanente vai para a DLQ; no encerramento o que não deu tempo tem a visibilidade liberada |
+| Documentar `MessageGroupId`/`MessageDeduplicationId` e validar a concorrência HTTP × SQS | ✅ `ARCHITECTURE.md` §11 (tabela de identificadores) e os dois testes de concorrência entre portas |
 
 ## 11. Publicação com transactional outbox — 🟡 Fase 9
 
@@ -226,20 +228,20 @@ durável fica restrito a `PENDING_REFERENCE` (que É durável e retomável).
 
 | Exigência | Estado |
 | --- | --- |
-| Logs JSON com `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId`; sem credenciais nem payload financeiro completo | ✅ a borda HTTP já preenche os campos de domínio: `http_request` (status, duração, `idempotencyKey`), `http_error` (`code`, `failureCode`), `operacao_concluida`/`operacao_rejeitada` (`transactionId`, `providerId`, `status`, `failureCode`, `correlationId`), `carteira_aberta`, `ledger_consultado`, `reconciliacao_divergente`, `token_recusado`, `idp_indisponivel`, `provedor_divergente_do_token`. Valor monetário **não** entra no log; a divergência sai em unidades mínimas. `messageId` chega com o consumidor (Fase 8) |
-| Métricas: resultados por status, duplicatas, retries, DLQ, conflitos, atraso da outbox, latência, divergências de reconciliação | 🟡 **4 das 12 já são emitidas pela borda HTTP** (`wager_operations_total{kind,status}`, `wager_operation_duration_seconds`, `wager_idempotent_replays_total`, `wager_reconciliation_divergences_total`). Retries, DLQ, conflitos e atraso da outbox entram nas Fases 8–9/11 |
-| Health checks definidos na API | ✅ `/health/live` (processo) e `/health/ready` (PostgreSQL + IdP, com o nome de cada dependência no corpo). SQS entra na Fase 8 (**P5** parcial) |
+| Logs JSON com `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId`; sem credenciais nem payload financeiro completo | ✅ a borda HTTP já preenche os campos de domínio: `http_request` (status, duração, `idempotencyKey`), `http_error` (`code`, `failureCode`), `operacao_concluida`/`operacao_rejeitada` (`transactionId`, `providerId`, `status`, `failureCode`, `correlationId`), `carteira_aberta`, `ledger_consultado`, `reconciliacao_divergente`, `token_recusado`, `idp_indisponivel`, `provedor_divergente_do_token`. Valor monetário **não** entra no log; a divergência sai em unidades mínimas. `messageId` e o resultado da classificação chegam com o consumidor (Fase 8: `sqs_mensagem_processada`, `sqs_mensagem_adiada`, `sqs_mensagem_para_dlq`). |
+| Métricas: resultados por status, duplicatas, retries, DLQ, conflitos, atraso da outbox, latência, divergências de reconciliação | 🟡 **7 das 12 já são emitidas** (4 pela borda HTTP (Fase 7) e 3 pelo consumidor (Fase 8)): as 4 da borda são (`wager_operations_total{kind,status}`, `wager_operation_duration_seconds`, `wager_idempotent_replays_total`, `wager_reconciliation_divergences_total`). O consumidor acrescentou `wager_retries_total{stage="sqs_consume"}`, `wager_inbox_duplicates_total` e `wager_dlq_messages_total`. Conflitos, atraso da outbox e idade do pendente entram nas Fases 9–11 |
+| Health checks definidos na API | ✅ `/health/live` (processo) e `/health/ready` (**PostgreSQL + IdP + SQS**, com o nome e o estado de cada dependência no corpo) |
 
 ## 13. Verificação obrigatória — 🟡
 
 | Bloco | Estado |
 | --- | --- |
 | **Testes unitários** (parsing e operações de `Money`, escala, limites, entradas inválidas, moedas, invariantes da carteira, transições, regras dos cinco tipos, conflito de payload, política de zero, abertura interna com metadados e eventos) | ✅ 574 casos no domínio + 56 no caso de uso + **49 em `internal/infra/auth`** + **67 em `internal/httpapi`** (tabela desfecho→status, erro→status, handlers com dublês) |
-| **Testes de integração** com PostgreSQL, IdP e LocalStack em containers reais | 🟡 PostgreSQL ✅ real (migrations, constraints, imutabilidade do ledger, atomicidade, outbox concorrente, retry, lease — 29 casos) e **IdP ✅ real** (30 casos na borda HTTP obtendo token por `client_credentials` no Keycloak, + 2 casos subindo o **binário real**). LocalStack/inbox/reentrega/DLQ ⬜ Fase 8. Recuperação após reinicialização ⬜ Fase 10 |
-| Verificação da composição Fx, início, encerramento e liberação de recursos dos workers | 🟡 `TestValidateAppComposition` valida o grafo **inteiro** agora (infra + usecase + auth + httpapi), `TestBuildAppFailsWithInvalidConfig` prova a falha de boot, e o teste do binário real prova **encerramento gracioso** e liberação do pool. A liberação dos recursos dos **workers** entra com os workers (Fases 8–9) |
-| **Não substituir toda a infraestrutura por mocks** | ✅ os testes de integração usam PostgreSQL real, Keycloak real e o Unit of Work de produção; os dublês existem só nos testes **unitários** da borda (autenticador e serviço), onde o objetivo é a tradução do contrato |
+| **Testes de integração** com PostgreSQL, IdP e LocalStack em containers reais | 🟡 PostgreSQL ✅ real (migrations, constraints, imutabilidade do ledger, atomicidade, outbox concorrente, retry, lease — 29 casos) e **IdP ✅ real** (30 casos na borda HTTP obtendo token por `client_credentials` no Keycloak, + 2 casos subindo o **binário real**). LocalStack ✅ real (9 funções de consumo: reentrega, corpo divergente, mensagem inválida → DLQ, rejeição terminal, HTTP × SQS e concorrência entre as duas portas). Recuperação após reinicialização ⬜ Fase 10 |
+| Verificação da composição Fx, início, encerramento e liberação de recursos dos workers | 🟡 `TestValidateAppComposition` valida o grafo **inteiro** agora (infra + usecase + auth + worker + httpapi), `TestBuildAppFailsWithInvalidConfig` prova a falha de boot, e o teste do binário real prova **encerramento gracioso** e liberação do pool. O consumidor de SQS para no `OnStop` (para de buscar, conclui o que está em voo dentro do prazo e libera a visibilidade do resto), com **teste de unidade do encerramento** provando que a mensagem em voo não é apagada. O publisher da outbox e o worker de referências entram na Fase 9 |
+| **Não substituir toda a infraestrutura por mocks** | ✅ os testes de integração usam PostgreSQL, Keycloak e **LocalStack** reais, com o Unit of Work e os adaptadores de produção; os dublês existem só nos testes **unitários** (autenticador, serviço, broker e repositório da inbox), onde o objetivo é a política — e o dublê do broker registra o que foi pedido, para as asserções incluírem a **ausência** de chamada |
 | Autenticação/autorização: credenciais ausentes/inválidas/expiradas, isolamento entre provedores inclusive em replay e leitura, restrição das operações internas, nenhum efeito financeiro em acesso negado | ✅ **Fase 7.** 11 formas de token inválido com a causa exata; isolamento por corpo, por path, na leitura e **no replay**; operações internas exigindo role; e **contagem de tabelas antes/depois** provando zero efeito financeiro no 403/401/503 |
-| Concorrência e recuperação (8 cenários) | 1 mesma aposta 50× ✅ (feito com 12 disparos); 2 disputa 80+80 ✅; 3 carteiras distintas ⬜; 4 três instâncias ⬜; 5 interrupção do consumidor ⬜; 6 dois publishers ⬜ (o `SKIP LOCKED` já é provado com 2 concorrentes no nível do repositório); 7 `REFUND`/`ROLLBACK` antes da referência ✅ a primeira metade (fica `PENDING_REFERENCE`), a resolução/expiração ⬜ Fase 9; 8 reinício preservando idempotência/pendências ⬜ |
+| Concorrência e recuperação (8 cenários) | 1 mesma aposta 50× ✅ (feito com 12 disparos); 2 disputa 80+80 ✅; 3 carteiras distintas ⬜; 4 três instâncias ⬜; 5 interrupção do consumidor 🟡 **parcial na Fase 8**: o encerramento do consumidor é provado (para de buscar, não apaga o que está em voo, libera a visibilidade), e a reentrega é reconhecida pela inbox — a interrupção com processo novo e banco real é a Fase 10; 6 dois publishers ⬜ (o `SKIP LOCKED` já é provado com 2 concorrentes no nível do repositório); 7 `REFUND`/`ROLLBACK` antes da referência ✅ a primeira metade (fica `PENDING_REFERENCE` durável e a mensagem de entrada é concluída), a resolução/expiração ⬜ Fase 9; 8 reinício preservando idempotência/pendências ⬜ |
 | Conferência final: saldo armazenado == soma de créditos − débitos | ✅ provado em teste, e é exatamente o que a reconciliação faz |
 | `go test -race` nos testes aplicáveis | ✅ verde nos dois modos |
 
@@ -251,12 +253,12 @@ durável fica restrito a `PENDING_REFERENCE` (que É durável e retomável).
 | Acesso não autorizado a operações/transações | ✅ isolamento no caso de uso **e** na borda (corpo, path, leitura e replay), com prova de que o acesso negado não produz efeito financeiro |
 | Cálculo monetário em ponto flutuante | ✅ nenhum nos caminhos monetários (com a nuance do §5.1) |
 | Saldo negativo por concorrência | ✅ impedido no domínio **e** por CHECK no banco |
-| Movimentação duplicada | ✅ impedida por índice único + idempotência persistente, agora alcançável pelas duas portas (HTTP hoje; SQS na Fase 8) |
+| Movimentação duplicada | ✅ impedida por índice único + idempotência persistente, **alcançável pelas duas portas** — e provado que a mesma operação por HTTP e por SQS (inclusive simultaneamente) debita uma vez |
 | Idempotência restrita à memória | ✅ persistida no banco |
 | Dependência de uma única instância para funcionar | ✅ o estado está todo no PostgreSQL (locks, índices, constraints) e a validação de token é **local** (não há estado de sessão em memória); a prova com 3 instâncias é a Fase 10 |
 | Publicação anterior ao commit | ✅ impossível por construção (outbox na mesma transação) |
 | Ausência de ledger auditável | ✅ ledger append-only com dois saldos por lançamento |
-| Substituição integral de PostgreSQL, SQS e IdP por mocks nos testes | ✅ PostgreSQL e IdP são **reais** nos testes de integração; os dublês existem só nos testes unitários da borda |
+| Substituição integral de PostgreSQL, SQS e IdP por mocks nos testes | ✅ os três são **reais** nos testes de integração (PostgreSQL, Keycloak e LocalStack); os dublês existem só nos testes unitários |
 
 ## 15. Entrega — 🟡 Fase 12
 
@@ -266,10 +268,10 @@ durável fica restrito a `PENDING_REFERENCE` (que É durável e retomável).
 | `README.md` da solução com pré-requisitos, variáveis, filas, migrations (aplicar/reverter), execução, exemplos e testes | 🟡 os exemplos autenticados já existem em `docs/evidencias/FASE_7.md` §4; a decisão de **onde** esse arquivo vive é a ⚠️ 3 da Fase 12 |
 | `.env.example` sem segredos reais | ✅ completo (HTTP, banco, OIDC, SQS, outbox, workers) — e agora com `OIDC_HTTP_TIMEOUT`, `OIDC_TOKEN_URL` e `HTTP_STOP_TIMEOUT` |
 | Provisionamento automático do IdP, identidades de teste e instruções dos fluxos autenticados | 🟡 realm, clients, roles, mapper e usuários de teste ✅; o fluxo `client_credentials` é exercitado pelos testes (com os três clients do realm); as instruções ⬜ Fase 12 |
-| `ARCHITECTURE.md` com decisões e limitações | ✅ atualizado até a **Fase 7** (§10 fechada: autenticação, autorização, contratos, middlewares, composição, readiness e limitações) |
+| `ARCHITECTURE.md` com decisões e limitações | ✅ atualizado até a **Fase 8** (§10 autenticação/contratos e §11 consumo do SQS, com as decisões de identidade da mensagem, classificação de erro, DLQ explícita, backoff e encerramento) |
 | Comandos documentados: `docker compose up --build`, `go test ./...`, `go test -race ./...`, `go vet ./...` | 🟡 documentados em `ARCHITECTURE.md` §17 e nas evidências; a consolidação é a Fase 12 |
-| Documentar como preparar dependências de teste, integração, múltiplas instâncias e simulações de falha; informar as build tags | 🟡 a tag `integration` está documentada (§17 e `FASE_7.md` §10), inclusive as dependências (PostgreSQL e Keycloak de pé); múltiplas instâncias é a Fase 10 |
-| Código formatado com `gofmt` e dependências reproduzíveis | ✅ `gofmt -l` limpo e `go.sum` versionado — **sem dependência nova nesta fase** (a validação OIDC usa a biblioteca padrão). Falta o `go mod tidy` para remover `testcontainers-go`, Fase 12 |
+| Documentar como preparar dependências de teste, integração, múltiplas instâncias e simulações de falha; informar as build tags | 🟡 a tag `integration` está documentada (§17 e `FASE_8.md` §10), inclusive as dependências (PostgreSQL, Keycloak e **LocalStack com as filas provisionadas** — e o §17 do ARCHITECTURE manda conferir `list-queues`, porque uma falha silenciosa do script de init faz a suíte parecer verde); múltiplas instâncias é a Fase 10 |
+| Código formatado com `gofmt` e dependências reproduzíveis | ✅ `gofmt -l` limpo e `go.sum` versionado. A Fase 8 trouxe a **primeira dependência nova desde a Fase 0** (`aws-sdk-go-v2/service/sqs v1.52.4`, com o núcleo do SDK e o `credentials`); a Fase 7 não trouxe nenhuma. Falta o `go mod tidy` para remover `testcontainers-go`, Fase 12 |
 
 ---
 
@@ -277,7 +279,7 @@ durável fica restrito a `PENDING_REFERENCE` (que É durável e retomável).
 
 Nenhuma contraria o enunciado; todas são escolhas onde ele deixou margem. Estão
 detalhadas em `docs/evidencias/FASE_6.md` §8, `docs/evidencias/FASE_7.md` §8 e no
-`ARCHITECTURE.md` §9 e §10:
+`ARCHITECTURE.md` §9, §10 e §11 e `docs/evidencias/FASE_8.md` §8:
 
 1. Referência em `BET`/`WIN`/`LOSS` é **informativa** e não bloqueia a operação.
 2. `WALLET_PLAYER_MISMATCH` e `TRANSACTION_NOT_FOUND` são códigos **novos**, além da
@@ -302,13 +304,21 @@ detalhadas em `docs/evidencias/FASE_6.md` §8, `docs/evidencias/FASE_7.md` §8 e
     é interno; o provedor consulta pela rota dele.
 11. O token do serviço interno não é aceito nas rotas de provedor (403): sem
     `provider_id` não existe provedor autorizado.
+12. **A identidade durável da mensagem é o `MessageId` do BROKER**, e não o
+    `messageId` do envelope: quem atribui esse valor é o broker, no envio, e o
+    produtor não tem como conhecê-lo antes de enviar. O campo do envelope é
+    **opcional** e, quando presente, é conferido contra o da entrega — divergência
+    é mensagem inválida (permanente → DLQ).
+13. **A DLQ recebe também o erro permanente de forma EXPLÍCITA** (`Send` +
+    `Delete`), além do redrive do broker: numa fila FIFO, uma mensagem envenenada
+    que gira até o `maxReceiveCount` **bloqueia o grupo inteiro**.
+14. **Erro não classificável é retentável**, não vai direto para a DLQ: a DLQ é o
+    fim da linha, e o `maxReceiveCount` já limita as tentativas.
 
 ## O que ainda NÃO existe (lista direta, sem rodeio)
 
-- Nenhum consumidor de SQS, nenhuma mensagem sendo processada.
-- Nenhum publisher de outbox e nenhum worker (referências, reaper).
-- **Parcialmente resolvido na Fase 7:** 4 das 12 métricas já são emitidas (pela
-  borda HTTP: operações, latência, replays e divergência de reconciliação); o resto
-  é das Fases 8–9 e 11.
+- Nenhum publisher de outbox e nenhum worker (referências, reaper) — é a Fase 9.
+- **Parcialmente resolvido:** 7 das 12 métricas já são emitidas (pela borda HTTP e
+  pelo consumidor); o resto é das Fases 9 e 11.
 - Nenhuma prova com 3 instâncias, nem de carteiras distintas em paralelo.
 - O README da solução (o enunciado ocupa esse nome).
