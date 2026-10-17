@@ -467,7 +467,10 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` feito e **validado por te
 - [ ] `SIGTERM`: para de buscar (`ReceiveMessage` cancelado), conclui o lote em andamento dentro do prazo (`fx.StopTimeout`), senão **libera visibilidade** (`ChangeMessageVisibility 0`) para reentrega segura
 - [ ] Testes de integração: reentrega da mesma mensagem (`messageId` igual → inbox dedup), hash divergente em reentrega, rejeição terminal deleta, transitório reentrega, mensagem inválida → DLQ, concorrência HTTP×SQS para a mesma operação
 
-### FASE 9 — Outbox publisher + worker de referências (D2, ~3h)
+### FASE 9 — Outbox publisher + worker de referências (D2, ~3h) ⬅ PRÓXIMA
+> **Prompt de abertura pronto em `PROMPT_FASE_9.md`.** Quatro blocos (9a publicador,
+> 9b worker de referências + reaper, 9c runner/composição, 9d testes e prova de infra
+> real), com os critérios de aceite derivados do README §11/§12/§13.
 - [ ] `worker.OutboxPublisher`: loop com `ClaimBatch`/lease/publish/`MarkPublished`/`MarkRetry`; N publishers concorrentes; recuperação de lease expirado; republicação com mesmo `eventId`
 - [ ] `worker.ReferenceWorker`: busca `PENDING_REFERENCE` vencidas (`next_attempt_at <= now`, `FOR UPDATE SKIP LOCKED`), tenta resolver, backoff exponencial + jitter, TTL/máx. tentativas → `REJECTED REFERENCE_NOT_FOUND` + evento
 - [ ] `worker.PendingReaper`: retoma `PENDING` antigos (segurança extra item 6.3)

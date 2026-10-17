@@ -24,7 +24,7 @@ sem perda de atualização, entrega de eventos sem perda e recuperação de falh
 
 **Estado atual:** Fases 0–8 concluídas (domínio + schema + persistência + caso de
 uso + API HTTP autenticada + consumo por SQS). Os workers de publicação e de
-referências entram na Fase 9.
+referências entram na Fase 9 — o prompt de abertura dela está em `PROMPT_FASE_9.md`.
 
 **Índice de estado:**
 
@@ -40,7 +40,7 @@ referências entram na Fase 9.
 | Caso de uso da aplicação | `[PRONTO]` — `Process`, `OpenWallet`, leituras e `Reconcile` (Fase 6) |
 | HTTP + autenticação | `[PRONTO]` — Fase 7 (§10) |
 | Consumo do SQS (inbox) | `[PRONTO]` — Fase 8 (§11) |
-| Outbox publisher e worker de referências | `[PLANEJADO]` — Fase 9 |
+| Outbox publisher e worker de referências | `[PLANEJADO]` — Fase 9 (`PROMPT_FASE_9.md`) |
 
 ---
 

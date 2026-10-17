@@ -14,6 +14,11 @@
 > 7. `docs/LEDGER_VS_WALLET.md` — a distinção central do domínio financeiro
 >
 > **Não comece a codar sem ler as seções 3 e 3.5.**
+>
+> ⭐ **A próxima fase é a 9 (publisher da outbox + workers de referência e reaper).**
+> O prompt de abertura dela está pronto em **`PROMPT_FASE_9.md`** — autossuficiente,
+> com o escopo, os quatro blocos, os critérios de aceite e as armadilhas. Use-o como
+> primeira mensagem da nova conversa; este arquivo continua sendo o handoff completo.
 
 ---
 
@@ -55,8 +60,8 @@ solução + `ARCHITECTURE.md`.
 **Domínio (Fases 1–3): 574 casos. Persistência (Fase 5): 38. Caso de uso (Fase 6):
 55 unitários + 27 de integração. Borda HTTP (Fase 7): 116 unitários + 32 de
 integração. Consumo por SQS (Fase 8): 45 unitários + 9 funções de integração.
-`go test -race` verde em 17 pacotes de unidade e nos 3 de integração. Árvore git
-limpa.**
+`go test -race` verde em 16 pacotes com teste de unidade (17 no comando com a tag
+`integration`). Árvore git limpa.**
 
 > ⚠️ Os **três** pacotes de integração usam o mesmo banco de teste e truncam
 > tabelas. Cada `TestMain` toma um lock consultivo (`pg_advisory_lock`) e espera a
@@ -71,10 +76,17 @@ limpa.**
 > de init falhou e os testes vão falhar por isso — **não** por defeito de código
 > (foi o que aconteceu até a Fase 8: o script não tinha shebang nem bit de
 > execução, e o LocalStack registrava `Exec format error` no stage READY).
+>
+> ⚠️ Os testes da Fase 9 vão precisar **também** da `wallet-events.fifo` (o destino
+> da publicação). Ela já é provisionada pelo mesmo script — a checagem do
+> `list-queues` cobre as quatro filas.
 
 ### Histórico de commits (mais recente primeiro)
 
 ```
+aec7cbe docs(fase8): corrige a contagem de pacotes e de defeitos no handoff e na arquitetura
+ec551b2 fix(sqs): corrige tres defeitos que so apareceram ao rodar o binario
+8a69ab9 docs(fase8): registra as evidencias do consumo por SQS e atualiza os documentos
 eaf52a0 test(sqs): prova o consumo com LocalStack real e corrige dois defeitos de identidade  ← FASE 8e
 c81e7de feat(inbox): adiciona o consumo por SQS com inbox na mesma transacao do tratamento     ← FASE 8a/8b
 cc986df docs(fase7): registra as evidencias da Fase 7 e atualiza arquitetura e conformidade
@@ -471,7 +483,36 @@ app/wagering          → o MESMO caso de uso do HTTP, com ganchos que registram
   list-queues`. Vazio = o script de init falhou, e nenhum teste de consumo tem
   validade;
 - **`localstack/localstack:latest` é Pro** e morre com "License activation
-  failed": a versão está **pinada** em `4.0.3` no compose.
+  failed": a versão está **pinada** em `4.0.3` no compose;
+- **montar JSON com aspas dentro de `docker exec … awslocal sqs send-message`
+  CORROMPE o corpo** (o primeiro envio ponta a ponta chegou como
+  `invalid character 't' …` e foi, corretamente, para a DLQ). Envie lendo de um
+  ARQUIVO copiado para dentro do container: `docker cp` + `BODY=$(cat arquivo)`.
+
+### 6b.3. Os três defeitos que SÓ apareceram ao rodar o binário
+
+O teste de integração exercita o consumidor **embutido no processo de teste**. Subir
+o `bin/api.exe` com `SQS_CONSUME_TRANSACTIONS=true` e enviar mensagem pela fila
+revelou três coisas que nenhum teste via — e é por isso que a Fase 9 exige a mesma
+prova:
+
+| # | Defeito | Sintoma |
+| --- | --- | --- |
+| 33 | **O default do `HTTP_STOP_TIMEOUT` (25s) violava a própria regra de validação** (20s do servidor + 15s do consumidor) | ligar o consumidor fazia a aplicação **não subir**: "configuração inválida" num ambiente correto |
+| 34 | A métrica `wager_operations_total` **não era emitida no caminho SQS** | o caminho principal do serviço invisível no painel |
+| 35 | O contador durável de entregas (`inbox.attempts`) **nunca incrementava** | `attempts = 0` para sempre; a reentrega não tocava no contador |
+
+A prova ponta a ponta que os pegou (e que a Fase 9 deve repetir, agora para a
+publicação):
+
+```
+carteira 1000.00 (pela API) → mensagem na fila → saldo 97500
+ledger: CREDIT 100000 + DEBIT 2500 · inbox PROCESSED
+reconciliação 975.00/975.00/dif 0.00/consistent/entries 2
+métrica jungleg_wager_operations_total{kind="BET",status="PROCESSED"} 1
+readiness: {"oidc":"UP","postgres":"UP","sqs":"UP"}
+```
+
 ---
 
 ## 7. PENDÊNCIAS CONHECIDAS
@@ -525,19 +566,25 @@ corrigida (defeito 21).
 
 ---
 
-## 8. CHECKLIST DE ARRANQUE PARA A NOVA CONVERSA (Fase 9 — publisher da outbox + worker de referências)
+## 8. CHECKLIST DE ARRANQUE PARA A NOVA CONVERSA (Fase 9)
 
-- [ ] Ler `README.md` (o enunciado é a fonte de verdade — §11 é a fase), `ARCHITECTURE.md` (§11 e a parte de outbox da §8), `PLANO.md` §3 (Fase 9), `docs/CONFORMIDADE_README.md` §11 e `docs/evidencias/FASE_8.md`
-- [ ] Confirmar containers de pé (`docker ps`) e **as filas** (`awslocal sqs list-queues`) — sem fila, o publisher não tem para onde publicar
+> ⭐ **O prompt de abertura da Fase 9 está em `PROMPT_FASE_9.md`** — autossuficiente,
+> com o escopo do §11 do README, os quatro blocos, os critérios de aceite, as
+> armadilhas de ambiente e o formato da primeira resposta esperada. Use-o como
+> primeira mensagem; o checklist abaixo é o resumo operacional.
+
+- [ ] Ler `README.md` (**§11, §12, §13 e §14 — a fase**; o enunciado é a fonte de verdade), `ARCHITECTURE.md` (§8 ordem da outbox, §11 consumo, §15 defeitos, §16 limitações), `docs/CONFORMIDADE_README.md` §11, `PLANO.md` §3 (Fase 9) e `docs/evidencias/FASE_8.md`
+- [ ] Confirmar containers de pé (`docker ps`) e **as QUATRO filas** (`awslocal sqs list-queues`) — sem `wallet-events.fifo` o publisher não tem para onde publicar
 - [ ] **Confirmar com o usuário que a estratégia continua** (seção 3.1): a IA escreve o código e explica depois
-- [ ] `worker.OutboxPublisher`: loop com `ClaimBatch`/lease/`Publish`/`MarkPublished`/`MarkRetry` — o mecanismo já está pronto e provado no repositório desde a Fase 5; falta o loop
-- [ ] N publishers concorrentes disputando a outbox (`FOR UPDATE SKIP LOCKED`), com **recuperação de lease expirado**
-- [ ] Publicação **repetida** preservando o `eventId`; `MessageGroupId = aggregateId` (a carteira) e `MessageDeduplicationId = eventId`
-- [ ] `worker.ReferenceWorker`: `PENDING_REFERENCE` vencidas (`next_attempt_at <= now`, `SKIP LOCKED`), backoff exponencial com jitter, TTL/máx. tentativas → `REJECTED REFERENCE_NOT_FOUND` + evento
-- [ ] `worker.Runner`: supervisão com `errgroup`, backoff em falha de loop, log e métrica, shutdown limpo (mesmo padrão do consumidor da Fase 8)
-- [ ] Testes: crash entre commit e publish; crash entre publish e `MarkPublished` (republica com o mesmo `eventId`); dois publishers na mesma outbox sem publicação perdida nem duplicada a rigor (o consumidor do outro lado deduplica por `eventId`); `REFUND` antes da referência resolve depois; expiração vira `REJECTED`
+- [ ] **9a** `worker.OutboxPublisher` + a porta `Publicador` e o adaptador SQS: `ClaimBatch` → publicar → `MarkPublished`; falha → `MarkRetry` com backoff exponencial + teto + jitter; **publicar ANTES de marcar**; `MarkPublished` com `context.WithoutCancel`
+- [ ] **9b** `worker.ReferenceWorker`: `ListPendingReferencesDue`, reconstruir o `Request` das colunas persistidas, `resolverReferencia`, e ramificar em resolvida (movimento + eventos) / pendente (attempt+1 + backoff + evento) / rejeitada / expirada (`REFERENCE_NOT_FOUND`). Mais o `PendingReaper` para `PENDING` antigo
+- [ ] **9c** `worker.Runner` com `errgroup` (publisher + referências + reaper conforme a config), backoff em falha de laço, shutdown limpo, registro no Fx e no grupo `health_checkers`, e a validação de que ligar worker com os DEFAULTS não impede o boot (defeito 33)
+- [ ] **9d** Testes: publicar de verdade em `wallet-events.fifo` e ler de volta; crash entre commit e publish; crash entre publish e `MarkPublished` **republicando com o mesmo `eventId`**; dois publishers disputando a mesma outbox; lease expirado recuperado; `REFUND` antes da referência resolve depois; expiração vira `REJECTED`; reaper retoma `PENDING` antigo
+- [ ] Métricas do §12 desta fase: atraso da outbox (`PendingStats`), resultados de publicação, retries, conflitos e idade do pendente mais antigo
+- [ ] **Prova pelo binário real** com os workers ligados (operação → evento na outbox → publicado na fila) — foi assim que apareceram 3 dos 8 defeitos da Fase 8
 - [ ] Aceitar contestação do usuário: se ele questionar e estiver certo, **admitir e corrigir**
 - [ ] Depois de aprovado, commitar (um bloco por vez, com a mensagem contando a história)
+- [ ] Atualizar `docs/evidencias/FASE_9.md`, `ARCHITECTURE.md`, `docs/CONFORMIDADE_README.md`, `PROXIMO_PASSO.md`, `PLANO.md` e `.env.example`
 - [ ] Lembrar do **compromisso final** (seção 3.5): `docs/SISTEMA_EXPLICADO.md` e `docs/ENTREVISTA.md`
 
 **As Fases 0 a 8 estão commitadas e validadas. Não revalide nem recommite.**
