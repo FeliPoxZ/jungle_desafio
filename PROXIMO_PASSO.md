@@ -15,22 +15,23 @@
 >
 > **Não comece a codar sem ler as seções 3 e 3.5.**
 >
-> ⭐ **A próxima fase é a 11 (observabilidade e polimento)**, seguida da **12**
-> (documentação e entrega). Os prompts de abertura das duas estão prontos e são
-> autossuficientes:
->
-> - **`PROMPT_FASE_11.md`** — métricas com teste por métrica, log do **processo** real,
->   dashboard/alerta, `go mod tidy`, composição Fx com start/stop, revisão
->   anti-eliminatórios; cinco blocos (11a–11e).
-> - **`PROMPT_FASE_12.md`** — o "README da solução" (a ⚠️ 3), **`docs/SISTEMA_EXPLICADO.md`**,
->   **`docs/ENTREVISTA.md`**, `docker compose up --build` de um checkout limpo e a
->   conferência de conformidade §1–§15; quatro blocos (12a–12d).
+> ⭐ **A próxima fase é a 12 (documentação e entrega)**. O prompt de abertura está em
+> **`PROMPT_FASE_12.md`** e é autossuficiente: o "README da solução" (a ⚠️ 3),
+> **`docs/SISTEMA_EXPLICADO.md`**, **`docs/ENTREVISTA.md`**, `docker compose up
+> --build` de um checkout limpo e a conferência de conformidade §1–§15; quatro
+> blocos (12a–12d).
 >
 > O **§3.6** deste arquivo detalha a distinção entre os dois documentos finais.
 >
 > Os dois documentos finais — `docs/SISTEMA_EXPLICADO.md` e `docs/ENTREVISTA.md` — são
-> **entrega obrigatória** (§3.5 e §3.6), e a Fase 10 já deixou a matéria-prima pronta na
-> **seção final de `docs/evidencias/FASE_10.md`**: a Fase 12 **organiza**, não reconstrói.
+> **entrega obrigatória** (§3.5 e §3.6), e as Fases 10 e 11 deixaram a matéria-prima
+> pronta nas **seções finais de `docs/evidencias/FASE_10.md` e `FASE_11.md`**: a
+> Fase 12 **organiza**, não reconstrói.
+>
+> A **Fase 11 está CONCLUÍDA**: 12/12 métricas com teste que lê `/metrics`, log do
+> **processo** real nos dois formatos, dashboard e alertas versionados, `go mod tidy`,
+> ciclo de vida Fx com `Start`/`Stop` reais e a revisão anti-eliminatórios. Quatro
+> defeitos reais corrigidos (42–45). Prova em `docs/evidencias/FASE_11.md`.
 >
 > A Fase 10 está CONCLUÍDA: **três processos independentes** demonstraram T1–T8 e a
 > conferência final do README §13, com a prova de SIGTERM no container Linux. Prova em
@@ -72,7 +73,8 @@ solução + `ARCHITECTURE.md`.
 | Fase 8 (SQS + inbox) | ✅ **CONCLUÍDA E VALIDADA** em 2 blocos (8a/8b e 8e) — **26 casos** em `internal/app/inbox`, **19** em `internal/consumer`, **9 funções** de integração com o **LocalStack real**; **8 defeitos reais corrigidos** (um de ambiente: as filas nunca eram criadas; três que só apareceram ao rodar o binário) |
 | Fase 9 (publicador da outbox + worker de referências + reaper) | ✅ **CONCLUÍDA E VALIDADA** em 4 blocos (9a–9d) — **38 casos unitários** novos, **8 funções** de integração com PostgreSQL + LocalStack reais, prova pelo **binário real** com os três laços; **3 defeitos reais corrigidos** (dois só apareceram rodando a retomada contra o banco) |
 | Fase 10 (concorrência e recuperação com 3 processos) | ✅ **CONCLUÍDA E VALIDADA** em 4 blocos (10a–10d) + 1 correção — **11 funções** de integração com **três processos independentes** do binário, **4 testes unitários** novos, prova de **SIGTERM real em container Linux**; **2 defeitos reais corrigidos** (40: `application_name`; 41: o container não autenticava) |
-| Fases 11–12 | ⬜ Não iniciadas (ver checklist no `PLANO.md` §3) |
+| Fase 11 (observabilidade e polimento) | ✅ **CONCLUÍDA E VALIDADA** em 5 blocos (11a–11e) — **10 funções** de integração de métrica lendo `/metrics` + **8 testes** dos estágios de retry + **2** de log do processo real + **1** de ciclo de vida Fx real + **2** unitários de ciclo de vida; dashboard e alertas versionados; `go mod tidy`; **4 defeitos reais corrigidos** (42, 43, 44 e 45) |
+| Fase 12 (documentação e entrega) | ⬜ Próxima (ver checklist no `PLANO.md` §3) |
 
 **Domínio (Fases 1–3): 574 casos. Persistência (Fase 5): 38. Caso de uso (Fase 6):
 55 unitários + 27 de integração. Borda HTTP (Fase 7): 116 unitários + 32 de
@@ -104,6 +106,11 @@ e recuperação (Fase 10): 11 funções de integração com três processos + 4 
 ### Histórico de commits (mais recente primeiro)
 
 ```
+df5bd84 chore(fase11d): aplica go mod tidy, prova o ciclo de vida Fx e corrige o prazo de parada
+588e738 feat(fase11c): versiona dashboard, regras de alerta e runbook de observabilidade
+699e341 test(fase11b): prova o log do PROCESSO real nos dois formatos e nos tres caminhos
+2556245 test(fase11a): prova cada uma das 12 metricas em /metrics e corrige duas que mentiam
+0a13f49 docs(handoff): registra o commit dos prompts e aponta o checklist para eles
 8822b00 docs(prompt): escreve os prompts de abertura das fases 11 e 12 e detalha os dois documentos
 a6b88d4 docs(fase10): registra as evidencias, a arquitetura e a conformidade da Fase 10
 6b2f223 test(fase10d): conferencia final cruzando HTTP e SQS, latencia e fim do residuo  ← FASE 10d
@@ -750,6 +757,41 @@ conferência final                    → SQL puro + endpoint, com a mesma opera
 
 ---
 
+## 6g. ✅ CONCLUÍDA: FASE 11 — observabilidade e polimento
+
+> **Estado: CONCLUÍDA E VALIDADA em 5 blocos.** Evidências em
+> `docs/evidencias/FASE_11.md`; as decisões estão no `ARCHITECTURE.md` §12, os
+> defeitos 42–45 no §15 e as limitações novas no §16.
+
+| Bloco | Commit | O que entregou |
+| --- | --- | --- |
+| **11a** | `2556245` | **12/12 métricas com teste que dispara o gatilho real e lê `/metrics`** (10 funções de integração) + os 8 estágios de `retries_total` (3 no consumidor, 5 nos laços) + asserção de cardinalidade; **defeitos 42 e 43 corrigidos** (métrica de conflito nunca emitida; `kind`/`status` com dois significados) |
+| **11b** | `699e341` | log do **processo** real: JSON em produção e texto em local, com os cinco identificadores por caminho e **sem** segredo/payload financeiro (`TestLogsDoProcessoReal`, `...EmModoLocal`) |
+| **11c** | `588e738` | `deploy/observability/`: dashboard (13 painéis), 7 regras de alerta validadas por `promtool`, scrape com blackbox e **runbook** do que fazer quando dispara. Decisão registrada: **sem** Prometheus no compose |
+| **11d** | `df5bd84` | `go mod tidy` (remove testcontainers e a árvore; promove os diretos), `TestHooksDeParadaNaOrdemInversa`, `TestScopeDoPrazoDeEncerramento` e **`TestCicloDeVidaFxComStartEStopReais`** (grafo real, readiness 200, ordem inversa, pool aberto no OnStop e fechado depois); **defeitos 44 e 45** |
+| **11e** | este commit | `docs/evidencias/FASE_11.md`, `ARCHITECTURE.md` (§12/§15/§16/§17), `CONFORMIDADE` (§12/§14/§15), este handoff e o `PLANO.md`; suíte inteira **duas vezes** |
+
+**Os quatro defeitos que a prova de observabilidade revelou:**
+
+1. **42** — `wager_transaction_conflicts_total` existia, estava no painel da
+   arquitetura como "emitida pelo caso de uso", e **nunca saía de zero**: nenhum
+   caminho de produção chamava `IncConflict`. Corrigido com `ports.ConflictCounter`
+   no laço de repetição (a aplicação continua sem conhecer Prometheus).
+2. **43** — o caminho HTTP emitia `kind="PROCESSED"` e `status="2xx_201"`, o SQS
+   emitia `kind="BET"` e `status="PROCESSED"`. **A mesma métrica, dois
+   significados.** Corrigido: as duas portas usam tipo × desfecho.
+3. **44** — o campo `kind` do log de acesso era **sempre vazio** (`StageFrom` sem
+   nenhum `WithStage`). Removido com os helpers mortos.
+4. **45** — a documentação dizia que `fx.StopTimeout` governava o shutdown; em Fx
+   1.24, `App.Stop(ctx)` obedece ao **contexto do chamador**. O comportamento
+   estava certo, a explicação não; comentário corrigido e teste que trava.
+
+**A lição central da fase:** teste do MECANISMO não é teste da EMISSÃO. Um helper
+que incrementa um registry e um `/metrics` que mostra o valor são coisas
+diferentes — e a segunda é a única que o plantonista vê.
+
+---
+
 ## 7. PENDÊNCIAS CONHECIDAS
 
 Do `CONTEXTO.md` §4: **P1 a P5 e P7 foram resolvidas na Fase 7** (P1 `-health-check`,
@@ -772,10 +814,10 @@ tratado com `TrimSpace` e testado, `Movement` resolvendo a versão do UPDATE con
 corrigida (defeito 21).
 
 **Abertas:**
-- **`ARCHITECTURE.md` está atualizado até a Fase 10** — §6 (o que a prova multi-instância
-  confirmou), §8 (três publishers reais e o limite do lote), §13 (T1–T8 marcados como
-  PROVADOS, com o nome do teste), §15 (defeitos 40 e 41), §16 (5 limitações novas) e §17
-  (números). Falta a parte de dashboards/alerta (Fase 11);
+- **`ARCHITECTURE.md` está atualizado até a Fase 11** — §12 (tabela métrica → teste
+  que prova, semântica dos contadores, identificadores por caminho de log), §15
+  (defeitos 42–45), §16 (7 limitações novas de observabilidade) e §17 (números e a
+  rotina reduzida da fase). **Nada pendente de documentação técnica**;
 - **limitação nova da Fase 9:** o reaper repete indefinidamente uma linha
   `PENDING` que não consegue concluir (sem contador durável de falhas do reaper);
 - **limitação nova da Fase 9:** a ordem por carteira depende do lote — mais
@@ -787,12 +829,17 @@ corrigida (defeito 21).
   container); o encerramento gracioso depende do prazo do orquestrador; o LocalStack não
   antecipa entrega com `ChangeMessageVisibility(0)`; a distribuição de publicações entre
   réplicas não é asserida; a latência é medida com cliente local;
+- **limitações novas da Fase 11** (no `ARCHITECTURE.md` §16): `operations_total` conta
+  atendimentos (inclui replay); `transaction_conflicts_total` conta repetições, não
+  erros; os estágios de `retries_total` são provados em unidade; o readiness não é
+  métrica (alerta "workers DOWN" depende do blackbox); a idade da outbox é medida a
+  cada 15s; o dashboard não é exercitado em CI;
 - **sem prova de SIGTERM no Windows** (P8): o `Stop-Process` é terminação dura; a
   prova de sinal é do container Linux (`FASE_10.md` §6);
-- `testcontainers-go` foi baixado e **não é usado** (os testes apontam para o Postgres do
-  compose via `TEST_DATABASE_URL`). Remover com `go mod tidy` na Fase 12;
-- **métricas de negócio**: **12 das 12 já são emitidas** (4 pela borda HTTP, 3
-  pelo consumidor, 5 pelos laços da Fase 9). Falta só dashboard/alerta (Fase 11);
+- **`testcontainers-go` removido** pelo `go mod tidy` da Fase 11 (junto com a árvore
+  dele); `go.mod` caiu de 88 para 42 linhas e `go mod verify` está limpo;
+- **métricas de negócio**: **12 das 12 emitidas E provadas** em `/metrics`
+  (`FASE_11.md` §3); dashboard e alertas versionados em `deploy/observability/`;
 - `migrate.exe` sobrando na raiz (além de `bin/migrate.exe`): lixo de build, só limpar;
 - **`bin/migrate.exe` carrega as migrations embutidas** (`go:embed`): depois de criar ou alterar
   uma migration, é preciso rebuidá-lo, senão ele responde "schema já está atualizado" e não
@@ -802,29 +849,30 @@ corrigida (defeito 21).
   foi feita na Fase 10 **e revelou o limite do lote** (§16);
 - **`wallet-events.fifo`** agora recebe eventos; **não há consumidor** de eventos
   nesta entrega (decisão de escopo: o README §11 pede publicação + contrato
-  documentado). O contrato de consumo está no `ARCHITECTURE.md` §11.
+  documentado). O contrato de consumo está no `ARCHITECTURE.md` §11;
+- **tracing (OpenTelemetry) não foi implementado** — diferencial opcional do §12,
+  registrado como trabalho não concluído no `CONFORMIDADE_README.md`.
 
 ---
 
-## 8. CHECKLIST DE ARRANQUE PARA A NOVA CONVERSA (Fase 11)
+## 8. CHECKLIST DE ARRANQUE PARA A NOVA CONVERSA (Fase 12)
 
-> ⭐ **O prompt de abertura está em `PROMPT_FASE_11.md`** — autossuficiente, com o escopo
-> do §12/§15 do README, os cinco blocos (11a–11e), as armadilhas de ambiente, os
-> critérios de aceite e o formato da primeira resposta esperada. O da Fase 12 está em
-> **`PROMPT_FASE_12.md`**. O resumo abaixo é o checklist operacional.
+> ⭐ **O prompt de abertura está em `PROMPT_FASE_12.md`** — autossuficiente, com o
+> escopo do §12/§15 do README, os quatro blocos (12a–12d), as armadilhas de ambiente,
+> os critérios de aceite e o formato da primeira resposta esperada.
 
-> ⚠️ **A Fase 10 fechou o critério de 20 pontos do §14 (concorrência).** O que falta na
-> 11 é **observabilidade/polimento** e, na 12, **documentação e entrega**.
+> ✅ **A Fase 11 fechou observabilidade/polimento.** O que falta é **documentação e
+> entrega**: o "README da solução" (⚠️ 3), os dois documentos finais e a prova de
+> `docker compose up --build` de um checkout limpo.
 
-- [ ] Ler `README.md` (**§12 observabilidade, §15 entrega**), `ARCHITECTURE.md` (§12 e §16–§17), `docs/evidencias/FASE_10.md` (a seção final é a matéria-prima dos dois documentos) e `PLANO.md` §3 (Fase 11)
-- [ ] **Dashboards/alerta** (diferencial opcional): o §12 pede métricas, e as **12 já são emitidas**; um dashboard versionado + regra de alerta (atraso da outbox, DLQ) é o que falta
-- [ ] **Revisão dos logs JSON**: `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId` — nenhum segredo nem payload financeiro completo. Os cinco já aparecem; conferir a cobertura e documentar
-- [ ] **Teste da composição Fx**: `fx.ValidateApp`, start/stop, `fx.StopTimeout`, liberação de recursos dos workers (o runner já tem 6 casos; `goleak` é opcional)
-- [ ] `go vet ./...`, `gofmt -l .` vazio e **`go mod tidy`** (remover `testcontainers-go`, que está baixado e não é usado)
-- [ ] **Revisão anti-eliminatórios** (§14) item por item, com evidência — o `docs/CONFORMIDADE_README.md` §14 já está ✅ desde a Fase 10
-- [ ] **Fase 12**: `docs/SISTEMA_EXPLICADO.md` e `docs/ENTREVISTA.md` a partir da matéria-prima das Fases 10–11 (o **§3.6** detalha os dois); resolver a ⚠️ 3 (onde vive o "README da solução"); `docker compose up --build` do zero; conferência §1–§15
+- [ ] Ler `README.md` (o enunciado é a fonte de verdade), `ARCHITECTURE.md` (§12, §16, §17), as seções finais de `docs/evidencias/FASE_10.md` e `FASE_11.md` (matéria-prima dos dois documentos) e o `PROMPT_FASE_12.md`
+- [ ] Resolver a **⚠️ 3**: onde vive o "README da solução" (o `README.md` da raiz é o enunciado e **não pode ser editado**)
+- [ ] `docs/SISTEMA_EXPLICADO.md` — do zero de vocabulário ao onde-cada-garantia-é-imposta, com os 45 defeitos (sintoma → causa → correção)
+- [ ] `docs/ENTREVISTA.md` — pergunta → resposta curta com número, incluindo as difíceis (limitações admitidas)
+- [ ] `docker compose up --build` **do zero** (clone limpo) e os fluxos autenticados documentados
+- [ ] Conferência de conformidade §1–§15, item por item, com evidência
 - [ ] Aceitar contestação do usuário: se ele questionar e estiver certo, **admitir e corrigir**
 - [ ] Depois de aprovado, commitar (um bloco por vez, com a mensagem contando a história)
-- [ ] Atualizar `docs/evidencias/FASE_11.md`, `ARCHITECTURE.md`, `docs/CONFORMIDADE_README.md`, `PROXIMO_PASSO.md`, `PLANO.md`
+- [ ] Atualizar `PROXIMO_PASSO.md`, `PLANO.md` e (se a fase acrescentar algo) `.env.example`/`docker-compose.yml`
 
-**As Fases 0 a 10 estão commitadas e validadas. Não revalide nem recommite.**
+**As Fases 0 a 11 estão commitadas e validadas. Não revalide nem recommite.**

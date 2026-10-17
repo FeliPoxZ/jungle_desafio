@@ -1656,6 +1656,10 @@ introduzido de propósito, e todos foram corrigidos com teste que os trava.
 | 39 | 9 | **`correlationId` morria no fim da requisição**; e o caminho SQS nunca o preenchia | os eventos emitidos na retomada (minutos depois, por outro processo) sairiam sem correlação — e o README §12 pede rastrear a operação por ela | migration `000005` (`wager_transactions.correlation_id`), gravada no INSERT e lida na reidratação; o caminho SQS usa o `MessageId` da entrega; sem correlação, a retomada usa o `transactionId` em vez de publicar vazio |
 | 40 | 10 | **Todas as instâncias indistinguíveis no `pg_stat_activity`**: o pool sobrescrevia o `application_name` do DSN com `"jungleg-api"` | a prova de três processos mostrou `map[jungleg-api:5]` — não havia como dizer qual processo segurava o lock de uma carteira, nem atribuir uma query culpada à instância que a emitiu. Com UMA instância, invisível desde a Fase 5 | o DSN vence o default; sem o parâmetro, o nome continua `jungleg-api` (comportamento anterior preservado). Travado por dois testes de integração em `internal/infra/postgres`; é também o instrumento de medida do T3 |
 | 41 | 10 | **O container do compose não autenticava**: o Keycloak anuncia `jwks_uri` em `http://localhost:8080/...`, que de dentro do container é o próprio container | `/health/ready` **UP** (`oidc`, `postgres`, `sqs`, `workers`) e **todo token válido** respondendo **503** `SERVICE_UNAVAILABLE` "não foi possível validar a autenticação". O sintoma aponta para o IdP caído; a causa é o endereço das chaves. Nunca apareceu porque nenhum teste subia o **container** autenticando | `OIDC_JWKS_URL` (opcional) sobrescreve o endereço do JWKS; vazio mantém o `jwks_uri` do discovery. O `iss` continua conferido contra `OIDC_ISSUER`. Compose e `.env.example` atualizados; dois testes provam o par (sem a chave ⇒ 503 classificado como indisponibilidade; com a chave ⇒ token aceito) |
+| 42 | 11 | **A métrica de conflito de concorrência existia e nunca era emitida** | `jungleg_wager_transaction_conflicts_total` ficava em **0 para sempre**: `IncConflict` só era chamado pelo teste do mecanismo. O §12 dizia "quem emite: caso de uso", e nenhum caminho de produção emitia. Invisível porque nenhum teste lia a métrica em `/metrics` | o caso de uso conta cada repetição da transação em `comRetentativa`, através de `ports.ConflictCounter` (interface de um método, ligada ao `observability.Metrics` no Fx — a aplicação continua sem conhecer Prometheus). Provado por `TestMetricaConflitoDeTransacao` (lock real, exige 2) |
+| 43 | 11 | **O mesmo nome de métrica tinha dois significados para o mesmo label** | HTTP emitia `operations_total{kind="PROCESSED",status="2xx_201"}`; SQS emitia `{kind="BET",status="PROCESSED"}`. Somar por `kind` num painel misturava tipo de operação com desfecho, sem erro em lugar nenhum | o caminho HTTP passou a emitir `kind=<tipo>` e `status=<desfecho>`, igual ao SQS; `StatusLabel` (que só existia para isso) foi removido. O código HTTP continua no log de acesso |
+| 44 | 11 | **Um campo de log sempre vazio** | toda linha `http_request` trazia `"kind": ""`; o middleware lia `observability.StageFrom(ctx)`, e nenhum código chamava `WithStage` — sobra de um desenho abandonado | campo removido, junto com `WithStage`/`StageFrom` (sem chamador) |
+| 45 | 11 | **A documentação do prazo de encerramento mentia** | o comentário em `app.go` dava a entender que `fx.StopTimeout` governava o shutdown; em Fx 1.24, `App.Stop(ctx)` obedece ao **contexto do chamador** e a opção só é aplicada por `App.run` (que este projeto não usa). O comportamento sempre esteve certo — o prazo efetivo é o `shutdownCtx` montado com `cfg.HTTP.StopTimeout`; errada era a explicação, e o teste que acreditava nela não passava | comentário corrigido; `TestScopeDoPrazoDeEncerramento` prova que o contexto manda e que `StopTimeout()` carrega o mesmo valor |
 
 ---
 
@@ -1689,6 +1693,12 @@ que funciona não ajuda quem vai manter.
 | **`ChangeMessageVisibility(0)` não antecipa a entrega no LocalStack** | Medido na Fase 10: a chamada devolve sucesso e a mensagem continua invisível até o prazo original da fila. Em SQS real a chamada antecipa. Consequência para os testes: o T5 encurta o `VisibilityTimeout` da fila (2 s) em vez de empurrar a mensagem, e a suíte deixa o prazo curto no ambiente de teste |
 | **A distribuição de publicações entre as réplicas não é asserida** | Com `OUTBOX_BATCH_SIZE=1` a divisão depende do escalonamento (observado 4/4/4). A invariante que o T6 assere é a partição (12 eventos → 12 mensagens, sem repetição e sem perda); a distribuição é registrada em log |
 | **A latência medida é de cliente local, na mesma máquina dos processos** | Comparação entre duas topologias de contenção (carteiras distintas × mesma carteira), não número de produção — o §14 não pede meta de RPS, e o diferencial de carga é opcional |
+| **`operations_total` conta ATENDIMENTOS, inclusive replay** | Um replay é uma resposta atendida, e a latência dele também é medida. Quem conta operação financeira distinta é o par `operations_total` − `idempotent_replays_total`. Documentado para o painel não mentir |
+| **`transaction_conflicts_total` conta REPETIÇÕES, não erros** | Cada `comRetentativa` que vai tentar de novo incrementa; a tentativa final que sobe com o erro não incrementa. O teste exige o valor exato (2) para fixar o contrato |
+| **`retries_total{stage}` tem os 8 emissores provados em teste de UNIDADE** | Provocar a falha de banco seria derrubar o banco compartilhado da suíte. A emissão é do código de produção e a porta falha de propósito; a exposição em `/metrics` é provada nos testes de integração das demais métricas |
+| **O readiness não é métrica** | `/health/ready` é JSON. Para alertar "workers DOWN" é preciso o `blackbox_exporter` (`probe_success` sobre o readiness), configurado em `deploy/observability/prometheus.yml`. Sem ele, o alerta de outbox atrasada cobre o sintoma em minutos. Criar uma métrica de readiness seria violar a regra da fase ("não criar métrica nova") |
+| **A idade da outbox é medida a cada 15 s** | Um pico curto entre medições não aparece no gauge; aparece no log `outbox_atrasada` (WARN) do ciclo em que aconteceu |
+| **O dashboard não é exercitado em CI** | É JSON validado (`ConvertFrom-Json`) e as regras passam no `promtool`, mas não há Grafana no compose (decisão registrada na Fase 11): o painel é importado à mão uma vez |
 
 ---
 
@@ -1716,27 +1726,34 @@ $env:SQS_ENDPOINT='http://localhost:4566'
 # as filas precisam EXISTIR: se `list-queues` estiver vazio, o script de init
 # falhou (ver o log do LocalStack) e os testes de consumo vão falhar por isso
 docker exec jungleg-localstack awslocal sqs list-queues
-go test -count=1 -race -tags=integration -timeout 300s ./...
+go test -count=1 -race -tags=integration -timeout 600s ./...
 
 # as 32 operações inválidas que o banco precisa recusar
 cmd /c "docker exec -i jungleg-postgres psql -U jungleg -d jungleg < deploy/postgres/verify_constraints.sql"
+
+# prova rápida SO da Fase 11 (~35s, sem os cenarios multi-processo da Fase 10)
+go test -count=1 -race -tags=integration -timeout 600s -run 'TestMetrica|TestLogsDoProcesso|TestCicloDeVidaFx' ./test/integration/ -v
 ```
 
 **Números atuais:** 574 casos no domínio (Fases 1–3) + **38** testes de
-persistência (Fase 5) + 3 de `idgen` + **56 casos** do caso de uso (Fase 6) +
+persistência (Fase 5) + 3 de `idgen` + **57 casos** do caso de uso (Fase 6, com o
+conflito contado na Fase 11) +
 **49** em `internal/infra/auth` (Fase 7; **+2 na Fase 10**, do endereço do JWKS) +
 **67** em `internal/httpapi` (Fase 7) +
-**26** em `internal/app/inbox` (Fase 8) + **19** em `internal/consumer` (Fase 8) +
-**38** em `internal/worker` + `Retomar` (**Fase 9**) + **8** novos casos de
-configuração e composição (Fase 9) + **29 casos** de integração do caminho
+**26** em `internal/app/inbox` (Fase 8) + **22** em `internal/consumer` (Fase 8 +
+3 das etapas de retry da Fase 11) +
+**43** em `internal/worker` + `Retomar` (**Fases 9 e 11**) + **10 novos casos** de
+configuração e composição (Fases 9 e 11) + **29 casos** de integração do caminho
 completo (Fase 6) + **30** da borda HTTP (Fase 7) + **9 funções** de consumo com
 LocalStack (Fase 8) + **8 funções** de publicação e recuperação com LocalStack
 (Fase 9) + **11 funções** de concorrência, recuperação, conferência e latência
 com **três processos independentes** (Fase 10) + **2 funções** de
-`application_name` (Fase 10) + 2 de integração do binário real. `go test -race`
-verde nos **17 pacotes** com teste de unidade (18 no comando com a tag
-`integration`). Cobertura do domínio: `money` 97,9%, `wallet` 99,0%, `wagering`
-100,0%.
+`application_name` (Fase 10) + **10 funções** de métrica, **2 de log do processo
+real** e **1 de ciclo de vida Fx real** (Fase 11) + 2 de integração do binário
+real. `go test -race` verde nos **18 pacotes** com teste de unidade (18 também no
+comando com a tag `integration`), em **duas rodadas consecutivas** da suíte
+inteira na Fase 11 (integração: 147,9 s e 146,8 s). Cobertura do domínio: `money`
+97,9%, `wallet` 99,0%, `wagering` 100,0%.
 
 **Migrations:** cinco (`000001_init`, `000002_opening_sem_jogo_e_rodada`,
 `000003_ordem_da_outbox`, `000004_inbox_attempts`,
@@ -1750,7 +1767,7 @@ Como `go test ./...` roda pacotes em processos paralelos, cada `TestMain` toma u
 lock consultivo do PostgreSQL (`pg_advisory_lock`) e espera a vez — **não é
 preciso `-p 1`**.
 
-**Evidências por fase:** `docs/evidencias/FASE_1.md` a `FASE_10.md`.
+**Evidências por fase:** `docs/evidencias/FASE_1.md` a `FASE_11.md`.
 
 **Dependências de teste:** os testes de integração da borda HTTP precisam do
 **Keycloak** de pé (o token é obtido por `client_credentials`), e o de

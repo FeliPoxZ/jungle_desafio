@@ -244,13 +244,14 @@ assume no dia em que existir aceite assíncrono.
 | Todo `PENDING` confirmado deve ter retomada durável | ✅ `PendingReaper` (mecanismo provado; hoje o estado é inalcançável por caminho normal — ver `ARCHITECTURE.md` §16) |
 | Nenhuma transação `PENDING` presa para sempre | 🟡 o reaper dá desfecho; **exceção conhecida**: uma linha inconsistente que o ledger recusa é repetida indefinidamente em vez de virar `FAILED` (§16) |
 
-## 12. Observabilidade — ✅
+## 12. Observabilidade — ✅ Fase 11 (fechada)
 
 | Exigência | Estado |
 | --- | --- |
-| Logs JSON com `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId`; sem credenciais nem payload financeiro completo | ✅ borda HTTP (Fase 7), consumo (Fase 8) e **laços (Fase 9)**: `outbox_evento_publicado`, `outbox_publicacao_reagendada`, `outbox_evento_em_quarentena`, `outbox_atrasada`, `reference_resolvida`/`_ainda_pendente`/`_rejeitada`/`_ignorada`, `pending_reaper_*`, `worker_morreu_reiniciando`, `workers_*`. Valor monetário **não** entra no log |
-| Métricas: resultados por status, duplicatas, retries, DLQ, conflitos, **atraso da outbox**, latência, divergências de reconciliação | ✅ **12 de 12** emitidas. A Fase 9 fechou as 5 que faltavam: `wager_outbox_publish_total{result}`, `wager_outbox_pending_age_seconds` (atraso da outbox via `PendingStats`), `wager_outbox_publish_attempts`, `wager_reference_resolution_total{result}` e os `retries_total{stage}` dos laços |
-| Health checks definidos na API | ✅ `/health/live` e `/health/ready` com **PostgreSQL, IdP, SQS e `workers`** — o `workers` responde DOWN quando um laço ligado não está rodando (`{"oidc":"UP","postgres":"UP","sqs":"UP","workers":"UP"}` no binário real) |
+| Logs JSON com `correlationId`, `messageId`, `transactionId`, `walletId`, `providerId`; sem credenciais nem payload financeiro completo | ✅ **provado no stdout do PROCESSO real** (`TestLogsDoProcessoReal`, binário com `APP_ENV=production`): `operacao_concluida` (correlationId, requestId, transactionId, walletId, providerId), `sqs_mensagem_processada` (correlationId, messageId, transactionId, walletId, providerId) e `reference_resolvida` (correlationId da coluna, transactionId, walletId, providerId). O teste reprova qualquer linha com `client_secret`/`Authorization`/`Bearer`, com campo `amount`/`money`/`initialBalance` ou com valor monetário em texto. `TestLogsDoProcessoEmModoLocal` prova o TEXTO em `APP_ENV=local` (a outra metade do defeito 27) |
+| Métricas: resultados por status, duplicatas, retries, DLQ, conflitos, **atraso da outbox**, latência, divergências de reconciliação | ✅ **12 de 12 emitidas E provadas**: cada uma tem teste que dispara o gatilho real (HTTP autenticado, SQS/LocalStack, publisher e worker reais) e lê o valor em `/metrics` (`test/integration/metricas_integration_test.go`, 10 funções). Os 8 estágios de `retries_total{stage}` têm teste de emissão próprio. A regra de cardinalidade virou asserção. **Duas métricas mentiam e foram corrigidas**: `transaction_conflicts_total` não era emitida por ninguém (defeito 42) e `operations_total` tinha `kind`/`status` com significados diferentes no HTTP e no SQS (defeito 43) |
+| Health checks definidos na API | ✅ `/health/live` e `/health/ready` com **PostgreSQL, IdP, SQS e `workers`**; o readiness foi provado 200 no grafo real do Fx (`TestCicloDeVidaFxComStartEStopReais`) e no processo real |
+| Dashboards e tracing (diferencial opcional) | ✅ dashboards **versionados** (`deploy/observability/`: 13 painéis + 7 regras validadas por `promtool` + runbook). Tracing continua fora, declarado como trabalho não concluído |
 
 ## 13. Verificação obrigatória — ✅ Fase 10
 
@@ -280,10 +281,17 @@ assume no dia em que existir aceite assíncrono.
 | Ausência de ledger auditável | ✅ ledger append-only com dois saldos por lançamento; a conferência final da Fase 10 soma o ledger em SQL puro e compara com o saldo armazenado (101000 == 101000) |
 | Substituição integral de PostgreSQL, SQS e IdP por mocks nos testes | ✅ os três são **reais** nos testes de integração (PostgreSQL, Keycloak e LocalStack); os dublês existem só nos unitários |
 
-**Observabilidade (5 pontos):** 🟡→✅ no que a Fase 9 fecha — log estruturado com
-os identificadores de rastreio (inclusive na retomada), 12/12 métricas, health
-checks com a dependência `workers`. Tracing/dashboards continuam fora (diferencial
-opcional do enunciado).
+**Observabilidade (5 pontos):** ✅ **fechada na Fase 11** — 12/12 métricas com
+teste de emissão e leitura em `/metrics`, log do **processo** real nos dois
+formatos com os cinco identificadores e sem segredo/payload financeiro, health
+checks com `workers`, dashboard e alertas versionados com runbook. Dois defeitos
+reais de observabilidade foram corrigidos (42 e 43) e dois de documentação/código
+morto (44 e 45).
+
+**Documentação (5 pontos):** 🟡 o `ARCHITECTURE.md` está completo e atualizado até
+a Fase 11 (§12 com a tabela métrica → teste, §15 com os defeitos 42–45, §16 com as
+limitações novas, §17 com os números). O "README da solução" e os dois documentos
+finais são a Fase 12.
 
 ## 15. Entrega — 🟡 Fase 12
 
@@ -293,10 +301,10 @@ opcional do enunciado).
 | `README.md` da solução com pré-requisitos, variáveis, filas, migrations (aplicar/reverter), execução, exemplos e testes | 🟡 os exemplos autenticados já existem em `docs/evidencias/FASE_7.md` §4; a decisão de **onde** esse arquivo vive é a ⚠️ 3 da Fase 12 |
 | `.env.example` sem segredos reais | ✅ completo (HTTP, banco, OIDC, SQS, outbox, workers) — e agora com `OIDC_HTTP_TIMEOUT`, `OIDC_TOKEN_URL` e `HTTP_STOP_TIMEOUT` |
 | Provisionamento automático do IdP, identidades de teste e instruções dos fluxos autenticados | 🟡 realm, clients, roles, mapper e usuários de teste ✅; o fluxo `client_credentials` é exercitado pelos testes (com os três clients do realm); as instruções ⬜ Fase 12 |
-| `ARCHITECTURE.md` com decisões e limitações | ✅ atualizado até a **Fase 9** (§8 publicação da outbox com lease e quarentena, §11 contrato de roteamento/consumo de `wallet-events.fifo`, §12 observabilidade completa, §13 recuperação, §15 defeitos 37–39, §16 limitações) |
+| `ARCHITECTURE.md` com decisões e limitações | ✅ atualizado até a **Fase 11** (§12 com a tabela métrica → teste que prova e o log por caminho, §13 recuperação, §15 defeitos 42–45, §16 limitações — inclusive as de observabilidade, §17 números e comandos) |
 | Comandos documentados: `docker compose up --build`, `go test ./...`, `go test -race ./...`, `go vet ./...` | 🟡 documentados em `ARCHITECTURE.md` §17 e nas evidências; a consolidação é a Fase 12 |
-| Documentar como preparar dependências de teste, integração, múltiplas instâncias e simulações de falha; informar as build tags | 🟡 a tag `integration` está documentada (§17 e `FASE_8.md` §10), inclusive as dependências (PostgreSQL, Keycloak e **LocalStack com as filas provisionadas** — e o §17 do ARCHITECTURE manda conferir `list-queues`, porque uma falha silenciosa do script de init faz a suíte parecer verde); múltiplas instâncias é a Fase 10 |
-| Código formatado com `gofmt` e dependências reproduzíveis | ✅ `gofmt -l` limpo e `go.sum` versionado. A Fase 8 trouxe a **primeira dependência nova desde a Fase 0** (`aws-sdk-go-v2/service/sqs v1.52.4`, com o núcleo do SDK e o `credentials`); a Fase 7 não trouxe nenhuma. Falta o `go mod tidy` para remover `testcontainers-go`, Fase 12 |
+| Documentar como preparar dependências de teste, integração, múltiplas instâncias e simulações de falha; informar as build tags | 🟡 a tag `integration` está documentada (§17 e `FASE_8.md` §10), inclusive as dependências (PostgreSQL, Keycloak e **LocalStack com as filas provisionadas**); a Fase 11 acrescentou a rotina reduzida (`-run 'TestMetrica\|TestLogsDoProcesso\|TestCicloDeVidaFx'`). A consolidação é a Fase 12 |
+| Código formatado com `gofmt` e dependências reproduzíveis | ✅ **`go mod tidy` aplicado na Fase 11**: `testcontainers-go` e a árvore removidos, dependências realmente usadas (aws-sdk, pgx, prometheus client_model/common) promovidas a diretas; `go.mod` de 88 → 42 linhas, `go.sum` 56 linhas menor, `go mod verify` limpo, e a suíte inteira revalidada **depois** do tidy |
 
 ---
 

@@ -553,12 +553,46 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` feito e **validado por te
       container) → `OIDC_JWKS_URL` configurável, compose e `.env.example` atualizados,
       dois testes provando o par (sem a chave ⇒ 503; com a chave ⇒ token aceito)
 
-### FASE 11 — Observabilidade e polimento (D2, ~2h)
-- [ ] Logs JSON com todos os IDs; nenhum segredo/payload financeiro completo
-- [ ] Todas as métricas de A13 expostas e com teste mínimo
-- [ ] `go vet ./...`, `gofmt -l .` vazio, `go mod tidy` limpo
-- [ ] Teste da composição Fx: `fx.ValidateApp`, start/stop, `fx.StopTimeout`, liberação de recursos dos workers (sem goroutine leak: `goleak` opcional)
-- [ ] Revisão anti-eliminatórios (§4 abaixo) item por item, com evidência
+### FASE 11 — Observabilidade e polimento (D2, ~2h) — ✅ CONCLUÍDA E VALIDADA
+> Quatro blocos, um commit cada: **11a** (`2556245` — 12/12 métricas com teste lendo
+> `/metrics`; defeitos 42 e 43), **11b** (`699e341` — log do processo real nos dois
+> formatos), **11c** (`588e738` — dashboard, alertas e runbook) e **11d** (`df5bd84` —
+> `go mod tidy` e ciclo de vida Fx; defeitos 44 e 45). **23 funções de teste novas** (10
+> de integração de métrica, 8 de estágio de retry, 2 de log do processo, 1 de ciclo de vida
+> real, 2 unitárias de ciclo de vida) + os testes de conflito do caso de uso. **4 defeitos
+> reais corrigidos**. Evidências em `docs/evidencias/FASE_11.md`.
+- [x] Logs JSON com todos os IDs; nenhum segredo/payload financeiro completo —
+      **provado no stdout do processo real** (`APP_ENV=production` e `local`):
+      `operacao_concluida`, `sqs_mensagem_processada`, `reference_resolvida` e
+      `http_request` com os identificadores que se aplicam; nenhuma linha com
+      `client_secret`/`Authorization`/`amount`/valor monetário
+- [x] Todas as métricas de A13 expostas e com **teste que dispara o gatilho e lê
+      `/metrics`** — 12/12 (`test/integration/metricas_integration_test.go`) + os 8
+      estágios de `retries_total` (consumidor e laços) + asserção de cardinalidade
+- [x] `go vet ./...`, `gofmt -l .` vazio, **`go mod tidy`** limpo (removeu
+      `testcontainers-go` e a árvore; `go.mod` 88 → 42 linhas; suíte revalidada
+      **depois** do tidy)
+- [x] Teste da composição Fx com **Start/Stop reais** (`TestCicloDeVidaFxComStartEStopReais`:
+      readiness 200 com as quatro dependências, hooks na ordem inversa, pool aberto no
+      `OnStop` dos componentes e fechado depois), ordem inversa dos hooks e prazo de
+      encerramento em teste de unidade; `goleak` **não** foi usado (a prova
+      comportamental do container já existe)
+- [x] Revisão anti-eliminatórios (§4 abaixo) item por item, com evidência — em
+      `docs/evidencias/FASE_11.md` §9
+- [x] **Dashboard + alertas versionados** (`deploy/observability/`: 13 painéis, 7
+      regras validadas por `promtool`, scrape com blackbox e runbook). Decisão
+      registrada: **não** adicionar Prometheus/Grafana ao compose
+- [x] **Defeito 42**: `wager_transaction_conflicts_total` **nunca era emitida** →
+      `ports.ConflictCounter` no laço de repetição do caso de uso, ligado ao
+      `observability.Metrics` no Fx; provado com lock real (exige 2)
+- [x] **Defeito 43**: o caminho HTTP emitia `kind=<status>` e `status=<código HTTP>`,
+      o SQS emitia `kind=BET`/`status=PROCESSED` → mesma semântica nas duas portas
+- [x] **Defeito 44**: campo `kind` do log de acesso sempre vazio → removido com
+      `WithStage`/`StageFrom`, que não tinham chamador
+- [x] **Defeito 45**: a documentação dizia que `fx.StopTimeout` governava o shutdown
+      (em Fx 1.24 quem manda é o contexto passado a `Stop`) → comentário corrigido e
+      teste que trava os dois lados
+- [x] `docs/evidencias/FASE_11.md` com a seção final **MATÉRIA-PRIMA PARA OS DOIS DOCUMENTOS**
 
 ### FASE 12 — Documentação e entrega (D2, ~2h)
 - [ ] `README.md`: pré-requisitos, variáveis de ambiente, **inicialização das filas**, migrations (aplicar e reverter), execução, exemplos `curl` autenticados, comandos de teste, provisionamento do IdP + identidades de teste, execução de integração/múltiplas instâncias/simulações de falha, build tags
@@ -820,19 +854,18 @@ Formato: `[data] [fase] status — o que foi feito / decisão / bloqueio`.
   - **Evidências:** `docs/evidencias/FASE_7.md`.
 
 ### Próximos 3 passos imediatos
-1. **Fase 11 — observabilidade e polimento:** dashboard/alerta sobre as **12 métricas**
-   (todas já emitidas desde a Fase 9), revisão dos logs JSON com os cinco identificadores
-   do §12, `go vet`/`gofmt`/`go mod tidy` (remover o `testcontainers-go` que ficou baixado
-   sem uso), teste da composição Fx (`fx.ValidateApp`, start/stop, `fx.StopTimeout`,
-   liberação de recursos; `goleak` opcional) e a revisão anti-eliminatórios item por item.
-2. **Fase 12, primeiro documento — `docs/SISTEMA_EXPLICADO.md`:** montar, a partir da
-   seção **MATÉRIA-PRIMA** de `docs/evidencias/FASE_10.md` e das tabelas de decisão das
-   Fases 6–9, a explicação do básico ao avançado (dinheiro em unidades mínimas, carteira,
-   lançamento, transação/lock, idempotência, outbox → depois as ligações e as regras).
-3. **Fase 12, segundo documento — `docs/ENTREVISTA.md`:** transformar as tabelas
+1. **Fase 12, primeiro documento — `docs/SISTEMA_EXPLICADO.md`:** montar, a partir das
+   seções **MATÉRIA-PRIMA** de `docs/evidencias/FASE_10.md` e `FASE_11.md` e das tabelas
+   de decisão das Fases 6–11, a explicação do básico ao avançado (dinheiro em unidades
+   mínimas, carteira, lançamento, transação/lock, idempotência, outbox → depois as
+   ligações e as regras), com os **45 defeitos** (sintoma → causa → correção).
+2. **Fase 12, segundo documento — `docs/ENTREVISTA.md`:** transformar as tabelas
    pergunta→resposta (incluindo as difíceis e as que expõem limitação) em material de
-   treino; e resolver a ⚠️ 3 (onde vive o "README da solução", já que o `README.md` da
-   raiz é o enunciado e não pode ser editado).
+   treino.
+3. **Fase 12, entrega:** resolver a ⚠️ 3 (onde vive o "README da solução", já que o
+   `README.md` da raiz é o enunciado e não pode ser editado), provar
+   `docker compose up --build` de um **checkout limpo** e conferir a conformidade §1–§15
+   item por item.
 
 ---
 
