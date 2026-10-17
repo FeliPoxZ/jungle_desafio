@@ -225,6 +225,11 @@ Quando o sistema estiver **funcionando e fechado** (Fases 6–12 concluídas), a
 > partes (quem chama quem, onde cada garantia é imposta) e os conceitos de regra de negócio
 > (por que `LOSS` não movimenta, por que `ROLLBACK` de `REFUND` debita, por que o replay
 > devolve o saldo original). Quem lê precisa entender sem já saber o jargão.
+>
+> ⚠️ **Reforçado em 2026-10-17:** este compromisso está agora também no **§0b do
+> `PROMPT_FASE_10.md`**, e cada fase a partir de agora entrega a sua parte da
+> matéria-prima (a seção final de `docs/evidencias/FASE_N.md`), para a Fase 12 apenas
+> ORGANIZAR os dois documentos — nunca reconstruir o raciocínio.
 
 #### Documento 1 — Explicação do sistema completo
 

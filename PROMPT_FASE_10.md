@@ -41,6 +41,75 @@ ANTES DE ESCREVER UMA LINHA DE CÓDIGO, leia nesta ordem:
   6. PLANO.md §3 — o checklist da FASE 10
 
 ═══════════════════════════════════════════════════════════════════════════════
+0b) OS DOIS DOCUMENTOS FINAIS — O QUE ESTA CAMINHADA ESTÁ CONSTRUINDO
+═══════════════════════════════════════════════════════════════════════════════
+
+Esta fase NÃO termina quando os testes ficam verdes. Ela termina quando você
+consegue EXPLICAR o que provou. Existem dois documentos pendentes que são entrega
+obrigatória (compromisso registrado em PROXIMO_PASSO §3.5 e em PLANO §3, exigência
+do usuário datada de 2026-10-16), e a Fase 10 é a que mais produz matéria-prima
+para eles:
+
+  docs/SISTEMA_EXPLICADO.md — para quem vai LER E MANTER o código
+    Do básico ao avançado, SEM PRESUMIR VOCABULÁRIO: o que é dinheiro em unidades
+    mínimas, o que é carteira, o que é um lançamento de ledger, o que é uma
+    transação/lock, o que é idempotência, o que é outbox — e só DEPOIS as ligações
+    entre as partes (quem chama quem, onde cada garantia é imposta no banco) e as
+    regras de negócio (por que LOSS não movimenta, por que ROLLBACK de REFUND
+    debita, por que o replay devolve o saldo original). Inclui o fluxo completo de
+    uma requisição (HTTP → commit → publicação), cada componente e por que ele
+    existe, as decisões com o motivo, a lista de TODOS os problemas resolvidos
+    (sintoma, causa, correção) e os limites conhecidos.
+
+  docs/ENTREVISTA.md — para o USUÁRIO TREINAR
+    Perguntas e respostas na lógica de quem entrevista: arquitetura ("por que
+    READ COMMITTED + FOR UPDATE e não SERIALIZABLE?", "por que outbox e não
+    publicar direto?", "por que o ledger é separado da carteira?"), decisão ("por
+    que int64 em unidades mínimas?", "por que o domínio não importa encoding/json?"),
+    garantia ("como você impede débito duplicado?", "onde está a proteção contra
+    lost update?", "o que acontece se o processo morrer no meio?"), erro e
+    aprendizado ("qual foi o bug mais difícil?", "o que faria diferente?"). As
+    perguntas DIFÍCEIS entram, com resposta honesta — inclusive as que expõem
+    limitação (o que ficou de fora, o que é frágil e por quê).
+
+  ⚠️ O que os dois NÃO são: não são resumo do ARCHITECTURE.md (aquele é para o
+  avaliador, denso e em terceira pessoa). Estes dois são para ENSINAR — e um
+  documento que só diz "o que" sem "por quê" e "o que quebraria sem isso" não
+  cumpre o compromisso.
+
+  ⚠️ Nenhum dos dois pode contrariar o README.md da raiz. Toda interpretação
+  adotada (as que estão em docs/CONFORMIDADE_README.md e no ARCHITECTURE §9–§11)
+  aparece nos dois, com o motivo e a consequência.
+
+POR QUE ISSO É TAREFA DESTA FASE, E NÃO SÓ DA 12:
+  - a regra (c) do método (§1) já manda explicar cada parte em
+    DECISÃO | MOTIVO | O QUE QUEBRARIA SEM ELA. Essas tabelas SÃO o rascunho dos
+    dois documentos. Se você as escrever "para cumprir tabela", a Fase 12 vira
+    arqueologia; se escrever pensando em quem vai ler, a Fase 12 vira montagem;
+  - a Fase 10 é o cenário de 20 pontos do §14 (concorrência) e o que mais rende
+    história para a entrevista: a corrida das duas apostas de 80.00 sobre 100.00,
+    a mesma aposta 50× entre três processos, o consumidor morto entre o commit e o
+    delete, a instância nova que assume. Cada cenário provado é uma pergunta de
+    entrevista que o usuário vai poder responder COM NÚMERO, não com opinião;
+  - todas as explicações que você der nesta conversa precisam ser
+    ENTREVISTA-READY: comece pelo porquê, use o vocabulário e explique o
+    vocabulário na primeira vez, prefira a consequência concreta ("o segundo
+    débito entra e o saldo fica negativo") ao jargão ("haveria uma race
+    condition").
+
+ENTREGÁVEL CONCRETO NESTA FASE (além das evidências):
+  - docs/evidencias/FASE_10.md ganha uma seção final "MATÉRIA-PRIMA PARA OS DOIS
+    DOCUMENTOS" com: os cenários provados na forma de pergunta→resposta curta, as
+    decisões em tabela, e a lista do que a Fase 10 acrescentou à compreensão do
+    sistema (o que se aprendeu sobre locks, idempotência e recuperação que antes
+    era só teoria). É esse material que a Fase 12 vai reorganizar — não reescrever;
+  - se, ao explicar um cenário, você perceber que o código NÃO é defensável como
+    está (uma decisão frágil, um comportamento difícil de justificar), DIGA ISSO
+    nesta fase, registre na §16 do ARCHITECTURE e responda honestamente no material
+    da entrevista. Documento que esconde fragilidade não ajuda em entrevista: o
+    entrevistador encontra.
+
+═══════════════════════════════════════════════════════════════════════════════
 1) MÉTODO DE TRABALHO (o mesmo das Fases 6 a 9 — não mude)
 ═══════════════════════════════════════════════════════════════════════════════
 
@@ -393,13 +462,17 @@ Ao final da fase, atualizar TODOS:
   6. `.env.example` / `docker-compose.yml` — só se a fase acrescentar chave ou
      serviço (ex.: `api-2`/`api-3`); se não acrescentar, diga isso
 
-E LEMBRE-SE DO COMPROMISSO FINAL (PROXIMO_PASSO §3.5): no fim das fases, dois
-documentos — docs/SISTEMA_EXPLICADO.md (do básico ao avançado, sem presumir
-vocabulário) e docs/ENTREVISTA.md (perguntas e respostas, incluindo as difíceis e as
-que expõem limitação). Tudo o que você explicar agora é matéria-prima deles, e o
-usuário precisa sair desta conversa ENTENDENDO o sistema, não só com ele pronto.
-A Fase 10 é a que mais rende material para a entrevista: concorrência é o critério
-de 20 pontos do §14.
+E LEMBRE-SE DO COMPROMISSO FINAL (PROXIMO_PASSO §3.5 e §0b deste prompt): no fim
+das fases, dois documentos — docs/SISTEMA_EXPLICADO.md (do básico ao avançado, sem
+presumir vocabulário, para quem vai manter o código) e docs/ENTREVISTA.md (perguntas
+e respostas, incluindo as difíceis e as que expõem limitação). Os dois são ENTREGA
+OBRIGATÓRIA, e a Fase 10 é a maior fonte de matéria-prima deles: concorrência é o
+critério de 20 pontos do §14. Por isso, ao fim desta fase:
+  - a seção final de docs/evidencias/FASE_10.md ("MATÉRIA-PRIMA PARA OS DOIS
+    DOCUMENTOS") tem de existir, com os cenários em pergunta→resposta curta, as
+    decisões em tabela e o que a fase acrescentou à compreensão do sistema;
+  - tudo o que você explicar nesta conversa precisa estar escrito de forma que a
+    Fase 12 apenas ORGANIZE — nunca precise reconstruir o raciocínio.
 
 ═══════════════════════════════════════════════════════════════════════════════
 8) PRIMEIRA RESPOSTA ESPERADA
@@ -417,7 +490,10 @@ Não comece a codar. Na primeira resposta:
      os processos realmente são INDEPENDENTES (conexões e memória), como vai provar
      T3 sem asserção de tempo frágil, e o que será SIMULADO em vez de executado (o
      kill entre commit e delete) com o motivo;
-  d) diga exatamente qual será o primeiro passo concreto do bloco 10a.
+  d) diga exatamente qual será o primeiro passo concreto do bloco 10a;
+  e) diga, em três linhas, o que você entendeu sobre os dois documentos finais
+     (§0b): por que eles são entrega obrigatória, o que cada um ensina e qual é a
+     matéria-prima que esta fase entrega para eles.
 ```
 
 ---
@@ -429,5 +505,12 @@ Não comece a codar. Na primeira resposta:
   errada no reaper, correlação que morre no fim da requisição), a validação de config
   do pior caso, o `stop_grace_period` do compose, e a regra de que teste de
   integração diz QUE algo está errado enquanto o unitário com o dado real diz ONDE.
+- **Revisão de 2026-10-17 (pedido do usuário):** acrescentada a seção **§0b**, que
+  promove os dois documentos finais (`docs/SISTEMA_EXPLICADO.md` e
+  `docs/ENTREVISTA.md`) a compromisso explícito da fase — o que cada um ensina, o
+  que eles NÃO são, por que a matéria-prima é produzida AGORA (e não na Fase 12), o
+  entregável concreto da fase (§ final de `docs/evidencias/FASE_10.md`) e a
+  instrução de explicar tudo em formato "entrevista-ready"; §7 e §8 atualizados para
+  cobrar isso também na primeira resposta.
 - O prompt da Fase 9 (`PROMPT_FASE_9.md`) foi consumido e a fase está fechada; nada
   dele segue pendente.
