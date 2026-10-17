@@ -84,6 +84,10 @@ type opcoesInstancia struct {
 	Outbox bool
 	// Referencia liga `REFERENCE_ENABLED` (worker de referências + reaper).
 	Referencia bool
+	// Inicio é o número da primeira instância (nome `api-<n>` e porta). Zero
+	// significa 1. O cenário de reinício (T8) sobe uma SEGUNDA fornada começando em
+	// 4, para o log dizer sem ambiguidade qual processo fez o quê.
+	Inicio int
 	// Extras sobrescreve variáveis de ambiente desta instância.
 	Extras map[string]string
 }
@@ -176,8 +180,12 @@ func subirInstancias(t *testing.T, quantas int, opcoes opcoesInstancia) []*insta
 	}
 
 	instancias := make([]*instancia, 0, quantas)
-	for i := 1; i <= quantas; i++ {
-		instancias = append(instancias, subirInstancia(t, i, opcoes))
+	inicio := opcoes.Inicio
+	if inicio < 1 {
+		inicio = 1
+	}
+	for i := 0; i < quantas; i++ {
+		instancias = append(instancias, subirInstancia(t, inicio+i, opcoes))
 	}
 
 	for _, inst := range instancias {
