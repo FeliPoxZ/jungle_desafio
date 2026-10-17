@@ -190,6 +190,20 @@ provado por `TestREFUNDDeBETJaDesfeitaPorROLLBACKEhRejeitado` (unidade) e
 `…NoBanco` (integração). O ledger tinha 4 lançamentos consistentes no caso antigo:
 a reconciliação **não** acusaria nada, e é isso que torna o defeito caro.
 
+E, no **container reconstruído** (`docker compose up -d --build api`, depois da
+correção), o mesmo cenário ponta a ponta:
+
+```
+carteira 100.00 → 201 {"balance":{"amount":"100.00",…},"version":1}
+BET 40.00       → 201 {"status":"PROCESSED","balance":{"amount":"60.00",…}}
+ROLLBACK da BET → 201 {"status":"PROCESSED","balance":{"amount":"100.00",…}}
+REFUND da BET   → 422 {"status":"REJECTED","failureCode":"ALREADY_REVERSED"}
+saldo final     → 200 {"balance":{"amount":"100.00",…},"version":3}
+```
+
+Versão 3 (débito da BET, crédito do ROLLBACK, e o REFUND rejeitado **não** toca na
+carteira) e saldo de volta ao inicial: o dinheiro não é mais criado.
+
 ---
 
 ## 7. Conferências automáticas da entrega
