@@ -1442,8 +1442,8 @@ persistência (Fase 5) + 3 de `idgen` + **56 casos** do caso de uso (Fase 6) +
 **26** em `internal/app/inbox` (Fase 8) + **19** em `internal/consumer` (Fase 8) +
 **29 casos** de integração do caminho completo (Fase 6) + **30** da borda HTTP
 (Fase 7) + **9 funções** de consumo com LocalStack (Fase 8) + 2 de integração do
-binário real. `go test -race` verde nos **17 pacotes** de unidade e nos **3** de
-integração. Cobertura do domínio: `money` 97,9%, `wallet` 99,0%, `wagering` 100,0%.
+binário real. `go test -race` verde nos **16 pacotes** com teste de unidade (17 no comando com a
+tag `integration`, porque dois pacotes só têm teste de integração). Cobertura do domínio: `money` 97,9%, `wallet` 99,0%, `wagering` 100,0%.
 
 **Migrations:** quatro (`000001_init`, `000002_opening_sem_jogo_e_rodada`,
 `000003_ordem_da_outbox`, `000004_inbox_attempts`). O binário `bin/migrate.exe` carrega as migrations

@@ -48,7 +48,7 @@ solução + `ARCHITECTURE.md`.
 | Fase 5 (persistência `pgx` + Unit of Work) | ✅ **CONCLUÍDA E VALIDADA** — 38 testes (25 de integração), `-race` verde, 4 defeitos reais corrigidos |
 | Fase 6 (caso de uso `wagering.Service`) | ✅ **CONCLUÍDA E VALIDADA** em 3 blocos: 6a (`Process`), 6b (`OpenWallet`), 6c (leituras + `Reconcile`) — 55 casos unitários, 27 de integração, **6 defeitos reais corrigidos** |
 | Fase 7 (HTTP + autenticação) | ✅ **CONCLUÍDA E VALIDADA** em 5 blocos (7a–7e) + P1 — **49 casos** em `internal/infra/auth`, **67** em `internal/httpapi`, **30** de integração da borda HTTP (Keycloak real), **2** do binário real, **8 defeitos reais corrigidos** |
-| Fase 8 (SQS + inbox) | ✅ **CONCLUÍDA E VALIDADA** em 2 blocos (8a/8b e 8e) — **26 casos** em `internal/app/inbox`, **19** em `internal/consumer`, **9 funções** de integração com o **LocalStack real**; **4 defeitos reais corrigidos** (um deles de ambiente: as filas nunca eram criadas) |
+| Fase 8 (SQS + inbox) | ✅ **CONCLUÍDA E VALIDADA** em 2 blocos (8a/8b e 8e) — **26 casos** em `internal/app/inbox`, **19** em `internal/consumer`, **9 funções** de integração com o **LocalStack real**; **8 defeitos reais corrigidos** (um de ambiente: as filas nunca eram criadas; três que só apareceram ao rodar o binário) |
 | Fase 9 (publisher da outbox + worker de referências) | ⬅ **PRÓXIMA** |
 | Fases 10–12 | ⬜ Não iniciadas (ver checklist no `PLANO.md` §3) |
 
