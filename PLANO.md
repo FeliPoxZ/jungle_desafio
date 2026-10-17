@@ -878,19 +878,14 @@ Formato: `[data] [fase] status — o que foi feito / decisão / bloqueio`.
   - **Números:** 116 casos unitários novos (49 de autenticação + 67 da borda) e 32 de integração; `go test -race` verde em **15 pacotes** de unidade e nos **3** de integração.
   - **Evidências:** `docs/evidencias/FASE_7.md`.
 
-### Próximos 3 passos imediatos
-1. **Fase 12, primeiro documento — `docs/SISTEMA_EXPLICADO.md`:** montar, a partir das
-   seções **MATÉRIA-PRIMA** de `docs/evidencias/FASE_10.md` e `FASE_11.md` e das tabelas
-   de decisão das Fases 6–11, a explicação do básico ao avançado (dinheiro em unidades
-   mínimas, carteira, lançamento, transação/lock, idempotência, outbox → depois as
-   ligações e as regras), com os **50 defeitos** (sintoma → causa → correção).
-2. **Fase 12, segundo documento — `docs/ENTREVISTA.md`:** transformar as tabelas
-   pergunta→resposta (incluindo as difíceis e as que expõem limitação) em material de
-   treino.
-3. **Fase 12, entrega:** resolver a ⚠️ 3 (onde vive o "README da solução", já que o
-   `README.md` da raiz é o enunciado e não pode ser editado), provar
-   `docker compose up --build` de um **checkout limpo** e conferir a conformidade §1–§15
-   item por item.
+### Entrega concluída
+1. **A entrega está em `docs_desafio/`**: `README.md` (solução), `SISTEMA_EXPLICADO.md`,
+   `ENTREVISTA.md`. O `README.md` da raiz é o enunciado e está **intocado**.
+2. **Prova de execução:** `docker compose up --build` de um checkout limpo (52 s, `api`
+   `healthy`, readiness UP), migrations aplicadas e revertidas, fluxo autenticado com
+   curl — tudo com a saída real em `docs/evidencias/FASE_12.md`.
+3. **Conferência:** §1–§15 no `docs/evidencias/FASE_12.md` §9, interpretações no
+   `docs/CONFORMIDADE_README.md`, decisões e limites no `ARCHITECTURE.md` §15/§16.
 
 ---
 

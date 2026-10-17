@@ -1772,7 +1772,7 @@ Como `go test ./...` roda pacotes em processos paralelos, cada `TestMain` toma u
 lock consultivo do PostgreSQL (`pg_advisory_lock`) e espera a vez — **não é
 preciso `-p 1`**.
 
-**Evidências por fase:** `docs/evidencias/FASE_1.md` a `FASE_11.md`.
+**Evidências por fase:** `docs/evidencias/FASE_1.md` a `FASE_12.md`.
 
 **Dependências de teste:** os testes de integração da borda HTTP precisam do
 **Keycloak** de pé (o token é obtido por `client_credentials`), e o de

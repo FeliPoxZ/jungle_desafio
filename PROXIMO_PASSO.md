@@ -1,6 +1,26 @@
-# PROXIMO_PASSO.md — Handoff para a próxima conversa
+# PROXIMO_PASSO.md — handoff do projeto (ENTREGA CONCLUÍDA)
 
-> **INSTRUÇÃO PARA A NOVA CONVERSA (leia isto primeiro):**
+> ## ✅ As doze fases estão concluídas
+>
+> **A entrega final está em [`docs_desafio/`](docs_desafio/README.md)**: o README da
+> solução, o `SISTEMA_EXPLICADO.md` e o `ENTREVISTA.md`. O enunciado continua sendo o
+> `README.md` da raiz, **intocado**.
+>
+> - **Para rodar:** [`docs_desafio/README.md`](docs_desafio/README.md) (§4 sobe o
+>   ambiente, §5 migrations, §7 fluxos autenticados, §8 testes).
+> - **Para entender/mexer no código:** [`docs_desafio/SISTEMA_EXPLICADO.md`](docs_desafio/SISTEMA_EXPLICADO.md),
+>   do capítulo 1 ao 9 (o capítulo 5 responde "onde cada garantia é imposta").
+> - **Para treinar a entrevista:** [`docs_desafio/ENTREVISTA.md`](docs_desafio/ENTREVISTA.md),
+>   40 perguntas + o anexo das 23 interpretações.
+> - **Evidência de cada fase:** [`docs/evidencias/`](docs/evidencias/) (FASE_0 a FASE_12).
+> - **Decisões e limites:** [`ARCHITECTURE.md`](ARCHITECTURE.md) §15 (50 defeitos) e §16.
+>
+> O restante deste arquivo é o histórico de como se chegou aqui: método, estado por
+> fase, armadilhas de ambiente e pendências conhecidas.
+
+---
+
+> **INSTRUÇÃO PARA UMA NOVA CONVERSA (histórico):**
 > Este arquivo é um handoff. Ele diz **onde o projeto está, o que já foi decidido, qual é o
 > método de trabalho acordado e exatamente qual é a próxima tarefa pontual**.
 >
@@ -10,23 +30,20 @@
 > 3. `docs/CONFORMIDADE_README.md` — o que do enunciado já está atendido, o que falta e em que fase
 > 4. `CONTEXTO.md` (raiz) — estado geral, ambiente, decisões congeladas, pendências
 > 5. `PLANO.md` §3 — checklist por fase
-> 6. `docs/evidencias/FASE_1.md` a `FASE_9.md` — provas do que já funciona
+> 6. `docs/evidencias/FASE_1.md` a `FASE_12.md` — provas do que já funciona
 > 7. `docs/LEDGER_VS_WALLET.md` — a distinção central do domínio financeiro
 >
 > **Não comece a codar sem ler as seções 3 e 3.5.**
 >
-> ⭐ **A próxima fase é a 12 (documentação e entrega)**. O prompt de abertura está em
-> **`PROMPT_FASE_12.md`** e é autossuficiente: o "README da solução" (a ⚠️ 3),
-> **`docs/SISTEMA_EXPLICADO.md`**, **`docs/ENTREVISTA.md`**, `docker compose up
-> --build` de um checkout limpo e a conferência de conformidade §1–§15; quatro
-> blocos (12a–12d).
+> ⭐ **A Fase 12 está CONCLUÍDA** (a última): a entrega vive em `docs_desafio/` —
+> README da solução, `SISTEMA_EXPLICADO.md` e `ENTREVISTA.md` —, o
+> `docker compose up --build` foi provado de um **checkout limpo** (52 s, `api`
+> `healthy`) e a conferência §1–§15 está em `docs/evidencias/FASE_12.md`. Cinco
+> defeitos reais corrigidos (46–50), sendo o 50 (REFUND depois de ROLLBACK criava
+> dinheiro) o mais grave da caminhada. A suíte inteira rodou **duas vezes**: unidade
+> em 17 pacotes, integração em 18 (`test/integration` em 146,9 s e 148,8 s).
 >
 > O **§3.6** deste arquivo detalha a distinção entre os dois documentos finais.
->
-> Os dois documentos finais — `docs/SISTEMA_EXPLICADO.md` e `docs/ENTREVISTA.md` — são
-> **entrega obrigatória** (§3.5 e §3.6), e as Fases 10 e 11 deixaram a matéria-prima
-> pronta nas **seções finais de `docs/evidencias/FASE_10.md` e `FASE_11.md`**: a
-> Fase 12 **organiza**, não reconstrói.
 >
 > A **Fase 11 está CONCLUÍDA**: 12/12 métricas com teste que lê `/metrics`, log do
 > **processo** real nos dois formatos, dashboard e alertas versionados, `go mod tidy`,
@@ -74,7 +91,7 @@ solução + `ARCHITECTURE.md`.
 | Fase 9 (publicador da outbox + worker de referências + reaper) | ✅ **CONCLUÍDA E VALIDADA** em 4 blocos (9a–9d) — **38 casos unitários** novos, **8 funções** de integração com PostgreSQL + LocalStack reais, prova pelo **binário real** com os três laços; **3 defeitos reais corrigidos** (dois só apareceram rodando a retomada contra o banco) |
 | Fase 10 (concorrência e recuperação com 3 processos) | ✅ **CONCLUÍDA E VALIDADA** em 4 blocos (10a–10d) + 1 correção — **11 funções** de integração com **três processos independentes** do binário, **4 testes unitários** novos, prova de **SIGTERM real em container Linux**; **2 defeitos reais corrigidos** (40: `application_name`; 41: o container não autenticava) |
 | Fase 11 (observabilidade e polimento) | ✅ **CONCLUÍDA E VALIDADA** em 5 blocos (11a–11e) — **10 funções** de integração de métrica lendo `/metrics` + **8 testes** dos estágios de retry + **2** de log do processo real + **1** de ciclo de vida Fx real + **2** unitários de ciclo de vida; dashboard e alertas versionados; `go mod tidy`; **4 defeitos reais corrigidos** (42, 43, 44 e 45) |
-| Fase 12 (documentação e entrega) | ⬜ Próxima (ver checklist no `PLANO.md` §3) |
+| Fase 12 (documentação e entrega) | ✅ **CONCLUÍDA E VALIDADA** em 4 blocos (12a–12d) — README da solução em `docs_desafio/`, `SISTEMA_EXPLICADO.md` (2.064 linhas, 9 capítulos) e `ENTREVISTA.md` (40 perguntas + as 23 interpretações), checkout limpo com `docker compose up --build`, conferência §1–§15; **5 defeitos reais corrigidos** (46–50) |
 
 **Domínio (Fases 1–3): 574 casos. Persistência (Fase 5): 38. Caso de uso (Fase 6):
 55 unitários + 27 de integração. Borda HTTP (Fase 7): 116 unitários + 32 de
@@ -106,6 +123,11 @@ e recuperação (Fase 10): 11 funções de integração com três processos + 4 
 ### Histórico de commits (mais recente primeiro)
 
 ```
+d1cbc67 docs(fase12b): entrega o SISTEMA_EXPLICADO.md e fecha a simetria REFUND/ROLLBACK (defeito 50)
+7486837 docs(fase12c): entrega o ENTREVISTA.md e o anexo das 23 interpretacoes
+a14f580 fix(fase12a): corrige as credenciais do SQS no .env.example e no compose (defeito 49)
+55354d8 feat(fase12a): escreve o README da solucao em docs_desafio/ e corrige tres defeitos de entrega
+1661050 docs(fase11e): registra as evidencias e fecha arquitetura, conformidade e handoff da Fase 11
 df5bd84 chore(fase11d): aplica go mod tidy, prova o ciclo de vida Fx e corrige o prazo de parada
 588e738 feat(fase11c): versiona dashboard, regras de alerta e runbook de observabilidade
 699e341 test(fase11b): prova o log do PROCESSO real nos dois formatos e nos tres caminhos
@@ -814,65 +836,67 @@ tratado com `TrimSpace` e testado, `Movement` resolvendo a versão do UPDATE con
 corrigida (defeito 21).
 
 **Abertas:**
-- **`ARCHITECTURE.md` está atualizado até a Fase 11** — §12 (tabela métrica → teste
-  que prova, semântica dos contadores, identificadores por caminho de log), §15
-  (defeitos 42–45), §16 (7 limitações novas de observabilidade) e §17 (números e a
-  rotina reduzida da fase). **Nada pendente de documentação técnica**;
-- **limitação nova da Fase 9:** o reaper repete indefinidamente uma linha
-  `PENDING` que não consegue concluir (sem contador durável de falhas do reaper);
-- **limitação nova da Fase 9:** a ordem por carteira depende do lote — mais
-  eventos pendentes da mesma carteira que `OUTBOX_BATCH_SIZE` numa rodada podem
-  ser divididos entre dois publishers (o consumidor pode ordenar por
-  `walletVersion`). **Na Fase 10 isso foi OBSERVADO** com `OUTBOX_BATCH_SIZE=1`;
-- **limitações novas da Fase 10** (todas no `ARCHITECTURE.md` §16): a queda entre
-  commit e delete é **reproduzida** por estado durável (o sinal real está provado no
-  container); o encerramento gracioso depende do prazo do orquestrador; o LocalStack não
-  antecipa entrega com `ChangeMessageVisibility(0)`; a distribuição de publicações entre
+- **`ARCHITECTURE.md` está fechado** — §12 (métrica → teste, semântica dos contadores,
+  identificadores por caminho de log), §15 (defeitos 42–50), §16 (limitações) e §17
+  (números e comandos). **Nada pendente de documentação técnica**;
+- **limitação da Fase 9:** o reaper repete indefinidamente uma linha `PENDING` que não
+  consegue concluir (sem contador durável de falhas do reaper);
+- **limitação da Fase 9:** a ordem por carteira depende do lote — mais eventos
+  pendentes da mesma carteira que `OUTBOX_BATCH_SIZE` numa rodada podem ser divididos
+  entre dois publishers (o consumidor pode ordenar por `walletVersion`). Observado na
+  Fase 10 com `OUTBOX_BATCH_SIZE=1`;
+- **limitações da Fase 10** (no `ARCHITECTURE.md` §16): a queda entre commit e delete
+  é **reproduzida** por estado durável (o sinal real está provado no container); o
+  encerramento gracioso depende do prazo do orquestrador; o LocalStack não antecipa
+  entrega com `ChangeMessageVisibility(0)`; a distribuição de publicações entre
   réplicas não é asserida; a latência é medida com cliente local;
-- **limitações novas da Fase 11** (no `ARCHITECTURE.md` §16): `operations_total` conta
-  atendimentos (inclui replay); `transaction_conflicts_total` conta repetições, não
-  erros; os estágios de `retries_total` são provados em unidade; o readiness não é
-  métrica (alerta "workers DOWN" depende do blackbox); a idade da outbox é medida a
-  cada 15s; o dashboard não é exercitado em CI;
+- **limitações da Fase 11** (§16): `operations_total` conta atendimentos (inclui
+  replay); `transaction_conflicts_total` conta repetições, não erros; os estágios de
+  `retries_total` são provados em unidade; o readiness não é métrica (alerta "workers
+  DOWN" depende do blackbox); a idade da outbox é medida a cada 15s; o dashboard não
+  é exercitado em CI;
+- **limitação da Fase 12:** os números de linha citados no `SISTEMA_EXPLICADO.md`
+  envelhecem (a referência estável é o símbolo, e o documento avisa);
 - **sem prova de SIGTERM no Windows** (P8): o `Stop-Process` é terminação dura; a
   prova de sinal é do container Linux (`FASE_10.md` §6);
-- **`testcontainers-go` removido** pelo `go mod tidy` da Fase 11 (junto com a árvore
-  dele); `go.mod` caiu de 88 para 42 linhas e `go mod verify` está limpo;
+- **`testcontainers-go` removido** pelo `go mod tidy` da Fase 11; `go.mod` com 42
+  linhas e `go mod verify` limpo;
 - **métricas de negócio**: **12 das 12 emitidas E provadas** em `/metrics`
   (`FASE_11.md` §3); dashboard e alertas versionados em `deploy/observability/`;
 - `migrate.exe` sobrando na raiz (além de `bin/migrate.exe`): lixo de build, só limpar;
-- **`bin/migrate.exe` carrega as migrations embutidas** (`go:embed`): depois de criar ou alterar
-  uma migration, é preciso rebuidá-lo, senão ele responde "schema já está atualizado" e não
-  aplica nada (aconteceu na 000002, na 000004 e de novo na 000005);
-- a ordem dos eventos na outbox **foi resolvida** (bloco 6d, migration 000003) e a
-  **publicação** preserva a ordem por carteira (Fase 9); a prova com 3 instâncias
-  foi feita na Fase 10 **e revelou o limite do lote** (§16);
-- **`wallet-events.fifo`** agora recebe eventos; **não há consumidor** de eventos
-  nesta entrega (decisão de escopo: o README §11 pede publicação + contrato
-  documentado). O contrato de consumo está no `ARCHITECTURE.md` §11;
-- **tracing (OpenTelemetry) não foi implementado** — diferencial opcional do §12,
-  registrado como trabalho não concluído no `CONFORMIDADE_README.md`.
+- **`bin/migrate.exe` carrega as migrations embutidas** (`go:embed`): depois de criar
+  ou alterar uma migration, é preciso rebuidá-lo (e `docker compose build migrate`),
+  senão ele responde "schema já está atualizado" — e a imagem velha falha com
+  "no migration found for version 5";
+- **`wallet-events.fifo`** recebe eventos; **não há consumidor** de eventos nesta
+  entrega (decisão de escopo: o README §11 pede publicação + contrato documentado). O
+  contrato de consumo está no `ARCHITECTURE.md` §11;
+- **tracing (OpenTelemetry) e partidas dobradas** não foram implementados —
+  diferenciais opcionais do §12/§14, registrados no `CONFORMIDADE_README.md`;
+- **o `api` do compose consome a mesma fila dos testes**: pare-o
+  (`docker compose stop api`) antes de rodar a integração — senão T1 e a conferência
+  final falham por timeout, por mensagens que ele "rouba" da fila.
 
 ---
 
-## 8. CHECKLIST DE ARRANQUE PARA A NOVA CONVERSA (Fase 12)
+## 8. COMO USAR A ENTREGA (e o que fazer depois)
 
-> ⭐ **O prompt de abertura está em `PROMPT_FASE_12.md`** — autossuficiente, com o
-> escopo do §12/§15 do README, os quatro blocos (12a–12d), as armadilhas de ambiente,
-> os critérios de aceite e o formato da primeira resposta esperada.
+> ✅ **As doze fases estão concluídas.** Não há checklist de arranque: o que existe é a
+> entrega em [`docs_desafio/`](docs_desafio/README.md) e as evidências em
+> [`docs/evidencias/`](docs/evidencias/).
 
-> ✅ **A Fase 11 fechou observabilidade/polimento.** O que falta é **documentação e
-> entrega**: o "README da solução" (⚠️ 3), os dois documentos finais e a prova de
-> `docker compose up --build` de um checkout limpo.
+1. **Para rodar e demonstrar:** siga o [`docs_desafio/README.md`](docs_desafio/README.md)
+   na ordem — §4 (subir o ambiente), §5 (migrations), §7 (fluxo autenticado com curl) e
+   §8 (testes). É o mesmo roteiro que foi **executado** na Fase 12.
+2. **Para estudar o código:** leia o [`docs_desafio/SISTEMA_EXPLICADO.md`](docs_desafio/SISTEMA_EXPLICADO.md)
+   do capítulo 1 ao 9; o capítulo 3 (fluxo) e o 5 (onde cada garantia é imposta) são os
+   que dão o mapa mental. O capítulo 8 tem os 50 defeitos: é o que dizer quando
+   perguntarem "como você sabe que está certo?".
+3. **Para treinar a entrevista:** abra o [`docs_desafio/ENTREVISTA.md`](docs_desafio/ENTREVISTA.md),
+   leia só a pergunta, responda em voz alta e confira; use o anexo das 23
+   interpretações quando a pergunta for "isso estava no enunciado?".
+4. **Para avaliar:** [`ARCHITECTURE.md`](ARCHITECTURE.md) (decisões e limitações),
+   [`docs/CONFORMIDADE_README.md`](docs/CONFORMIDADE_README.md) (requisito → onde
+   está) e a [`FASE_12.md`](docs/evidencias/FASE_12.md) (conferência §1–§15).
 
-- [ ] Ler `README.md` (o enunciado é a fonte de verdade), `ARCHITECTURE.md` (§12, §16, §17), as seções finais de `docs/evidencias/FASE_10.md` e `FASE_11.md` (matéria-prima dos dois documentos) e o `PROMPT_FASE_12.md`
-- [ ] Resolver a **⚠️ 3**: onde vive o "README da solução" (o `README.md` da raiz é o enunciado e **não pode ser editado**)
-- [ ] `docs/SISTEMA_EXPLICADO.md` — do zero de vocabulário ao onde-cada-garantia-é-imposta, com os 50 defeitos (sintoma → causa → correção)
-- [ ] `docs/ENTREVISTA.md` — pergunta → resposta curta com número, incluindo as difíceis (limitações admitidas)
-- [ ] `docker compose up --build` **do zero** (clone limpo) e os fluxos autenticados documentados
-- [ ] Conferência de conformidade §1–§15, item por item, com evidência
-- [ ] Aceitar contestação do usuário: se ele questionar e estiver certo, **admitir e corrigir**
-- [ ] Depois de aprovado, commitar (um bloco por vez, com a mensagem contando a história)
-- [ ] Atualizar `PROXIMO_PASSO.md`, `PLANO.md` e (se a fase acrescentar algo) `.env.example`/`docker-compose.yml`
-
-**As Fases 0 a 11 estão commitadas e validadas. Não revalide nem recommite.**
+**As Fases 0 a 12 estão commitadas e validadas. Não revalide nem recommite.**
