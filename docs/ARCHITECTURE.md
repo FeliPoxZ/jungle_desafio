@@ -6,12 +6,11 @@ Este é o registro técnico do projeto, denso e em terceira pessoa: as decisões
 o porquê de cada uma, os 51 defeitos encontrados e corrigidos e as limitações.
 Ele está completo e atualizado até a Fase 12 (a entrega).
 
-**A documentação da entrega está em `docs/`**:
-  README.md                              como rodar, configurar, migrar e testar
-  CONFORMIDADE.md                        requisito do enunciado → onde está atendido
-  EVIDENCIAS.md                          saída real dos testes, curls e checkout limpo
-  ../docs_desafio/SISTEMA_EXPLICADO.md   o sistema explicado do zero (para quem mantém)
-  ../docs_desafio/ENTREVISTA.md          treino de entrevista (40 perguntas)
+**A documentação da entrega:**
+  ../README.md                 como rodar, configurar, migrar e testar (porta de entrada)
+  CONFORMIDADE.md              requisito do enunciado → onde está atendido
+  EVIDENCIAS.md                saída real dos testes, curls e checkout limpo
+  README_desafio.md            o enunciado original, preservado
 
 Marcadores de estado usados aqui:
 
@@ -49,7 +48,7 @@ prova multi-instância e observabilidade. A entrega está em `docs/`.
 | Consumo do SQS (inbox) | `[PRONTO]` — Fase 8 (§11) |
 | Outbox publisher e worker de referências | `[PRONTO]` — Fase 9 (§8 e §11) |
 | Observabilidade (12 métricas, log do processo, dashboard/alerta) | `[PRONTO]` — Fase 11 (§12) |
-| Documentação de entrega (`docs_desafio/`) | `[PRONTO]` — Fase 12 |
+| Documentação de entrega (`docs/` + README da raiz) | `[PRONTO]` — Fase 12 |
 
 ---
 

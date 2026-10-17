@@ -208,17 +208,17 @@ sintoma, causa de fundo e correção. Os mais caros:
 | 2 | OIDC, `providerId` do token, isolamento, credencial do broker | `internal/infra/auth` (49 casos), 30 integrações, §5; policy de fila não exercida no LocalStack (§16) |
 | 3 | Falhas: duplicata, reversão antecipada, concorrência, queda, republicação, indisponibilidade | §3 (T1–T8) |
 | 4 | Stack: Go, Fx, HTTP, OIDC, Postgres, SQS, Compose, migrations, `-race` | `go.mod`, `internal/app`, `docker-compose.yml`, §2 |
-| 5 | 8 garantias financeiras | `../docs_desafio/SISTEMA_EXPLICADO.md` cap. 5 |
+| 5 | 8 garantias financeiras | [`ARCHITECTURE.md`](ARCHITECTURE.md) §5 |
 | 6 | Domínio | `internal/domain/*` (574 casos) |
 | 7 | 5 tipos, referências, TTL, `failureCode` | `internal/app/wagering`, §5 |
 | 8 | 100.00 + duas de 80.00; três processos; carteiras em paralelo | §3 (T1, T2, T3) |
-| 9 | 7 rotas, status, cursor, reconciliação | §5 e [`README.md`](README.md) §7 |
+| 9 | 7 rotas, status, cursor, reconciliação | §5 e [`../README.md`](../README.md) §7 |
 | 10 | FIFO + DLQ + redrive, retry, DLQ, SIGTERM | §3, §4 e `internal/consumer` |
 | 11 | Outbox transacional, 4 eventos, recuperação | §3 (T6) e `internal/worker` |
 | 12 | 5 ids no log, 12 métricas, health checks, dashboard | §4 |
 | 13 | Unidade, integração real, auth, T1–T8, conferência, `-race` | §2 e §3 |
 | 14 | Critérios e eliminatórios | [`CONFORMIDADE.md`](CONFORMIDADE.md) §14 |
-| 15 | Entrega reproduzível, instruções, `.env.example`, IdP, ARCHITECTURE | §5, [`README.md`](README.md) e [`ARCHITECTURE.md`](ARCHITECTURE.md) |
+| 15 | Entrega reproduzível, instruções, `.env.example`, IdP, ARCHITECTURE | §5, [`../README.md`](../README.md) e [`ARCHITECTURE.md`](ARCHITECTURE.md) |
 
 ## 8. Limitações (o que não está entregue)
 

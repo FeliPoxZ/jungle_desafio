@@ -1,8 +1,8 @@
-# CONFORMIDADE COM O ENUNCIADO (`README.md`)
+# CONFORMIDADE COM O ENUNCIADO (`docs/README_desafio.md`)
 
-> **O `README.md` da raiz é o ENUNCIADO e a cabeça de tudo neste projeto.** Ele é o
+> **O `docs/README_desafio.md` é o ENUNCIADO e a cabeça de tudo neste projeto.** Ele é o
 > objetivo e a fonte de verdade: onde este documento e o enunciado discordarem,
-> **vale o enunciado**, e a dúvida se resolve relendo o `README.md` — não o plano,
+> **vale o enunciado**, e a dúvida se resolve relendo o enunciado — não o plano,
 > não o handoff, não este arquivo.
 >
 > **Como ler os marcadores:**
@@ -42,7 +42,7 @@
 | **Publisher da outbox + workers** | ✅ **Fase 9** | `internal/worker` (publicador, referências, reaper, runner) |
 | **Concorrência e recuperação com 3 processos** | ✅ **Fase 10** | `test/integration` (T1–T8 + conferência final + latência) e a prova de SIGTERM no container |
 | Métricas de negócio + dashboard/alerta | ✅ **Fase 11** | **12 de 12 emitidas E provadas** em `/metrics`; dashboard e 7 alertas em `deploy/observability/` |
-| README da solução + `.env.example` | ✅ **Fase 12** | [`README.md`](README.md) (decisão da ⚠️ 3) + `.env.example` conferido |
+| README da solução + `.env.example` | ✅ **Fase 12** | [`README.md`](../README.md) (decisão da ⚠️ 3) + `.env.example` conferido |
 
 ### Os cinco pontos de atenção que valem mais que o resto
 
@@ -61,10 +61,9 @@
    `unhealthy`.
 3. **✅ Onde vive o "README da solução" (decidido na Fase 12):** o §15 pede
    pré-requisitos, variáveis, filas, migrations, execução, exemplos e testes no
-   "README da solução"; o `README.md` da raiz **é o enunciado** e não pode ser
-   editado. A decisão, tomada com o usuário, foi uma pasta de entrega
-   [`docs/`](README.md) com o README da solução e os dois
-   documentos finais.
+   "README da solução". Ele é o [`README.md`](../README.md) da raiz (a porta de
+   entrada do repositório), e o enunciado original ficou preservado em
+   [`README_desafio.md`](README_desafio.md).
 4. **✅ "pelo menos três processos independentes" (README §8 e §13.4) e
    "carteiras distintas simultaneamente" (§13.3) têm prova desde a Fase 10:**
    três processos do binário com pools e memórias próprios (medido em
@@ -289,10 +288,9 @@ reais de observabilidade foram corrigidos (42 e 43) e dois de documentação/có
 morto (44 e 45).
 
 **Documentação (5 pontos):** ✅ **fechada na Fase 12** — o
-[`README.md`](README.md) é o README da solução (⚠️ 3
-decidida com o usuário), com todo comando **executado** e a saída na evidência; os
-dois documentos finais estão em [`../docs_desafio/SISTEMA_EXPLICADO.md`](../docs_desafio/SISTEMA_EXPLICADO.md)
-e [`../docs_desafio/ENTREVISTA.md`](../docs_desafio/ENTREVISTA.md); o `ARCHITECTURE.md`
+[`README.md`](../README.md) da raiz é o guia de execução (⚠️ 3
+decidida com o usuário), com todo comando **executado** e a saída na evidência; o
+`ARCHITECTURE.md`
 está completo (§12 com a tabela métrica → teste, §15 com os 51 defeitos, §16 com as
 limitações, §17 com os números finais).
 
@@ -301,7 +299,7 @@ limitações, §17 com os números finais).
 | Exigência | Estado |
 | --- | --- |
 | Código, migrations, Docker Compose e instruções para reproduzir de um checkout limpo | ✅ **provado**: `git clone` para diretório temporário + `docker compose up -d --build` = 52 s, `api` `healthy`, `/health/ready` 200 com as quatro dependências e carteira criada em banco novo. Saída em `EVIDENCIAS.md` |
-| `README.md` da solução com pré-requisitos, variáveis, filas, migrations (aplicar/reverter), execução, exemplos e testes | ✅ [`README.md`](README.md) — todas as 61 variáveis conferidas contra `internal/config`, migrations aplicadas **e revertidas** no ensaio, curls autenticados com saída real, comandos de teste com build tag e dependências. O `README.md` da raiz continua sendo o enunciado, intocado |
+| `README.md` da solução com pré-requisitos, variáveis, filas, migrations (aplicar/reverter), execução, exemplos e testes | ✅ [`README.md`](../README.md) — todas as 61 variáveis conferidas contra `internal/config`, migrations aplicadas **e revertidas** no ensaio, curls autenticados com saída real, comandos de teste com build tag e dependências. O enunciado original está preservado em [`README_desafio.md`](README_desafio.md) |
 | `.env.example` sem segredos reais | ✅ completo e **conferido por script** contra `internal/config`: as 61 variáveis da aplicação estão lá (as 5 restantes são `POSTGRES_*`/`KEYCLOAK_*`, do compose) e nenhuma credencial real |
 | Provisionamento automático do IdP, identidades de teste e instruções dos fluxos autenticados | ✅ `deploy/keycloak/realm.json` importado no boot (realm, 3 clients `client_credentials`, roles, mapper de audience); token e curls autenticados documentados e **executados** (§7 do README da solução) |
 | `ARCHITECTURE.md` com decisões e limitações | ✅ atualizado até a **Fase 12** (§12 métrica → teste e log por caminho, §13 recuperação, §15 defeitos 42–50, §16 limitações, §17 números e comandos) |
@@ -405,6 +403,6 @@ técnico de cada uma está no `ARCHITECTURE.md` §9, §10 e §11:
 - **Teste de carga com metodologia e throughput**: há medição de latência sob
   concorrência (Fase 10), mas não teste de carga — diferencial opcional, sem meta de
   RPS no enunciado.
-- **`README.md` da solução na raiz**: o arquivo da raiz é o enunciado e não pode ser
-  editado; a entrega vive em [`docs/`](README.md) (a ⚠️ 3,
-  decidida com o usuário na Fase 12), junto com os dois documentos finais.
+- **`README.md` da solução na raiz**: o guia de execução é o `README.md` da raiz;
+  o enunciado original está em [`README_desafio.md`](README_desafio.md), para a
+  conferência de quem avalia.
