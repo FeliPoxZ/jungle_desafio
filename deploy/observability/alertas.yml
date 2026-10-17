@@ -1,0 +1,123 @@
+# Regras de alerta do Jungle Desafio (formato Prometheus).
+#
+# Cada alerta diz o LIMIAR, POR QUE ele é esse e O QUE FAZER quando dispara.
+# O runbook completo (com os comandos prontos) está em `README.md`.
+groups:
+  - name: jungleg-disponibilidade
+    rules:
+      # O processo não responde ao scrape. É o alerta mais básico: nenhum outro
+      # tem valor se o alvo está fora.
+      #
+      # Limiar: 2m. O scrape é de 15s; 2m equivale a 8 coletas perdidas, o que já
+      # não é oscilação de rede.
+      - alert: JunglegDown
+        expr: up{job="jungleg"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A API do Jungle Desafio não responde ao scrape"
+          description: "Nenhuma instância responde em {{ $labels.instance }} há 2 minutos."
+          runbook: "deploy/observability/README.md#junglegdown"
+
+      # /health/ready é JSON, não métrica Prometheus: quem o transforma em série é
+      # o probe do blackbox_exporter (job `jungleg-ready`).
+      #
+      # Limiar: 2m. O readiness inclui PostgreSQL, IdP, SQS e `workers`; abaixo de
+      # 2m o alerta dispararia em rollout/deploy normal.
+      - alert: JunglegReadinessDown
+        expr: probe_success{job="jungleg-ready"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "O /health/ready está DOWN em {{ $labels.instance }}"
+          description: "Alguma dependência está fora (banco, IdP, SQS) ou um worker configurado não está rodando. O corpo do readiness diz QUAL."
+          runbook: "deploy/observability/README.md#readinessdown"
+
+  - name: jungleg-outbox
+    rules:
+      # O evento pendente mais antigo passou de um LEASE inteiro.
+      #
+      # Limiar: 60s (2× o lease padrão de 30s) por 5 minutos. Um lease vencido
+      # sozinho é normal: é assim que outra instância assume o trabalho. O que este
+      # alerta pega é a publicação PARADA: nenhum publisher vivo, SQS fora do ar, ou
+      # eventos em quarentena.
+      #
+      # Por que 5m: o gauge é recalculado a cada 15s, e um pico de 1 minuto cabe no
+      # ciclo de backoff normal.
+      - alert: JunglegOutboxAtrasada
+        expr: jungleg_wager_outbox_pending_age_seconds > 60
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A outbox está atrasada há mais de 60s (pendente mais antigo {{ $value }}s)"
+          description: "Eventos confirmados no banco não estão chegando ao destino. O fato financeiro está seguro; a PUBLICAÇÃO está parada."
+          runbook: "deploy/observability/README.md#outboxatrasada"
+
+      # Uma publicação terminou em recusa permanente ou esgotou as tentativas.
+      #
+      # Limiar: > 0 em 15m. Não existe "pouco" aqui: o evento foi para a
+      # quarentena (continua pendente, com last_error e available_at longo) e
+      # alguém precisa olhar.
+      - alert: JunglegOutboxEmQuarentena
+        expr: increase(jungleg_wager_outbox_publish_total{result="failed"}[15m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Evento em quarentena na outbox"
+          description: "Houve recusa permanente do destino ou esgotamento de tentativas. O evento NÃO foi perdido — está pendente com last_error."
+          runbook: "deploy/observability/README.md#outboxemquarentena"
+
+  - name: jungleg-integridade
+    rules:
+      # Divergência entre o saldo armazenado e a soma do ledger.
+      #
+      # Limiar: > 0 em 5m. É um incidente FINANCEIRO: o README §9 manda reportar
+      # divergência na resposta, no log e na métrica — este alerta é o terceiro
+      # canal. Não há valor "aceitável".
+      - alert: JunglegDivergenciaDeReconciliacao
+        expr: increase(jungleg_wager_reconciliation_divergences_total[5m]) > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Reconciliação divergente em pelo menos uma carteira"
+          description: "Saldo armazenado ≠ soma do ledger. O saldo NÃO foi alterado pela reconciliação; a diferença precisa ser investigada à mão."
+          runbook: "deploy/observability/README.md#divergencia"
+
+      # Mensagem recusada de forma permanente (corpo inválido, hash divergente).
+      #
+      # Limiar: > 0 em 10m. A DLQ é o fim da linha: nada é reprocessado sozinho.
+      - alert: JunglegMensagemNaDLQ
+        expr: increase(jungleg_wager_dlq_messages_total[10m]) > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Mensagem foi para a DLQ"
+          description: "Uma mensagem foi recusada como permanente. A transação NÃO foi aplicada; a decisão é reprocessar corrigida ou descartar."
+          runbook: "deploy/observability/README.md#dlq"
+
+  - name: jungleg-capacidade
+    rules:
+      # Proporção de transações que precisaram ser repetidas.
+      #
+      # Limiar: > 10% da taxa de operações por 10 minutos. Disputa na MESMA
+      # carteira é esperada e saudável (o lock serializa); 10% sustentado indica um
+      # cliente martelando a mesma carteira, e o custo é latência, não corrupção.
+      - alert: JunglegConflitosAltos
+        expr: |
+          sum(rate(jungleg_wager_transaction_conflicts_total[10m]))
+            /
+          clamp_min(sum(rate(jungleg_wager_operations_total[10m])), 0.001)
+            > 0.10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Mais de 10% das transações estão sendo repetidas por conflito"
+          description: "O saldo continua correto (é o lock funcionando), mas a latência sobe. Verifique se um cliente está concentrando operações numa carteira."
+          runbook: "deploy/observability/README.md#conflitos"
