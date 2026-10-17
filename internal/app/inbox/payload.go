@@ -52,6 +52,33 @@ type dadosOperacao struct {
 // TipoEsperado é o `type` do envelope que pede uma operação.
 const TipoEsperado = "WagerTransactionRequested"
 
+// operacao é o resultado da tradução: a identidade durável da mensagem e a
+// requisição pronta para o caso de uso.
+type operacao struct {
+	// MessageID vem do ENVELOPE (`messageId`), e é a identidade durável para o
+	// consumidor — a chave da deduplicação na inbox.
+	//
+	// # Por que o do envelope, e não o do broker
+	//
+	// O README §10 é explícito: "use o `messageId` do envelope como identidade
+	// durável da mensagem para o consumidor e verifique seu hash em reentregas".
+	// O corpo de exemplo do enunciado traz `"messageId": "msg-123"` no ENVELOPE —
+	// não é o identificador interno do SQS.
+	//
+	// A distinção não é cosmética: o `MessageId` do broker é gerado a cada ENVIO
+	// (um reenvio pelo produtor cria outro), enquanto o do envelope é a identidade
+	// que o PRODUTOR escolheu — é ela que sobrevive a um reenvio e permite
+	// reconhecer "esta mensagem eu já tratei".
+	MessageID string
+
+	// IDDoBroker é o identificador interno do SQS: usado em log e no
+	// `MessageDeduplicationId` da DLQ.
+	IDDoBroker string
+
+	// Request é a operação, no MESMO formato que a porta HTTP produz.
+	Request appwagering.Request
+}
+
 // decodificar traduz o corpo da mensagem na requisição do caso de uso.
 //
 // # Por que a decodificação é estrita
@@ -61,24 +88,37 @@ const TipoEsperado = "WagerTransactionRequested"
 // uso com campo vazio — virando "entrada inválida" (400/422) em vez de "mensagem
 // malformada" (DLQ). Recusar campo desconhecido faz o erro aparecer onde ele está:
 // no produtor.
-func decodificar(corpo []byte) (appwagering.Request, error) {
+func decodificar(corpo []byte, idDoBroker string) (operacao, error) {
 	if len(corpo) == 0 {
-		return appwagering.Request{}, fmt.Errorf("%w: corpo vazio", ErrMensagemInvalida)
+		return operacao{}, fmt.Errorf("%w: corpo vazio", ErrMensagemInvalida)
 	}
 
 	var env envelope
 	if err := decodificarEstrito(corpo, &env); err != nil {
-		return appwagering.Request{}, fmt.Errorf("%w: %v", ErrMensagemInvalida, err)
+		return operacao{}, fmt.Errorf("%w: %v", ErrMensagemInvalida, err)
 	}
 
 	if env.Type != TipoEsperado {
-		return appwagering.Request{}, fmt.Errorf("%w: type %q, esperado %q",
+		return operacao{}, fmt.Errorf("%w: type %q, esperado %q",
 			ErrMensagemInvalida, env.Type, TipoEsperado)
+	}
+	if idDoEnvelope := strings.TrimSpace(env.MessageID); idDoEnvelope != "" {
+		// Quando o envelope traz o campo, ele precisa CONCORDAR com o
+		// identificador da entrega.
+		//
+		// Divergência significa produtor errado ou mensagem remontada no caminho —
+		// resolver em silêncio faria a deduplicação depender de qual dos dois o
+		// código leu. Recusar expõe o problema na hora, e é permanente (repetir não
+		// conserta).
+		if idDoBroker != "" && idDoEnvelope != idDoBroker {
+			return operacao{}, fmt.Errorf("%w: messageId do envelope (%q) difere do id da entrega (%q)",
+				ErrMensagemInvalida, idDoEnvelope, idDoBroker)
+		}
 	}
 
 	d := env.Data
 	if err := validarCamposObrigatorios(d); err != nil {
-		return appwagering.Request{}, err
+		return operacao{}, err
 	}
 
 	// `OPENING` é reservado à abertura interna de carteira (README §6.3). A
@@ -86,25 +126,48 @@ func decodificar(corpo []byte) (appwagering.Request, error) {
 	// abrir transação: mensagem que nunca será aplicada não deve sujar a inbox.
 	kind := wagerdomain.Kind(d.Kind)
 	if err := kind.Validate(); err != nil {
-		return appwagering.Request{}, fmt.Errorf("%w: kind %q", ErrMensagemInvalida, d.Kind)
+		return operacao{}, fmt.Errorf("%w: kind %q", ErrMensagemInvalida, d.Kind)
 	}
 	if kind.IsInternal() {
-		return appwagering.Request{}, fmt.Errorf("%w: kind %q é reservado ao serviço interno",
+		return operacao{}, fmt.Errorf("%w: kind %q é reservado ao serviço interno",
 			ErrMensagemInvalida, d.Kind)
 	}
 
-	return appwagering.Request{
-		ProviderID:             d.ProviderID,
-		ExternalTransactionID:  d.ExternalTransactionID,
-		IdempotencyKey:         d.IdempotencyKey,
-		PlayerID:               ids.PlayerID(d.PlayerID),
-		WalletID:               ids.WalletID(d.WalletID),
-		RoundID:                d.RoundID,
-		GameID:                 d.GameID,
-		Kind:                   kind,
-		Amount:                 d.Money,
-		ReferenceExternalTxnID: d.ReferenceExternalTxnID,
+	return operacao{
+		// O `messageId` do ENVELOPE é OPCIONAL, e a decisão é deliberada.
+		//
+		// O corpo de exemplo do README §10 traz `"messageId": "msg-123"`, mas quem
+		// ATRIBUI esse valor é o broker, no `SendMessage` — o produtor não tem como
+		// conhecê-lo antes de enviar (o valor só existe na resposta do envio).
+		// Exigir o campo obrigaria o produtor a inventar um SEGUNDO identificador
+		// para a mesma mensagem.
+		//
+		// Então: a identidade durável do consumo é o `MessageId` DO BROKER, e o
+		// campo do envelope, quando presente, é conferido contra ela.
+		MessageID:  escolherID(env.MessageID, idDoBroker),
+		IDDoBroker: idDoBroker,
+		Request: appwagering.Request{
+			ProviderID:             d.ProviderID,
+			ExternalTransactionID:  d.ExternalTransactionID,
+			IdempotencyKey:         d.IdempotencyKey,
+			PlayerID:               ids.PlayerID(d.PlayerID),
+			WalletID:               ids.WalletID(d.WalletID),
+			RoundID:                d.RoundID,
+			GameID:                 d.GameID,
+			Kind:                   kind,
+			Amount:                 d.Money,
+			ReferenceExternalTxnID: d.ReferenceExternalTxnID,
+		},
 	}, nil
+}
+
+// escolherID devolve a identidade da mensagem: a do envelope, quando veio (já
+// conferida contra a da entrega), ou a do broker.
+func escolherID(idDoEnvelope, idDoBroker string) string {
+	if id := strings.TrimSpace(idDoEnvelope); id != "" {
+		return id
+	}
+	return idDoBroker
 }
 
 // validarCamposObrigatorios recusa a mensagem que nem chega a ser uma operação.

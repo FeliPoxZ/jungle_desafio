@@ -154,9 +154,18 @@ func (f *inboxFalsa) marcar(consumerName, messageID, status, failureCode string,
 // --- corpo de mensagem --------------------------------------------------------
 
 // corpoDeOperacao monta o corpo do envelope como o README §10 o descreve.
+//
+// O `messageId` do ENVELOPE é parametrizável porque ele é a identidade durável
+// usada na inbox: o teste precisa alinhá-lo com o identificador da entrega (o
+// processador recusa divergência) e, num caso, omiti-lo.
 func corpoDeOperacao(kind, valor string) string {
+	return corpoComMessageID("msg-1", kind, valor)
+}
+
+// corpoComMessageID é o corpo com um `messageId` de envelope específico.
+func corpoComMessageID(messageID, kind, valor string) string {
 	return fmt.Sprintf(`{
-      "messageId": "msg-123",
+      "messageId": %q,
       "type": "WagerTransactionRequested",
       "occurredAt": "2026-09-08T12:00:00.000Z",
       "data": {
@@ -170,7 +179,7 @@ func corpoDeOperacao(kind, valor string) string {
         "kind": %q,
         "money": { "amount": %q, "currency": "BRL" }
       }
-    }`, kind, valor)
+    }`, messageID, kind, valor)
 }
 
 // --- tradução da mensagem -----------------------------------------------------
@@ -181,10 +190,21 @@ func corpoDeOperacao(kind, valor string) string {
 // envelope para o `Request` do caso de uso. A chave de idempotência vem do CORPO
 // (`data.idempotencyKey`), conforme o README §10.
 func TestDecodificarMapeiaTodosOsCampos(t *testing.T) {
-	req, err := decodificar([]byte(corpoDeOperacao("BET", "25.00")))
+	// O `messageId` do envelope e o da entrega coincidem: é o contrato do
+	// produtor deste projeto, e o processador recusa divergência.
+	const idDaEntrega = "msg-1"
+
+	op, err := decodificar([]byte(corpoDeOperacao("BET", "25.00")), idDaEntrega)
 	if err != nil {
 		t.Fatalf("decodificar devolveu erro: %v", err)
 	}
+	if op.MessageID != idDaEntrega {
+		t.Errorf("MessageID = %q, quer %q (a identidade durável é a do ENVELOPE)", op.MessageID, idDaEntrega)
+	}
+	if op.IDDoBroker != idDaEntrega {
+		t.Errorf("IDDoBroker = %q, quer %q", op.IDDoBroker, idDaEntrega)
+	}
+	req := op.Request
 
 	esperado := struct {
 		providerID, externalID, chave, playerID, walletID, roundID, gameID, kind string
@@ -246,7 +266,7 @@ func TestDecodificarRejeitaMensagemInvalida(t *testing.T) {
 
 	for nome, corpo := range casos {
 		t.Run(nome, func(t *testing.T) {
-			_, err := decodificar([]byte(corpo))
+			_, err := decodificar([]byte(corpo), "")
 			if err == nil {
 				t.Fatal("decodificar aceitou uma mensagem que deveria ser recusada")
 			}
@@ -261,7 +281,7 @@ func TestDecodificarRejeitaMensagemInvalida(t *testing.T) {
 // mensagem que o pede nunca será aplicada, então é recusada ANTES de abrir
 // transação — não suja a inbox.
 func TestDecodificarRejeitaOPENING(t *testing.T) {
-	_, err := decodificar([]byte(corpoDeOperacao("OPENING", "100.00")))
+	_, err := decodificar([]byte(corpoDeOperacao("OPENING", "100.00")), "")
 	if err == nil {
 		t.Fatal("decodificar aceitou OPENING vindo do broker")
 	}
@@ -286,7 +306,7 @@ func TestProcessarMensagemNova(t *testing.T) {
 	servico.resultado = resultadoProcessado()
 
 	corpo := corpoDeOperacao("BET", "25.00")
-	res, err := p.Processar(context.Background(), Entrada{MessageID: "msg-1", Corpo: []byte(corpo)})
+	res, err := p.Processar(context.Background(), Entrada{IDDaEntrega: "msg-1", Corpo: []byte(corpo)})
 	if err != nil {
 		t.Fatalf("Processar devolveu erro: %v", err)
 	}
@@ -326,12 +346,12 @@ func TestProcessarReentregaNaoReaplica(t *testing.T) {
 	corpo := []byte(corpoDeOperacao("BET", "25.00"))
 
 	// Primeira entrega.
-	if _, err := p.Processar(context.Background(), Entrada{MessageID: "msg-1", Corpo: corpo}); err != nil {
+	if _, err := p.Processar(context.Background(), Entrada{IDDaEntrega: "msg-1", Corpo: corpo}); err != nil {
 		t.Fatalf("primeira entrega: %v", err)
 	}
 
 	// Segunda entrega da MESMA mensagem (mesmo identificador e mesmo corpo).
-	res, err := p.Processar(context.Background(), Entrada{MessageID: "msg-1", Corpo: corpo})
+	res, err := p.Processar(context.Background(), Entrada{IDDaEntrega: "msg-1", Corpo: corpo})
 	if err != nil {
 		t.Fatalf("segunda entrega devolveu erro: %v", err)
 	}
@@ -367,12 +387,12 @@ func TestProcessarCorpoDivergenteEhPermanente(t *testing.T) {
 	servico.resultado = resultadoProcessado()
 
 	ctx := context.Background()
-	if _, err := p.Processar(ctx, Entrada{MessageID: "msg-1", Corpo: []byte(corpoDeOperacao("BET", "25.00"))}); err != nil {
+	if _, err := p.Processar(ctx, Entrada{IDDaEntrega: "msg-1", Corpo: []byte(corpoDeOperacao("BET", "25.00"))}); err != nil {
 		t.Fatalf("primeira entrega: %v", err)
 	}
 
 	// Mesmo messageId, valor diferente.
-	_, err := p.Processar(ctx, Entrada{MessageID: "msg-1", Corpo: []byte(corpoDeOperacao("BET", "99.00"))})
+	_, err := p.Processar(ctx, Entrada{IDDaEntrega: "msg-1", Corpo: []byte(corpoDeOperacao("BET", "99.00"))})
 	if err == nil {
 		t.Fatal("corpo divergente foi aceito")
 	}
@@ -381,17 +401,58 @@ func TestProcessarCorpoDivergenteEhPermanente(t *testing.T) {
 	}
 }
 
-// Mensagem sem identificador não tem deduplicação possível: é inválida.
-func TestProcessarSemMessageID(t *testing.T) {
+// O `messageId` do ENVELOPE é OPCIONAL — quem gera a identidade da mensagem é o
+// broker, no envio.
+//
+// O corpo de exemplo do README §10 traz o campo, mas o produtor não tem como
+// conhecê-lo: o `MessageId` é atribuído pelo SQS e devolvido em `SendMessage`.
+// Exigir o campo obrigaria o produtor a inventar um segundo identificador para a
+// mesma mensagem — e aí existiriam dois, que podem divergir.
+func TestProcessarSemMessageIDNoEnvelopeEhAceito(t *testing.T) {
+	p, servico, inbox := processadorDeTeste(t)
+	servico.resultado = resultadoProcessado()
+
+	semID := `{"type":"WagerTransactionRequested","data":{"providerId":"a","externalTransactionId":"x","idempotencyKey":"k","playerId":"0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1","walletId":"0192f291-27dd-7d3f-8071-5f8685deef37","roundId":"r","gameId":"g","kind":"BET","money":{"amount":"1.00","currency":"BRL"}}}`
+
+	res, err := p.Processar(context.Background(), Entrada{IDDaEntrega: "msg-sem-id", Corpo: []byte(semID)})
+	if err != nil {
+		t.Fatalf("mensagem sem messageId no envelope foi recusada: %v", err)
+	}
+	if !res.Processada {
+		t.Errorf("resultado = %+v, quer Processada", res)
+	}
+
+	// E o registro da inbox usa o identificador do BROKER.
+	if _, _, _, existe := estadoDaInboxFalsa(t, inbox, "msg-sem-id"); !existe {
+		t.Error("a mensagem não foi registrada na inbox com o identificador da entrega")
+	}
+}
+
+// Divergência entre o `messageId` do envelope e o identificador da entrega é
+// PERMANENTE (não se conserta repetindo).
+func TestProcessarComIdentidadeDivergenteEhInvalida(t *testing.T) {
 	p, _, _ := processadorDeTeste(t)
 
-	_, err := p.Processar(context.Background(), Entrada{MessageID: "  ", Corpo: []byte(corpoDeOperacao("BET", "1.00"))})
+	corpo := corpoComMessageID("identidade-do-envelope", "BET", "1.00")
+
+	_, err := p.Processar(context.Background(), Entrada{IDDaEntrega: "outra-identidade", Corpo: []byte(corpo)})
 	if err == nil {
-		t.Fatal("mensagem sem messageId foi aceita")
+		t.Fatal("mensagem com identidade divergente foi aceita")
 	}
 	if !errors.Is(err, ErrMensagemInvalida) {
 		t.Errorf("causa = %v, quer ErrMensagemInvalida", err)
 	}
+}
+
+// estadoDaInboxFalsa lê o registro do dublê.
+func estadoDaInboxFalsa(t *testing.T, f *inboxFalsa, messageID string) (string, string, int, bool) {
+	t.Helper()
+
+	registro, err := f.Get(context.Background(), ConsumerName, messageID)
+	if err != nil {
+		return "", "", 0, false
+	}
+	return registro.Status, registro.FailureCode, registro.Attempts, true
 }
 
 // Corpo ilegível: erro permanente, e NADA é registrado na inbox.
@@ -401,7 +462,7 @@ func TestProcessarSemMessageID(t *testing.T) {
 func TestProcessarCorpoIlegivelNaoRegistraNaInbox(t *testing.T) {
 	p, servico, inbox := processadorDeTeste(t)
 
-	_, err := p.Processar(context.Background(), Entrada{MessageID: "msg-lixo", Corpo: []byte("{nao-e-json")})
+	_, err := p.Processar(context.Background(), Entrada{IDDaEntrega: "msg-lixo", Corpo: []byte("{nao-e-json")})
 	if err == nil {
 		t.Fatal("corpo ilegível foi aceito")
 	}
@@ -427,7 +488,7 @@ func TestProcessarRejeicaoDeNegocioEhTerminal(t *testing.T) {
 		FailureCode: "INSUFFICIENT_FUNDS",
 	}
 
-	res, err := p.Processar(context.Background(), Entrada{MessageID: "msg-r", Corpo: []byte(corpoDeOperacao("BET", "10000.00"))})
+	res, err := p.Processar(context.Background(), Entrada{IDDaEntrega: "msg-r", Corpo: []byte(corpoComMessageID("msg-r", "BET", "10000.00"))})
 	if err != nil {
 		t.Fatalf("rejeição devolveu erro: %v", err)
 	}
@@ -453,7 +514,7 @@ func TestProcessarEntradaInvalidaEhPermanente(t *testing.T) {
 	p, servico, _ := processadorDeTeste(t)
 	servico.erro = domainErrorDeEntrada()
 
-	_, err := p.Processar(context.Background(), Entrada{MessageID: "msg-e", Corpo: []byte(corpoDeOperacao("BET", "25.00"))})
+	_, err := p.Processar(context.Background(), Entrada{IDDaEntrega: "msg-e", Corpo: []byte(corpoComMessageID("msg-e", "BET", "25.00"))})
 	if err == nil {
 		t.Fatal("entrada inválida foi aceita")
 	}
@@ -467,7 +528,7 @@ func TestProcessarFalhaTransitoriaEhRetentavel(t *testing.T) {
 	p, servico, _ := processadorDeTeste(t)
 	servico.erro = ports.ErrTransient
 
-	res, err := p.Processar(context.Background(), Entrada{MessageID: "msg-t", Corpo: []byte(corpoDeOperacao("BET", "25.00"))})
+	res, err := p.Processar(context.Background(), Entrada{IDDaEntrega: "msg-t", Corpo: []byte(corpoComMessageID("msg-t", "BET", "25.00"))})
 	if err != nil {
 		t.Fatalf("falha transitória devolveu erro de classificação: %v", err)
 	}
@@ -484,7 +545,7 @@ func TestProcessarFalhaAoConsultarInboxEhTransitoria(t *testing.T) {
 	p, servico, inbox := processadorDeTeste(t)
 	inbox.erroDeLeitura = ports.ErrTransient
 
-	res, err := p.Processar(context.Background(), Entrada{MessageID: "msg-b", Corpo: []byte(corpoDeOperacao("BET", "25.00"))})
+	res, err := p.Processar(context.Background(), Entrada{IDDaEntrega: "msg-b", Corpo: []byte(corpoComMessageID("msg-b", "BET", "25.00"))})
 	if err != nil {
 		t.Fatalf("erro inesperado: %v", err)
 	}

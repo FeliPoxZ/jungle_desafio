@@ -107,8 +107,13 @@ func NovoProcessador(servico Aplicador) *Processador {
 
 // Entrada é a mensagem crua, como o broker entrega.
 type Entrada struct {
-	// MessageID é a identidade DURÁVEL da mensagem (README §10).
-	MessageID string
+	// IDDaEntrega é o identificador INTERNO do broker (o `MessageId` do SQS).
+	//
+	// Ele muda a cada envio, então NÃO serve como identidade durável: um reenvio
+	// pelo produtor cria outro identificador, e a deduplicação por ele deixaria a
+	// segunda entrega passar. Ele é usado para log e para o
+	// `MessageDeduplicationId` da DLQ.
+	IDDaEntrega string
 
 	// Corpo é o corpo JSON, exatamente como chegou.
 	Corpo []byte
@@ -118,43 +123,43 @@ type Entrada struct {
 //
 // # A ordem, e por que ela não pode mudar
 //
-//  1. o corpo é HASHEADO antes de qualquer parsing: um corpo que não decodifica
-//     ainda assim é identificado (o hash vale para detectar reentrega de lixo);
-//  2. o envelope e a requisição são validados — mensagem inválida é PERMANENTE
+//  1. o envelope é decodificado e VALIDADO — mensagem inválida é PERMANENTE
 //     (DLQ), e é decidido ANTES de abrir transação: não há por que registrar na
 //     inbox uma mensagem que jamais será aplicada;
+//  2. o corpo é HASHEADO: o hash identifica o CONTEÚDO, e é ele que distingue
+//     reentrega (mesmo hash) de conflito real (hash diferente);
 //  3. o caso de uso roda com os ganchos, que registram a inbox na MESMA
 //     transação do saldo, do ledger e dos eventos (README §6.5).
+//
+// A identidade usada na inbox é o `messageId` DO ENVELOPE (README §10), e não o
+// identificador da entrega — ver `operacao.MessageID`.
 //
 // O que NÃO acontece aqui: remover a mensagem da fila. Quem remove é o
 // consumidor, e só depois do commit — é a diferença entre "processei" e "avisei
 // que processei".
 func (p *Processador) Processar(ctx context.Context, entrada Entrada) (Resultado, error) {
-	messageID := strings.TrimSpace(entrada.MessageID)
-	if messageID == "" {
-		// Sem identidade não existe deduplicação: a mesma mensagem reentregue
-		// seria uma operação nova. O SQS sempre manda `MessageId`; se não veio,
-		// a mensagem não é confiável.
-		return Resultado{}, fmt.Errorf("%w: messageId ausente", ErrMensagemInvalida)
-	}
+	idDaEntrega := strings.TrimSpace(entrada.IDDaEntrega)
 
 	hashCorpo, err := canonicaljson.Hash(map[string]any{"sha256": digestDoCorpo(entrada.Corpo)})
 	if err != nil {
 		return Resultado{}, fmt.Errorf("inbox: hash do corpo: %w", err)
 	}
 
-	req, err := decodificar(entrada.Corpo)
+	op, err := decodificar(entrada.Corpo, idDaEntrega)
 	if err != nil {
 		return Resultado{}, err
 	}
 
-	// A chave de idempotência financeira vem do CORPO (`data.idempotencyKey`),
-	// conforme o README §10 — não do `MessageDeduplicationId` do broker nem do
-	// `MessageId`. O broker deduplica entrega; a chave financeira impede o
-	// débito repetido, e ela precisa ser a MESMA que o HTTP usou.
-	ganchos := p.ganchos(messageID, hashCorpo, req)
+	// A identidade durável é a do BROKER (`MessageId`), que é quem gera o valor no
+	// envio. O `messageId` do envelope, quando vem, já foi conferido contra ela.
+	//
+	// A chave de idempotência FINANCEIRA, por outro lado, vem do corpo
+	// (`data.idempotencyKey`, README §10) — não do `MessageDeduplicationId` do
+	// broker nem do identificador da mensagem. O broker deduplica ENTREGA; a chave
+	// financeira impede o DÉBITO repetido, e precisa ser a MESMA que o HTTP usou.
+	ganchos := p.ganchos(idDaEntrega, hashCorpo)
 
-	res, err := p.servico.ProcessWithHooks(ctx, req, ganchos)
+	res, err := p.servico.ProcessWithHooks(ctx, op.Request, ganchos)
 	if err != nil {
 		return p.classificarErro(err, res)
 	}
@@ -169,7 +174,10 @@ func (p *Processador) Processar(ctx context.Context, entrada Entrada) (Resultado
 }
 
 // ganchos monta o registro da inbox dentro da transação da operação.
-func (p *Processador) ganchos(messageID, hashCorpo string, req appwagering.Request) *appwagering.ProcessHooks {
+//
+// `messageID` é o do ENVELOPE: é ele a identidade durável da mensagem para este
+// consumidor.
+func (p *Processador) ganchos(messageID, hashCorpo string) *appwagering.ProcessHooks {
 	return &appwagering.ProcessHooks{
 		OnBegin: func(ctx context.Context, r ports.Repos) error {
 			// A leitura prévia existe para dar mensagem boa: o BANCO é quem

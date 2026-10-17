@@ -190,6 +190,7 @@ func (c *Consumidor) Run(ctx context.Context) error {
 			c.dormir(ctx, esperaAposErroDeBroker)
 			continue
 		}
+
 		if len(mensagens) == 0 {
 			c.dormir(ctx, c.esperaSemLote())
 			continue
@@ -206,6 +207,7 @@ func (c *Consumidor) Run(ctx context.Context) error {
 
 // despachar envia cada mensagem para uma goroutine, respeitando o semáforo.
 func (c *Consumidor) despachar(ctx context.Context, mensagens []Message, semaforo chan struct{}, emVoo *sync.WaitGroup) {
+
 	for _, msg := range mensagens {
 		select {
 		case semaforo <- struct{}{}:
@@ -226,6 +228,7 @@ func (c *Consumidor) despachar(ctx context.Context, mensagens []Message, semafor
 
 			c.tratar(ctx, entrega)
 		}()
+
 	}
 }
 
@@ -244,9 +247,24 @@ func (c *Consumidor) tratar(ctx context.Context, entrega *entregaRastreada) {
 	ctxProcessamento := context.WithoutCancel(ctx)
 
 	resultado, err := c.processador.Processar(ctxProcessamento, inbox.Entrada{
-		MessageID: msg.ID,
-		Corpo:     msg.Body,
+		// O identificador da ENTREGA (do broker) vai junto para o processador
+		// poder conferir que ele casa com o `messageId` do envelope. A identidade
+		// durável usada na inbox é a do envelope (README §10).
+		IDDaEntrega: msg.ID,
+		Corpo:       msg.Body,
 	})
+
+	// O desfecho da classificação fica em DEBUG: ele é diagnóstico de bancada
+	// (útil quando um teste ou um incidente precisa saber POR QUE a mensagem foi
+	// para a DLQ), e em volume de produção seria ruído — o resumo por mensagem já
+	// sai em INFO nos caminhos de conclusão, adiamento e DLQ.
+	c.logger.DebugContext(ctx, "sqs_mensagem_classificada",
+		slog.String("messageId", msg.ID),
+		slog.Bool("processada", resultado.Processada),
+		slog.Bool("duplicada", resultado.Duplicada),
+		slog.Bool("transitoria", resultado.Transitoria),
+		slog.String("status", resultado.Status),
+		slog.String("erro", erroTexto(err)))
 
 	switch {
 	case err != nil:
@@ -556,6 +574,15 @@ func (c *Consumidor) dormir(ctx context.Context, d time.Duration) {
 	case <-ctx.Done():
 	case <-timer.C:
 	}
+}
+
+// erroTexto devolve o texto do erro, ou vazio: o slog serializa um `error` nil
+// como `null`, e o campo fica mais legível como string vazia.
+func erroTexto(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // --- classificação do erro ----------------------------------------------------
