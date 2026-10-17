@@ -268,6 +268,50 @@ func TestLoadComWorkersLigadosUsaDefaultsValidos(t *testing.T) {
 		t.Errorf("OUTBOX_PARKED_BACKOFF (%v) menor que OUTBOX_MAX_BACKOFF (%v)",
 			cfg.Outbox.ParkedBackoff, cfg.Outbox.MaxBackoff)
 	}
+	if cfg.HTTP.StopTimeout < cfg.HTTP.ShutdownTimeout+cfg.Workers.ShutdownGrace {
+		t.Errorf("HTTP_STOP_TIMEOUT (%v) não cobre HTTP_SHUTDOWN_TIMEOUT + WORKERS_SHUTDOWN_GRACE (%v)",
+			cfg.HTTP.StopTimeout, cfg.HTTP.ShutdownTimeout+cfg.Workers.ShutdownGrace)
+	}
+}
+
+// O PIOR CASO (servidor + consumidor + workers, tudo ligado) precisa caber nos
+// defaults do StopTimeout.
+//
+// É o defeito 33 em versão completa: o ambiente de exemplo do compose liga os
+// três, e um default que não coubesse faria a aplicação não subir por
+// "configuração inválida" — num ambiente que o próprio projeto entrega.
+func TestLoadComTudoLigadoUsaDefaultsValidos(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("SQS_CONSUME_TRANSACTIONS", "true")
+	t.Setenv("OUTBOX_ENABLED", "true")
+	t.Setenv("REFERENCE_ENABLED", "true")
+
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatalf("Load() com tudo ligado e defaults devolveu erro: %v", err)
+	}
+
+	necessario := cfg.HTTP.ShutdownTimeout + cfg.SQS.ShutdownGrace + cfg.Workers.ShutdownGrace
+	if cfg.HTTP.StopTimeout < necessario {
+		t.Errorf("HTTP_STOP_TIMEOUT (%v) não cobre o pior caso (%v)", cfg.HTTP.StopTimeout, necessario)
+	}
+}
+
+// Ligar os workers com um StopTimeout curto demais é recusado no boot.
+func TestLoadRejeitaStopTimeoutQueNaoCobreOsWorkers(t *testing.T) {
+	baseEnv(t)
+	t.Setenv("HTTP_SHUTDOWN_TIMEOUT", "20s")
+	t.Setenv("WORKERS_SHUTDOWN_GRACE", "20s")
+	t.Setenv("OUTBOX_ENABLED", "true")
+	t.Setenv("HTTP_STOP_TIMEOUT", "30s")
+
+	_, err := config.Load()
+	if err == nil {
+		t.Fatal("Load() aceitou StopTimeout que não cobre o encerramento dos workers")
+	}
+	if !strings.Contains(err.Error(), "HTTP_STOP_TIMEOUT") {
+		t.Errorf("a mensagem deveria apontar HTTP_STOP_TIMEOUT; recebido: %v", err)
+	}
 }
 
 func TestSlogLevel(t *testing.T) {

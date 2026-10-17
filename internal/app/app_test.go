@@ -36,6 +36,22 @@ func TestValidateAppComposition(t *testing.T) {
 	}
 }
 
+// O grafo também precisa fechar com os workers da Fase 9 LIGADOS.
+//
+// Sem este teste, um provider só usado no caminho dos workers (o publicador, o
+// runner, o `Retomador`) poderia faltar sem ninguém perceber: com os flags em
+// `false` os construtores continuam no grafo, mas a lista de laços fica vazia e o
+// caminho nunca é exercitado em produção até alguém ligar o worker.
+func TestValidateAppCompositionComWorkersLigados(t *testing.T) {
+	setValidEnv(t)
+	t.Setenv("OUTBOX_ENABLED", "true")
+	t.Setenv("REFERENCE_ENABLED", "true")
+
+	if err := app.ValidateApp(); err != nil {
+		t.Fatalf("grafo do Fx inválido com os workers ligados: %v", err)
+	}
+}
+
 // TestBuildAppFailsWithInvalidConfig garante que configuração inválida impede a
 // CONSTRUÇÃO da aplicação, e não apenas o start.
 //

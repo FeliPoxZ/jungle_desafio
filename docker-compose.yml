@@ -181,13 +181,16 @@ services:
       APP_ENV: local
       LOG_LEVEL: ${LOG_LEVEL:-info}
       HTTP_ADDR: ":8080"
-      # O prazo total do shutdown precisa cobrir os DOIS encerramentos que rodam
-      # dentro dele: o do servidor HTTP (drena as requisições em andamento) e o do
-      # consumidor de SQS (conclui o lote ou libera a visibilidade). A config
-      # recusa a soma que não couber (docker stop = 10s por padrão; 40s dá margem
-      # para 20s de servidor + 15s de consumidor).
-      HTTP_STOP_TIMEOUT: "40s"
+      # O prazo total do shutdown precisa cobrir os TRÊS encerramentos que rodam
+      # dentro dele, em sequência: o do servidor HTTP (drena as requisições em
+      # andamento), o do consumidor de SQS (conclui o lote ou libera a
+      # visibilidade) e o dos laços da Fase 9 (publicador, referências e reaper).
+      # A config recusa a soma que não couber: 20 + 15 + 10 = 45s, com 50s de
+      # margem. `stop_grace_period` acompanha — sem ele o `docker stop` manda
+      # SIGKILL em 10s e o encerramento gracioso nunca aconteceria no compose.
+      HTTP_STOP_TIMEOUT: "50s"
       HTTP_SHUTDOWN_TIMEOUT: "20s"
+      WORKERS_SHUTDOWN_GRACE: "10s"
       DATABASE_URL: postgres://${POSTGRES_USER:-jungleg}:${POSTGRES_PASSWORD:-jungleg}@postgres:5432/${POSTGRES_DB:-jungleg}?sslmode=disable
       DB_MAX_CONNS: "20"
       # O `iss` do token é o endereço PÚBLICO (o que o cliente alcança), enquanto
@@ -225,6 +228,11 @@ services:
       SQS_SHUTDOWN_GRACE: "15s"
       OUTBOX_ENABLED: "true"
       REFERENCE_ENABLED: "true"
+    # O encerramento gracioso dos workers depende de o Docker ESPERAR o processo
+    # terminar: o padrão do `docker stop` manda SIGTERM e SIGKILL em 10s, o que
+    # abortaria o prazo de 50s da aplicação no meio. Com 60s o processo tem tempo
+    # de concluir (ou devolver pelo lease) o trabalho em voo.
+    stop_grace_period: 60s
     ports:
       - "8081:8080"
     extra_hosts:

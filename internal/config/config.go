@@ -30,6 +30,7 @@ type Config struct {
 	SQS         SQSConfig       `envPrefix:"SQS_"`
 	Outbox      OutboxConfig    `envPrefix:"OUTBOX_"`
 	Reference   ReferenceConfig `envPrefix:"REFERENCE_"`
+	Workers     WorkersConfig   `envPrefix:"WORKERS_"`
 	LogLevel    string          `env:"LOG_LEVEL" envDefault:"info"`
 	ShutdownTTL time.Duration   `env:"SHUTDOWN_TIMEOUT" envDefault:"25s"`
 
@@ -63,7 +64,27 @@ type HTTPConfig struct {
 	// o consumidor com os valores de exemplo: a validação recusava antes de abrir
 	// qualquer conexão, e o sintoma era "configuração inválida" no boot de um
 	// ambiente que estava correto. 40s dá margem para 20 + 15.
-	StopTimeout time.Duration `env:"STOP_TIMEOUT" envDefault:"40s"`
+	//
+	// A Fase 9 acrescentou o encerramento dos workers (publicador da outbox,
+	// worker de referências e reaper), que rodam dentro do MESMO prazo. Com o
+	// pior caso (servidor + consumidor + workers) a soma passa de 40s, então o
+	// default subiu para 50s — pelo mesmo motivo do defeito 33: um default que
+	// viola a própria regra de validação impede a aplicação de subir num ambiente
+	// correto, e é o teste que trava os dois lados disso.
+	StopTimeout time.Duration `env:"STOP_TIMEOUT" envDefault:"50s"`
+}
+
+// WorkersConfig controla os laços de trabalho em background (Fase 9).
+type WorkersConfig struct {
+	// ShutdownGrace é o prazo que o runner dá para os laços em andamento
+	// terminarem depois do cancelamento.
+	//
+	// É UM prazo para o CONJUNTO, e não um por laço: os laços rodam em paralelo e
+	// param juntos, então o custo no `StopTimeout` é o prazo (e não a soma). Um
+	// prazo por laço faria a validação exigir a soma de todos, e ligar os três
+	// workers derrubaria o boot do ambiente de exemplo — de novo o defeito 33,
+	// agora com três parcelas em vez de duas.
+	ShutdownGrace time.Duration `env:"SHUTDOWN_GRACE" envDefault:"10s"`
 }
 
 // DatabaseConfig controla o pool do PostgreSQL.
@@ -250,6 +271,31 @@ func (c *Config) Validate() error {
 	if c.SQS.ConsumeTransactions && c.HTTP.StopTimeout < c.HTTP.ShutdownTimeout+c.SQS.ShutdownGrace {
 		problems = append(problems,
 			"HTTP_STOP_TIMEOUT deve cobrir HTTP_SHUTDOWN_TIMEOUT + SQS_SHUTDOWN_GRACE quando SQS_CONSUME_TRANSACTIONS está ligado")
+	}
+	// Mesma regra para os workers da Fase 9, e a ordem importa: o Fx executa os
+	// OnStop na ordem inversa do registro, então o servidor HTTP para primeiro,
+	// depois o consumidor, depois os workers, e o pool fecha por último. Todos
+	// dentro do MESMO StopTimeout — daí a soma.
+	if c.Workers.ShutdownGrace <= 0 {
+		problems = append(problems, "WORKERS_SHUTDOWN_GRACE deve ser maior que zero")
+	}
+	if (c.Outbox.Enabled || c.Reference.Enabled) && c.HTTP.StopTimeout < c.HTTP.ShutdownTimeout+c.Workers.ShutdownGrace {
+		problems = append(problems,
+			"HTTP_STOP_TIMEOUT deve cobrir HTTP_SHUTDOWN_TIMEOUT + WORKERS_SHUTDOWN_GRACE quando OUTBOX_ENABLED ou REFERENCE_ENABLED está ligado")
+	}
+	// E o pior caso tem de caber: servidor + consumidor + workers, os três
+	// ligados. É ESTA a linha que impede o retorno do defeito 33 quando alguém
+	// liga tudo com os valores de exemplo.
+	if c.Outbox.Enabled || c.Reference.Enabled || c.SQS.ConsumeTransactions {
+		necessario := c.HTTP.ShutdownTimeout + c.Workers.ShutdownGrace
+		if c.SQS.ConsumeTransactions {
+			necessario += c.SQS.ShutdownGrace
+		}
+		if c.HTTP.StopTimeout < necessario {
+			problems = append(problems,
+				fmt.Sprintf("HTTP_STOP_TIMEOUT (%s) deve cobrir o pior caso de encerramento (%s): HTTP_SHUTDOWN_TIMEOUT + SQS_SHUTDOWN_GRACE quando ligado + WORKERS_SHUTDOWN_GRACE quando ligado",
+					c.HTTP.StopTimeout, necessario))
+		}
 	}
 
 	if c.SQS.BatchSize < 1 || c.SQS.BatchSize > 10 {

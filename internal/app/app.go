@@ -10,8 +10,9 @@
 //	infra      -> pool do Postgres, Unit of Work, verificador OIDC
 //	usecase    -> serviços de aplicação (regras financeiras)
 //	auth       -> autenticador OIDC (middleware, roles, providerId do token)
+//	worker     -> consumidor SQS (fila de entrada)
+//	workers    -> laços da Fase 9: publicador da outbox, worker de referências e reaper
 //	httpapi    -> servidor HTTP, rotas e ciclo de vida
-//	worker     -> consumidor SQS, publisher da outbox, worker de referências
 package app
 
 import (
@@ -52,6 +53,7 @@ func ModuleOptions() fx.Option {
 		usecaseModule(),
 		authModule(),
 		workerModule(),
+		workersModule(),
 		httpapiModule(),
 	)
 }
