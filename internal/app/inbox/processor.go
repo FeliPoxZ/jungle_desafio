@@ -150,6 +150,18 @@ func (p *Processador) Processar(ctx context.Context, entrada Entrada) (Resultado
 		return Resultado{}, err
 	}
 
+	// A correlação do caminho SQS é o `MessageId` da ENTREGA.
+	//
+	// O envelope do README §10 não tem campo de correlação (ele traz `messageId`,
+	// `type`, `occurredAt` e `data`), e o produtor não tem outro identificador de
+	// rastreio para oferecer. Usar o identificador da entrega mantém a promessa do
+	// README §12 — "identificadores disponíveis para rastrear a operação" — sem
+	// inventar um segundo identificador que poderia divergir do primeiro (foi
+	// exatamente esse tipo de duplicidade que produziu o defeito 30).
+	if op.Request.CorrelationID == "" {
+		op.Request.CorrelationID = idDaEntrega
+	}
+
 	// A identidade durável é a do BROKER (`MessageId`), que é quem gera o valor no
 	// envio. O `messageId` do envelope, quando vem, já foi conferido contra ela.
 	//

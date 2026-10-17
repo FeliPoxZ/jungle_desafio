@@ -49,6 +49,7 @@ func novaTransacao(t *testing.T) *WagerTransaction {
 	tx, err := New(
 		"txn-1", "w-1", "p-1", KindBet, dinheiro(t, "25.00", "BRL"),
 		opGameID, opRoundID, opKey, opProviderID, opExternalID, "",
+		"corr-teste",
 		payloadTeste{Amount: "25.00", Currency: "BRL"}, encodeCanonical, opNow,
 	)
 	if err != nil {
@@ -376,6 +377,7 @@ func TestNewRegrasDeOrigem(t *testing.T) {
 			tx, err := New(
 				"txn-1", "w-1", "p-1", c.kind, dinheiro(t, c.amount, "BRL"),
 				game, round, c.key, c.provider, c.external, c.reference,
+				"corr-teste",
 				c.payload, c.encode, opNow,
 			)
 			if c.queroEr {
@@ -448,7 +450,7 @@ func TestNewCamposObrigatorios(t *testing.T) {
 			}
 
 			tx, err := New(c.id, c.wallet, c.player, KindBet, amount, c.game, c.round,
-				opKey, opProviderID, opExternalID, "", base, encodeCanonical, c.now)
+				opKey, opProviderID, opExternalID, "", "corr-teste", base, encodeCanonical, c.now)
 			if c.queroEr && err == nil {
 				t.Fatalf("New deveria falhar, devolveu %+v", tx)
 			}
@@ -464,7 +466,7 @@ func TestNewPayloadHashDeterministico(t *testing.T) {
 	// distingue replay idempotente de conflito de payload.
 	novo := func(p payloadTeste) *WagerTransaction {
 		tx, err := New("txn-1", "w-1", "p-1", KindBet, dinheiro(t, "25.00", "BRL"),
-			opGameID, opRoundID, opKey, opProviderID, opExternalID, "", p, encodeCanonical, opNow)
+			opGameID, opRoundID, opKey, opProviderID, opExternalID, "", "corr-teste", p, encodeCanonical, opNow)
 		if err != nil {
 			t.Fatalf("New falhou: %v", err)
 		}
@@ -493,7 +495,7 @@ func TestNewComPayloadQueNaoSerializa(t *testing.T) {
 	// Canal não serializa em JSON: o erro tem que nascer na criação, não no
 	// momento de publicar o evento.
 	_, err := New("txn-1", "w-1", "p-1", KindBet, dinheiro(t, "25.00", "BRL"),
-		opGameID, opRoundID, opKey, opProviderID, opExternalID, "",
+		opGameID, opRoundID, opKey, opProviderID, opExternalID, "", "corr-teste",
 		make(chan int), encodeCanonical, opNow)
 	if err == nil {
 		t.Fatal("payload que não serializa deveria falhar")
@@ -840,7 +842,7 @@ func TestFluxoPendenciaESucesso(t *testing.T) {
 
 func TestLOSSProduzEventoProcessedSemSaldo(t *testing.T) {
 	tx, err := New("txn-1", "w-1", "p-1", KindLoss, dinheiro(t, "0.00", "BRL"),
-		opGameID, opRoundID, opKey, opProviderID, opExternalID, "",
+		opGameID, opRoundID, opKey, opProviderID, opExternalID, "", "corr-teste",
 		payloadTeste{Amount: "0.00", Currency: "BRL"}, encodeCanonical, opNow)
 	if err != nil {
 		t.Fatalf("New falhou: %v", err)
@@ -1065,6 +1067,7 @@ func TestRehydrateNaoReaplicaNada(t *testing.T) {
 	tx := Rehydrate(
 		"txn-1", "w-1", "p-1", KindRefund, StatusRejected, dinheiro(t, "25.00", "BRL"),
 		opGameID, opRoundID, opKey, "hash-abc", opProviderID, opExternalID, "ext-bet", "txn-original",
+		"corr-teste",
 		"REFERENCE_NOT_FOUND", dinheiroPtr(t, "975.00", "BRL"), 7, proxima, criacao, atualizacao,
 	)
 
@@ -1149,6 +1152,7 @@ func TestAcessoresComReferenciaPreenchida(t *testing.T) {
 	tx := Rehydrate(
 		"txn-1", "w-1", "p-1", KindRefund, StatusPendingReference, dinheiro(t, "25.00", "BRL"),
 		opGameID, opRoundID, opKey, "hash-abc", opProviderID, opExternalID, "ext-bet", "txn-original",
+		"corr-teste",
 		"", dinheiroPtr(t, "0.00", "BRL"), 2, opNow.Add(time.Second), opNow, opNow,
 	)
 

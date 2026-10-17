@@ -25,9 +25,26 @@ const txnColumns = `
 	id, wallet_id, player_id, kind, status, amount_minor, currency,
 	game_id, round_id, idempotency_key, payload_hash,
 	provider_id, external_transaction_id, reference_external_txn_id, reference_transaction_id,
+	correlation_id,
 	failure_code, result_balance_minor,
 	reference_resolution_attempt, next_resolution_attempt_at,
 	created_at, updated_at`
+
+// txnColumnsComAlias é a mesma lista qualificada pelo alias `t`, para o
+// `RETURNING` do claim.
+//
+// O alias é necessário pelo mesmo motivo do `ClaimBatch` da outbox: o `UPDATE`
+// tem um `FROM` (a subconsulta do lote) que também expõe `id`, e sem qualificar o
+// PostgreSQL recusa com "column reference id is ambiguous" (42702) — o defeito 10
+// da §15 do ARCHITECTURE.
+const txnColumnsComAlias = `
+	t.id, t.wallet_id, t.player_id, t.kind, t.status, t.amount_minor, t.currency,
+	t.game_id, t.round_id, t.idempotency_key, t.payload_hash,
+	t.provider_id, t.external_transaction_id, t.reference_external_txn_id, t.reference_transaction_id,
+	t.correlation_id,
+	t.failure_code, t.result_balance_minor,
+	t.reference_resolution_attempt, t.next_resolution_attempt_at,
+	t.created_at, t.updated_at`
 
 func (r *txnRepo) Insert(ctx context.Context, t *wagering.WagerTransaction) error {
 	const sql = `
@@ -35,10 +52,11 @@ func (r *txnRepo) Insert(ctx context.Context, t *wagering.WagerTransaction) erro
 			id, wallet_id, player_id, kind, status, amount_minor, currency,
 			game_id, round_id, idempotency_key, payload_hash,
 			provider_id, external_transaction_id, reference_external_txn_id,
+			correlation_id,
 			reference_resolution_attempt,
 			created_at, updated_at
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`
 
 	_, err := r.q.Exec(ctx, sql,
 		string(t.ID()),
@@ -55,6 +73,7 @@ func (r *txnRepo) Insert(ctx context.Context, t *wagering.WagerTransaction) erro
 		nuloSeVazio(t.ProviderID()),
 		nuloSeVazio(t.ExternalTransactionID()),
 		nuloSeVazio(t.ReferenceExternalTransactionID()),
+		nuloSeVazio(t.CorrelationID()),
 		t.ReferenceResolutionAttempt(),
 		t.CreatedAt(),
 		t.UpdatedAt(),
@@ -142,6 +161,73 @@ func (r *txnRepo) ListPendingReferencesDue(ctx context.Context, now time.Time, l
 	return r.varios(ctx, sql, now, limit)
 }
 
+// ClaimPendingReferencesDue reivindica o lote do worker de referências.
+//
+// # A ordem, e por que ela não é `next_resolution_attempt_at`
+//
+// A subconsulta ordena por `next_resolution_attempt_at` para decidir QUAIS linhas
+// entram no lote (as mais vencidas primeiro, com o `LIMIT`). Mas o `RETURNING` do
+// `UPDATE` devolve as linhas DEPOIS da alteração — e a alteração é exatamente
+// empurrar `next_resolution_attempt_at` para o lease. Ou seja: o valor que
+// ordenava acabou de virar o mesmo para todo o lote, e usá-lo no `ORDER BY` de
+// fora não ordenaria nada (é a mesma armadilha do defeito 19, com outra causa: lá
+// era o `RETURNING` que não prometia ordem, aqui é a coluna de ordem que foi
+// sobrescrita).
+//
+// A ordem de fora é `created_at, id`: `created_at` é IMUTÁVEL, e o `id` (UUID v7)
+// desempata. A ordem do lote não é uma garantia de negócio — cada linha é
+// independente —, mas um lote previsível é o que permite ao teste afirmar o que
+// foi processado primeiro, e o reaper não deve depender de sorte.
+func (r *txnRepo) ClaimPendingReferencesDue(ctx context.Context, limit int, leaseFor time.Duration, now time.Time) ([]*wagering.WagerTransaction, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+
+	const sql = `
+		WITH reivindicadas AS (
+			UPDATE wager_transactions AS t
+			SET next_resolution_attempt_at = $3
+			FROM (
+				SELECT id
+				FROM wager_transactions
+				WHERE status = 'PENDING_REFERENCE'
+				  AND next_resolution_attempt_at IS NOT NULL
+				  AND next_resolution_attempt_at <= $1
+				ORDER BY next_resolution_attempt_at
+				LIMIT $2
+				FOR UPDATE SKIP LOCKED
+			) AS lote
+			WHERE t.id = lote.id
+			RETURNING ` + txnColumnsComAlias + `
+		)
+		SELECT ` + txnColumns + `
+		FROM reivindicadas
+		ORDER BY created_at, id`
+
+	return r.varios(ctx, sql, now, limit, now.Add(leaseFor))
+}
+
+// ListPendingStale devolve as transações presas em PENDING — a fila do reaper.
+//
+// O critério é `updated_at`, e não `created_at`: o que interessa é "esta linha não
+// é tocada há mais de PENDING_MAX_AGE". Uma linha PENDING é tocada quando o
+// processamento a leva para outro estado, então `updated_at` velho é exatamente
+// "ninguém concluiu isto".
+func (r *txnRepo) ListPendingStale(ctx context.Context, now time.Time, maxAge time.Duration, limit int) ([]*wagering.WagerTransaction, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+
+	const sql = `SELECT ` + txnColumns + `
+		FROM wager_transactions
+		WHERE status = 'PENDING'
+		  AND updated_at <= $1
+		ORDER BY updated_at, id
+		LIMIT $2`
+
+	return r.varios(ctx, sql, now.Add(-maxAge), limit)
+}
+
 func (r *txnRepo) ListByWallet(ctx context.Context, walletID ids.WalletID, limit int, cursor *ports.Cursor) ([]*wagering.WagerTransaction, error) {
 	// Ordem estável: created_at e id. O cursor carrega os dois para não pular
 	// nem repetir linha quando o instante empata.
@@ -219,6 +305,7 @@ type txnRow struct {
 	externalTransactionID  *string
 	referenceExternalTxnID *string
 	referenceTransactionID *string
+	correlationID          *string
 	failureCode            *string
 	resultBalanceMinor     *int64
 	attempt                int32
@@ -234,6 +321,7 @@ func (row *txnRow) destinos() []any {
 		&row.idempotencyKey, &row.payloadHash,
 		&row.providerID, &row.externalTransactionID, &row.referenceExternalTxnID,
 		&row.referenceTransactionID,
+		&row.correlationID,
 		&row.failureCode, &row.resultBalanceMinor,
 		&row.attempt, &row.nextAttemptAt,
 		&row.createdAt, &row.updatedAt,
@@ -258,6 +346,7 @@ func (row *txnRow) dominio() *wagering.WagerTransaction {
 		texto(row.externalTransactionID),
 		texto(row.referenceExternalTxnID),
 		wagering.TransactionID(texto(row.referenceTransactionID)),
+		texto(row.correlationID),
 		texto(row.failureCode),
 		dinheiroMinorPtr(row.resultBalanceMinor, currency),
 		int(row.attempt),

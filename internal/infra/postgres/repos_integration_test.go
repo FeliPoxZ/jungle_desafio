@@ -400,6 +400,7 @@ func TestLedgerUnicoPorTransacao(t *testing.T) {
 		wagering.TransactionID(txnFixo), w.ID(), w.PlayerID(),
 		wagering.KindBet, brl(t, "5.00"), "game-1", "round-1",
 		"key-"+uuid.NewString(), "provider-a", "ext-"+uuid.NewString(), "",
+		"corr-teste",
 		map[string]any{"amount": "5.00"}, encodeCanonico, time.Now().UTC(),
 	)
 	if err != nil {
@@ -563,6 +564,7 @@ func TestTxnInsertEIdempotencia(t *testing.T) {
 		wagering.TransactionID(uuid.NewString()), w.ID(), w.PlayerID(),
 		wagering.KindBet, brl(t, "25.00"), "game-1", "round-1",
 		tx.IdempotencyKey(), "provider-a", "ext-outro", "",
+		"corr-teste",
 		map[string]any{"amount": "25.00"}, encodeCanonico, time.Now().UTC(),
 	)
 	if err != nil {
@@ -618,7 +620,7 @@ func TestTxnOpeningIdempotencia(t *testing.T) {
 		tx, err := wagering.New(
 			wagering.TransactionID(uuid.NewString()), w.ID(), w.PlayerID(),
 			wagering.KindOpening, brl(t, "1000.00"), "", "",
-			chave, "", "", "", nil, nil, time.Now().UTC(),
+			chave, "", "", "", "", nil, nil, time.Now().UTC(),
 		)
 		if err != nil {
 			t.Fatalf("wagering.New: %v", err)
@@ -757,6 +759,7 @@ func TestTxnListPendingReferencesDue(t *testing.T) {
 		wagering.TransactionID(uuid.NewString()), w.ID(), w.PlayerID(),
 		wagering.KindRefund, brl(t, "25.00"), "game-1", "round-1",
 		"key-"+uuid.NewString(), "provider-a", "ext-"+uuid.NewString(), "ext-original",
+		"corr-teste",
 		map[string]any{"amount": "25.00"}, encodeCanonico, time.Now().UTC(),
 	)
 	if err != nil {
@@ -766,6 +769,7 @@ func TestTxnListPendingReferencesDue(t *testing.T) {
 		wagering.TransactionID(uuid.NewString()), w.ID(), w.PlayerID(),
 		wagering.KindRefund, brl(t, "25.00"), "game-1", "round-1",
 		"key-"+uuid.NewString(), "provider-a", "ext-"+uuid.NewString(), "ext-original-2",
+		"corr-teste",
 		map[string]any{"amount": "25.00"}, encodeCanonico, time.Now().UTC(),
 	)
 	if err != nil {

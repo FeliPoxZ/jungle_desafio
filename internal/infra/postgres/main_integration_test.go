@@ -221,6 +221,7 @@ func txnNova(t *testing.T, w *wallet.Wallet, kind wagering.Kind, valor string) *
 		"game-1", "round-1",
 		"key-"+uuid.NewString(),
 		"provider-a", "ext-"+uuid.NewString(), "",
+		"corr-teste",
 		map[string]any{"amount": valor, "currency": "BRL"},
 		encodeCanonico,
 		time.Now().UTC(),

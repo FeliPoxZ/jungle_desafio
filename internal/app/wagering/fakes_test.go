@@ -75,7 +75,7 @@ func clonarTransacao(t *wagerdomain.WagerTransaction) *wagerdomain.WagerTransact
 		t.ID(), t.WalletID(), t.PlayerID(), t.Kind(), t.Status(), t.Amount(),
 		t.GameID(), t.RoundID(), t.IdempotencyKey(), t.PayloadHash(),
 		t.ProviderID(), t.ExternalTransactionID(), t.ReferenceExternalTransactionID(),
-		t.ReferenceTransactionID(), t.FailureCode(), saldo,
+		t.ReferenceTransactionID(), t.CorrelationID(), t.FailureCode(), saldo,
 		t.ReferenceResolutionAttempt(), t.NextResolutionAttemptAt(),
 		t.CreatedAt(), t.UpdatedAt(),
 	)
@@ -284,6 +284,39 @@ func (r *transacoesMemoria) ListPendingReferencesDue(_ context.Context, now time
 	var saida []*wagerdomain.WagerTransaction
 	for _, t := range r.e.txns {
 		if t.Status() == wagerdomain.StatusPendingReference && !t.NextResolutionAttemptAt().After(now) {
+			saida = append(saida, clonarTransacao(t))
+			if len(saida) == limit {
+				break
+			}
+		}
+	}
+	return saida, nil
+}
+
+func (r *transacoesMemoria) ClaimPendingReferencesDue(_ context.Context, limit int, lease time.Duration, now time.Time) ([]*wagerdomain.WagerTransaction, error) {
+	// Espelha o SQL: cada linha vencida é reivindicada (o lease empurra o
+	// próximo instante para o futuro) e devolvida.
+	var saida []*wagerdomain.WagerTransaction
+	for _, t := range r.e.txns {
+		if t.Status() != wagerdomain.StatusPendingReference || t.NextResolutionAttemptAt().After(now) {
+			continue
+		}
+		if err := t.ReagendarReferencia(t.ReferenceResolutionAttempt(), now.Add(lease), now); err != nil {
+			return nil, err
+		}
+		saida = append(saida, clonarTransacao(t))
+		if len(saida) == limit {
+			break
+		}
+	}
+	return saida, nil
+}
+
+func (r *transacoesMemoria) ListPendingStale(_ context.Context, now time.Time, maxAge time.Duration, limit int) ([]*wagerdomain.WagerTransaction, error) {
+	var saida []*wagerdomain.WagerTransaction
+	corte := now.Add(-maxAge)
+	for _, t := range r.e.txns {
+		if t.Status() == wagerdomain.StatusPending && !t.UpdatedAt().After(corte) {
 			saida = append(saida, clonarTransacao(t))
 			if len(saida) == limit {
 				break

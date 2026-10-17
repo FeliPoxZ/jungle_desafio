@@ -148,6 +148,7 @@ func (s *Service) abrirComSaldo(
 		"", "", // OPENING não pertence a jogo nem a rodada
 		req.IdempotencyKey,
 		"", "", "", // sem provedor, sem identificador externo, sem referência
+		req.CorrelationID,
 		req.payload(),
 		codificarPayload,
 		now,

@@ -91,7 +91,42 @@ type TransactionRepository interface {
 	// ListPendingReferencesDue devolve as transações em PENDING_REFERENCE cujo
 	// próximo instante de tentativa já passou — é a fila do worker de
 	// referências.
+	//
+	// É uma LEITURA, sem lock e sem lease: serve para inspecionar e para o
+	// diagnóstico. Quem vai AGIR sobre a linha usa `ClaimPendingReferencesDue`.
 	ListPendingReferencesDue(ctx context.Context, now time.Time, limit int) ([]*wagering.WagerTransaction, error)
+
+	// ClaimPendingReferencesDue reivindica até `limit` transações vencidas,
+	// aplicando um lease de `leaseFor`.
+	//
+	// # Por que o claim existe, se já existe a listagem
+	//
+	// Dois workers lendo a MESMA lista processariam a MESMA transação. O lock da
+	// carteira não resolve isso sozinho: o segundo worker já leu o estado antes
+	// de o primeiro comitar, e agiria sobre um `PENDING_REFERENCE` que já foi
+	// resolvido — aplicando a reversão duas vezes.
+	//
+	// Mesmo desenho do `ClaimBatch` da outbox, e pelos mesmos motivos: `FOR
+	// UPDATE SKIP LOCKED` faz cada worker pegar um lote DIFERENTE, e o lease
+	// (aqui, empurrar `next_resolution_attempt_at` para o futuro) devolve a linha
+	// sozinha quando o prazo passa — a recuperação de trabalho abandonado vale
+	// para queda, SIGTERM e erro, sem código especial.
+	ClaimPendingReferencesDue(ctx context.Context, limit int, leaseFor time.Duration, now time.Time) ([]*wagering.WagerTransaction, error)
+
+	// ListPendingStale devolve as transações presas em PENDING há mais de
+	// `maxAge` — a fila do reaper.
+	//
+	// # Por que esta consulta existe, se nenhum PENDING deveria sobrar
+	//
+	// O caso de uso grava PENDING e o estado definitivo no MESMO commit, então
+	// hoje nenhuma linha PENDING é confirmada. Ainda assim o reaper existe como
+	// segurança (README §6.3: "todo PENDING confirmado deve ter retomada durável
+	// por outra instância"): se qualquer caminho futuro passar a confirmar um
+	// aceite antes de executar a operação, é por aqui que ele é retomado.
+	//
+	// É uma leitura sem lock: quem garante que dois reapers não processam a mesma
+	// linha é a releitura com `GetByIDForUpdate` dentro da transação de retomada.
+	ListPendingStale(ctx context.Context, now time.Time, maxAge time.Duration, limit int) ([]*wagering.WagerTransaction, error)
 
 	// ListByWallet devolve as transações de uma carteira, com cursor.
 	ListByWallet(ctx context.Context, walletID ids.WalletID, limit int, cursor *Cursor) ([]*wagering.WagerTransaction, error)

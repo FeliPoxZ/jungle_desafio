@@ -417,6 +417,12 @@ func (s *Service) novaTransacao(req Request, now time.Time) (*wagerdomain.WagerT
 		req.ProviderID,
 		req.ExternalTransactionID,
 		req.ReferenceExternalTxnID,
+		// O correlationId é metadado de TRANSPORTE: não entra no hash (payload.go)
+		// e não participa de nenhuma regra. Ele é gravado porque precisa
+		// sobreviver à requisição: a operação que ficar em PENDING_REFERENCE será
+		// retomada por um worker, minutos depois, e os eventos da retomada
+		// precisam carregar a mesma correlação.
+		req.CorrelationID,
 		req.payload(),
 		codificarPayload,
 		now,

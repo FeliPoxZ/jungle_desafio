@@ -57,6 +57,16 @@ type WagerTransaction struct {
 	resultBalanceSet           bool
 	referenceResolutionAttempt int
 	nextResolutionAttemptAt    time.Time
+
+	// correlationID é o identificador da requisição que originou a operação
+	// (header `X-Correlation-Id` no HTTP, `MessageId` da entrega no SQS).
+	//
+	// É metadado de TRANSPORTE, e não de negócio: não entra no hash de
+	// idempotência e nenhuma regra do agregado o lê. Ele mora aqui porque
+	// precisa SOBREVIVER à requisição: quando o worker de referências retoma uma
+	// operação que ficou pendente, o processo que a atendeu já morreu, e sem a
+	// coluna o evento publicado na retomada perderia a correlação (README §12).
+	correlationID string
 }
 
 // New valida e cria a transação em PENDING.
@@ -76,6 +86,7 @@ func New(
 	providerID string,
 	externalTransactionID string,
 	referenceExternalTxnID string,
+	correlationID string,
 	payload any,
 	encode PayloadEncoder,
 	now time.Time,
@@ -105,6 +116,7 @@ func New(
 		providerID:             providerID,
 		externalTransactionID:  externalTransactionID,
 		referenceExternalTxnID: referenceExternalTxnID,
+		correlationID:          correlationID,
 	}, nil
 }
 
@@ -235,6 +247,7 @@ func Rehydrate(
 	payloadHash Hash,
 	providerID, externalTransactionID, referenceExternalTxnID string,
 	referenceTransactionID TransactionID,
+	correlationID string,
 	failureCode string,
 	resultBalance *money.Money,
 	attempt int,
@@ -256,6 +269,7 @@ func Rehydrate(
 		externalTransactionID:      externalTransactionID,
 		referenceExternalTxnID:     referenceExternalTxnID,
 		referenceTransactionID:     referenceTransactionID,
+		correlationID:              correlationID,
 		failureCode:                failureCode,
 		resultBalance:              dinheiroOuZero(resultBalance),
 		resultBalanceSet:           resultBalance != nil,
@@ -308,6 +322,14 @@ func (t *WagerTransaction) RoundID() string { return t.roundID }
 
 // IdempotencyKey devolve a chave de idempotência.
 func (t *WagerTransaction) IdempotencyKey() string { return t.idempotencyKey }
+
+// CorrelationID devolve o identificador de correlação da requisição de origem.
+//
+// Devolve string vazia quando a operação não teve correlação (linha anterior à
+// migration 000005, ou caminho que não propaga). Quem consome decide o que fazer
+// com o vazio — o worker de referências, por exemplo, deriva um valor da própria
+// transação em vez de publicar um campo em branco.
+func (t *WagerTransaction) CorrelationID() string { return t.correlationID }
 
 // PayloadHash devolve o hash do payload recebido.
 func (t *WagerTransaction) PayloadHash() Hash { return t.payloadHash }
@@ -447,6 +469,42 @@ func (t *WagerTransaction) ResolveReference(referenceID TransactionID, attempt i
 	}
 	t.referenceTransactionID = referenceID
 	t.referenceResolutionAttempt = attempt
+	return nil
+}
+
+// ReagendarReferencia mantém a operação esperando a referência e agenda a próxima
+// tentativa.
+//
+// # Por que este método existe, e por que ele NÃO é uma transição
+//
+// A máquina de estados não tem `PENDING_REFERENCE -> PENDING_REFERENCE` (e não
+// deveria ter): um auto-laço na tabela de transições faria "mudança de estado"
+// deixar de significar mudança. Mas a operação que continua esperando precisa
+// atualizar DUAS coisas — a tentativa e o instante da próxima tentativa — e isso
+// não é mudar de estado: é o mesmo estado, com o relógio andando.
+//
+// O worker de referências (Fase 9) chama este método a cada rodada em que a
+// referência ainda não chegou. Sem ele, a única forma de reagendar seria
+// reaproveitar `MarkPendingReference`, que exige estar em `PENDING` — e a
+// primeira re-tentativa de uma referência pendente falharia com
+// `invalidTransition`. A tentativa e o instante ficam PERSISTIDOS: é isso que
+// permite a outra instância continuar depois de um reinício.
+func (t *WagerTransaction) ReagendarReferencia(attempt int, nextAttemptAt, now time.Time) error {
+	if t.status != StatusPendingReference {
+		return invalidTransition("só é possível reagendar uma referência em PENDING_REFERENCE, estado atual " + t.status.String())
+	}
+	if attempt < 1 {
+		return invalid("tentativa de resolução precisa ser >= 1, veio %d", attempt)
+	}
+	if nextAttemptAt.IsZero() {
+		return invalid("próximo instante de tentativa é obrigatório")
+	}
+	if now.IsZero() {
+		return invalid("instante do reagendamento é obrigatório")
+	}
+	t.referenceResolutionAttempt = attempt
+	t.nextResolutionAttemptAt = nextAttemptAt
+	t.updatedAt = now
 	return nil
 }
 
