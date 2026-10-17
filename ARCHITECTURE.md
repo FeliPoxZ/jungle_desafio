@@ -828,7 +828,7 @@ colidiriam.
 | --- | --- | --- |
 | `BET` sem saldo | `INSUFFICIENT_FUNDS` | rejeição gravada (422) |
 | `ROLLBACK` que exigiria saldo | `ROLLBACK_INSUFFICIENT_FUNDS` | rejeição gravada (422) |
-| reversão já aplicada (mesmo tipo, ou `ROLLBACK` de `BET` já estornada) | `ALREADY_REVERSED` | rejeição gravada (422) |
+| reversão já aplicada (mesmo tipo, ou o outro tipo sobre a MESMA `BET`: `REFUND` depois de `ROLLBACK` e `ROLLBACK` depois de `REFUND`) | `ALREADY_REVERSED` | rejeição gravada (422) |
 | referência que existe e terminou rejeitada/falha | `REFERENCE_NOT_PROCESSABLE` | rejeição gravada (422) |
 | referência divergente, tipo não reversível ou valor diferente | `REFERENCE_MISMATCH` | rejeição gravada (422) |
 | moeda da operação ≠ moeda da carteira | `WALLET_CURRENCY_MISMATCH` | rejeição gravada (422) |
@@ -1660,6 +1660,11 @@ introduzido de propósito, e todos foram corrigidos com teste que os trava.
 | 43 | 11 | **O mesmo nome de métrica tinha dois significados para o mesmo label** | HTTP emitia `operations_total{kind="PROCESSED",status="2xx_201"}`; SQS emitia `{kind="BET",status="PROCESSED"}`. Somar por `kind` num painel misturava tipo de operação com desfecho, sem erro em lugar nenhum | o caminho HTTP passou a emitir `kind=<tipo>` e `status=<desfecho>`, igual ao SQS; `StatusLabel` (que só existia para isso) foi removido. O código HTTP continua no log de acesso |
 | 44 | 11 | **Um campo de log sempre vazio** | toda linha `http_request` trazia `"kind": ""`; o middleware lia `observability.StageFrom(ctx)`, e nenhum código chamava `WithStage` — sobra de um desenho abandonado | campo removido, junto com `WithStage`/`StageFrom` (sem chamador) |
 | 45 | 11 | **A documentação do prazo de encerramento mentia** | o comentário em `app.go` dava a entender que `fx.StopTimeout` governava o shutdown; em Fx 1.24, `App.Stop(ctx)` obedece ao **contexto do chamador** e a opção só é aplicada por `App.run` (que este projeto não usa). O comportamento sempre esteve certo — o prazo efetivo é o `shutdownCtx` montado com `cfg.HTTP.StopTimeout`; errada era a explicação, e o teste que acreditava nela não passava | comentário corrigido; `TestScopeDoPrazoDeEncerramento` prova que o contexto manda e que `StopTimeout()` carrega o mesmo valor |
+| 46 | 12 | **Duas variáveis de ambiente existiam e nunca eram lidas** | `SHUTDOWN_TIMEOUT` (no topo do `Config`) e `SQS_PROVISION_QUEUES_ON_BOOT` estavam declaradas com `env:`/default e **nenhum** código as lia: configuração que promete comportamento que não existe, e que alguém ligaria esperando efeito | campos removidos de `internal/config`; a suíte (inclusive a composição Fx) confirma que nada dependia delas |
+| 47 | 12 | **O container do compose nunca ficava `healthy`** | o healthcheck executava `/app/api -health-check`, mas o Dockerfile instala o binário em `/app/app` (`ENTRYPOINT ["/app/app"]`): o comando falhava sempre com "no such file or directory", mesmo com o serviço pronto. Nenhuma fase anterior olhou o estado do container no compose | healthcheck passou a `/app/app`; o ensaio de entrega mostra `Up (healthy)` |
+| 48 | 12 | **O SEGUNDO `docker compose up` nunca subia a API** | o job `migrate` devolve 1 quando não há nada a aplicar (contrato do golang-migrate: 0 = mudou, 1 = nada a fazer), e o `depends_on: service_completed_successfully` exige 0. No primeiro `up` as migrations aplicavam (0); em todos os seguintes o job "falhava" e a API não era criada | flag `up --noop-ok` no `cmd/migrate` (contrato preservado para uso manual) e `command: ["up","--noop-ok"]` no compose. O ensaio de entrega do checkout limpo e o segundo `up` passam |
+| 49 | 12 | **Credenciais do broker documentadas com o nome errado** | o `.env.example` e o compose traziam `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, mas a aplicação monta as credenciais estáticas de `SQSConfig` — os nomes reais são `SQS_ACCESS_KEY_ID`/`SQS_SECRET_ACCESS_KEY`. As variáveis documentadas eram inertes, e os defaults `test` escondiam o erro. O mesmo script de conferência achou três variáveis reais ausentes do exemplo (`SQS_BASE_BACKOFF`, `SQS_MAX_BACKOFF`, `SQS_SHUTDOWN_GRACE`) | `.env.example`, compose e a tabela do `docs_desafio/README.md` corrigidos; a conferência automática (61 variáveis × exemplo) fecha com 0 faltando |
+| 50 | 12 | **`REFUND` depois de `ROLLBACK` da mesma `BET` criava dinheiro** | a guarda de coerência entre `REFUND` e `ROLLBACK` existia em uma direção só: `ROLLBACK` de `BET` já estornada era recusado, mas `REFUND` de `BET` já desfeita por `ROLLBACK` era **aceito**. `BET 40 → ROLLBACK 40 → REFUND 40` levava 100.00 a **140.00**, e o ledger ficava consistente com o saldo — a reconciliação não acusaria nada. Achado ao escrever o `SISTEMA_EXPLICADO.md` (o documento expôs a assimetria), confirmado contra o container | `jaRevertida` passou a consultar o outro tipo nos DOIS sentidos; provado por `TestREFUNDDeBETJaDesfeitaPorROLLBACKEhRejeitado` (unidade) e `...NoBanco` (integração, saldo 100.00 e dois lançamentos) |
 
 ---
 
@@ -1736,8 +1741,8 @@ go test -count=1 -race -tags=integration -timeout 600s -run 'TestMetrica|TestLog
 ```
 
 **Números atuais:** 574 casos no domínio (Fases 1–3) + **38** testes de
-persistência (Fase 5) + 3 de `idgen` + **57 casos** do caso de uso (Fase 6, com o
-conflito contado na Fase 11) +
+persistência (Fase 5) + 3 de `idgen` + **58 casos** do caso de uso (Fase 6, com o
+conflito contado na Fase 11 e a reversão simétrica na Fase 12) +
 **49** em `internal/infra/auth` (Fase 7; **+2 na Fase 10**, do endereço do JWKS) +
 **67** em `internal/httpapi` (Fase 7) +
 **26** em `internal/app/inbox` (Fase 8) + **22** em `internal/consumer` (Fase 8 +

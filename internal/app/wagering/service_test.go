@@ -515,6 +515,35 @@ func TestReversaoDuplicadaEALREADYREVERSED(t *testing.T) {
 	exigirSaldo(t, a, w, 10000)
 }
 
+// O caminho INVERSO do teste acima, e o defeito 50: a BET desfeita por ROLLBACK
+// e depois estornada por REFUND.
+//
+// A guarda de coerência existia só para o ROLLBACK (desfazer uma BET já estornada
+// era recusado), e não para o REFUND. O resultado era dinheiro criado do nada:
+//
+//	BET 40 → ROLLBACK 40 → REFUND 40   ⇒   100.00 → 60.00 → 100.00 → 140.00
+//
+// Achado na Fase 12, ao escrever o `SISTEMA_EXPLICADO.md`: a afirmação "os dois
+// sentidos são barrados" não se sustentava no código, e o teste que a sustentasse
+// não existia. Agora existe, e falha se a assimetria voltar.
+func TestREFUNDDeBETJaDesfeitaPorROLLBACKEhRejeitado(t *testing.T) {
+	a := novoAmbiente()
+	w := a.abrirCarteira("100.00")
+
+	processar(t, a, pedido(w, wagerdomain.KindBet, "40.00"))
+	processar(t, a, pedido(w, wagerdomain.KindRollback, "40.00", comReferencia("ext-BET")))
+	// O ROLLBACK devolveu o débito: a carteira voltou ao saldo inicial.
+	exigirSaldo(t, a, w, 10000)
+
+	res := processar(t, a, pedido(w, wagerdomain.KindRefund, "40.00", comReferencia("ext-BET")))
+
+	exigirRejeicao(t, res, wagerdomain.CodeReversed)
+	exigirSaldo(t, a, w, 10000)
+	// Dois lançamentos: o débito da BET e o crédito do ROLLBACK. O REFUND
+	// rejeitado não movimenta nada.
+	exigirLancamentos(t, a, "DEBIT 40.00", "CREDIT 40.00")
+}
+
 func TestReferenciaDivergenteEReferenceMISMATCH(t *testing.T) {
 	casos := []struct {
 		nome string

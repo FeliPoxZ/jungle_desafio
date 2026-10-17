@@ -141,23 +141,46 @@ func reversivel(kind, referente wagerdomain.Kind) bool {
 }
 
 // jaRevertida informa se a referência já recebeu a reversão deste tipo — ou, no
-// caso do ROLLBACK de uma BET, se a BET já foi estornada.
+// caso de REFUND e ROLLBACK sobre a MESMA BET, se o débito já foi devolvido pelo
+// outro tipo.
 //
 // A dupla reversão do MESMO tipo é impedida pelo índice parcial
 // UNIQUE (reference_transaction_id, kind). Esta consulta existe para o cliente
 // receber `ALREADY_REVERSED`, com significado, em vez de um 23505 sem explicação.
 //
-// A segunda condição é a coerência entre REFUND e ROLLBACK: o índice permite que
-// os dois convivam sobre a mesma aposta, mas ROLLBACK de uma BET JÁ ESTORNADA
-// creditaria de novo o mesmo débito — dinheiro criado do nada. Desfazer o
-// estorno é ROLLBACK apontando para o REFUND, que debita e é aceito.
+// A segunda condição é a coerência entre REFUND e ROLLBACK, e ela vale nos DOIS
+// sentidos: os dois devolvem o MESMO débito da BET. O índice permite que um de
+// cada tipo conviva sobre a mesma aposta, e sem esta guarda o segundo creditaria
+// de novo o valor já devolvido — dinheiro criado do nada.
+//
+//	BET 40 → ROLLBACK(BET) 40 → REFUND(BET) 40
+//	   100 → 60 → 100 → 140   (25 de lucro para quem só apostou)
+//
+// O caminho legítimo para desfazer um estorno é ROLLBACK apontando para o
+// REFUND, que DEBITA e é aceito — porque a referência ali é a transação do
+// estorno, não a BET.
+//
+// O defeito 50 foi exatamente a assimetria: o ROLLBACK já era barrado quando
+// havia REFUND (teste `TestROLLBACKDesfazBETeDesfazEstorno`), mas o REFUND não
+// era barrado quando havia ROLLBACK — e esse caminho terminava com mais dinheiro
+// do que começou.
 func (s *Service) jaRevertida(ctx context.Context, r ports.Repos, referente *wagerdomain.WagerTransaction, kind wagerdomain.Kind) (bool, error) {
 	existe, err := s.existeReversao(ctx, r, referente.ID(), kind)
 	if err != nil || existe {
 		return existe, err
 	}
-	if kind == wagerdomain.KindRollback && referente.Kind() == wagerdomain.KindBet {
+
+	if referente.Kind() != wagerdomain.KindBet {
+		return false, nil
+	}
+
+	switch kind {
+	case wagerdomain.KindRollback:
+		// A BET já foi estornada por REFUND: desfazê-la creditaria de novo.
 		return s.existeReversao(ctx, r, referente.ID(), wagerdomain.KindRefund)
+	case wagerdomain.KindRefund:
+		// A BET já foi desfeita por ROLLBACK: estorná-la creditaria de novo.
+		return s.existeReversao(ctx, r, referente.ID(), wagerdomain.KindRollback)
 	}
 	return false, nil
 }

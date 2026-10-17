@@ -474,6 +474,15 @@ go test -count=1 -race -tags=integration -timeout 600s ./...
 
 PowerShell: `$env:TEST_DATABASE_URL='...'` etc.
 
+> ⚠️ **Pare o serviço `api` do compose antes de rodar a integração:**
+> `docker compose stop api`. Ele consome a **mesma** fila
+> (`wager-transactions.fifo`) e "rouba" as mensagens dos cenários, que então
+> esperam por entregas que nunca chegam (sintoma: `TestT1MesmaOperacao50VezesPelaFila`
+> esperando "as 50 entregas serem tratadas", com `receiveCount` maior que 1 no log
+> dos processos de teste). Foi o que aconteceu na primeira rodada da Fase 12 — é
+> contaminação de ambiente, não defeito de código. Depois dos testes, suba de novo
+> com `docker compose start api`.
+
 **Dependências da integração**, em ordem:
 
 1. `docker compose up -d postgres keycloak localstack` (os três `healthy`);
@@ -570,7 +579,7 @@ docker logs jungle-sigterm | grep -E 'shutdown_signal_received|sqs_visibilidade_
 | --- | --- | --- |
 | [`SISTEMA_EXPLICADO.md`](SISTEMA_EXPLICADO.md) | quem vai **manter** o código | do zero de vocabulário ao onde-cada-garantia-é-imposta |
 | [`ENTREVISTA.md`](ENTREVISTA.md) | quem vai **defender** o projeto | pergunta → resposta de 60 s, com número e limitação admitida |
-| [`../ARCHITECTURE.md`](../ARCHITECTURE.md) | avaliador técnico | decisões, concorrência, idempotência, SQS, outbox, 45 defeitos, limitações |
+| [`../ARCHITECTURE.md`](../ARCHITECTURE.md) | avaliador técnico | decisões, concorrência, idempotência, SQS, outbox, 50 defeitos, limitações |
 | [`../docs/CONFORMIDADE_README.md`](../docs/CONFORMIDADE_README.md) | avaliador | requisito do enunciado → onde está atendido, e as 23 interpretações adotadas |
 | [`../docs/evidencias/`](../docs/evidencias/) | avaliador | saída real de cada fase (13 arquivos) |
 | [`../docs/LEDGER_VS_WALLET.md`](../docs/LEDGER_VS_WALLET.md) | quem mantém | a distinção carteira × ledger, em uma página |

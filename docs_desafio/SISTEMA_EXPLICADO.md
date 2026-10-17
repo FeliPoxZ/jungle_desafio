@@ -1040,6 +1040,28 @@ absorve e o teste que a reproduz.
 | `SIGTERM` com trabalho em voo | para de buscar, espera `SQS_SHUTDOWN_GRACE`, libera a visibilidade do que sobrou (`consumer.go:498`) | `TestEncerramentoLiberaVisibilidade`, `TestRunnerEsperaOTrabalhoEmVooNoEncerramento`, prova no container |
 | saldo que não fecha com o ledger | reconciliação em transação somente-leitura de visão única; divergência vira log + métrica, **sem alterar o saldo** | `TestReconcileFechaOExemploDoREADME`, `TestReconcileDetectaSaldoAdulteradoESeRecusaAMexer`, `TestTransacaoSomenteLeituraRecusaEscrita` |
 
+### Os oito cenários que o README §13 exige, um por um
+
+O enunciado lista oito cenários de concorrência e recuperação. Nenhum deles é
+"recomendado": todos têm prova. Os marcados com **(3 processos)** rodam com três
+processos do binário, com pool e memória próprios — medido em `pg_stat_activity`.
+
+| # | Cenário (§13) | Teste | O que o teste registra |
+| --- | --- | --- | --- |
+| 1 | a mesma aposta **50 vezes em paralelo** | `TestT1MesmaAposta50VezesEntreTresInstancias` **(3 processos)** e `TestT1MesmaOperacao50VezesPelaFila` | 1 criada + 49 replays, **um** débito, versão 2; na fila, 50 entregas distintas e 50 linhas de inbox `PROCESSED` com **um** débito |
+| 2 | a disputa das duas apostas de **80,00 sobre 100,00** | `TestT2DuasApostasDe80Sobre100EmInstanciasDiferentes` **(3 processos)** | 1 `PROCESSED`, 1 `REJECTED/INSUFFICIENT_FUNDS`, saldo **20,00**, um débito, versão 2; 20 reenvios não alteram nada |
+| 3 | **carteiras distintas** em paralelo | `TestT3CarteirasDistintasEmParaleloSemLockGlobal` **(3 processos)** | com a carteira A presa, B..F concluem em 14–34 ms e nenhum backend espera lock; A só conclui após a liberação |
+| 4 | repetir com **três instâncias independentes** | `TestTresInstanciasIndependentes` + a rodada consolidada (T1–T3, T5–T8) | três PIDs e três conjuntos disjuntos de conexões; matar uma não afeta as outras |
+| 5 | interromper **depois do commit e antes do delete** | `TestT5QuedaEntreCommitEDeleteReentregaReconhecida` + a prova de `SIGTERM` no container | reentrega reconhecida (`attempts` 1→2), nenhum débito novo, DLQ vazia; no container, `exit=0` com `sqs_visibilidade_liberada` |
+| 6 | **dois publishers** disputando a outbox | `TestDoisPublishersDisputamAMesmaOutbox` e `TestT6TresPublishersReaisDisputamAMesmaOutbox` **(3 processos)** | 12 eventos → 12 mensagens, 0 duplicados, 0 pendentes, distribuição 4/4/4 |
+| 7 | **reversão antes da referência** | `TestREFUNDAntesDaReferenciaResolveDepois`, `TestReferenciaQueNuncaChegaExpiraEmREFERENCENOTFOUND` e `TestT7REFUNDAntesDaReferenciaResolvidoPorOutraInstancia` **(3 processos)** | resolvida pela instância que tem o worker; expiração por TTL → `REJECTED/REFERENCE_NOT_FOUND` |
+| 8 | **reiniciar** preservando idempotência, pendências e consistência | `TestT8ReinicioPreservaIdempotenciaPendenciaEConsistencia` (processo novo) | replay devolve a mesma transação e o saldo original (75,00); a pendência é resolvida pela instância nova; reconciliação consistente |
+
+E a conferência final que o §13 pede (saldo armazenado == soma de créditos −
+débitos): `TestConferenciaFinalCruzandoHTTPESQS`, feita de **duas formas
+independentes** — soma do ledger em SQL puro e o endpoint de reconciliação —, com a
+mesma operação cruzando HTTP e SQS ao mesmo tempo e um único débito.
+
 ## 5.3 O banco como última barreira: o que o schema recusa
 
 O script `deploy/postgres/verify_constraints.sql` é a parte do repositório que
@@ -1329,27 +1351,30 @@ O que está implementado e **provado por teste**:
 | `BET` → `REFUND` | aceito, crédito do valor integral | `REFUND` devolve a aposta (`TestREFUNDDevolveIntegralmenteABET`) |
 | `BET` → `REFUND` → **outro `REFUND`** | `REJECTED` / `ALREADY_REVERSED` | índice parcial `(reference_transaction_id, kind)` + leitura prévia (`TestReversaoDuplicadaEALREADYREVERSED`) |
 | `BET` → `REFUND` → `ROLLBACK` **da `BET`** | `REJECTED` / `ALREADY_REVERSED` | creditaria de novo o mesmo débito (`TestROLLBACKDesfazBETeDesfazEstorno`) |
+| `BET` → `ROLLBACK` **da `BET`** → `REFUND` | `REJECTED` / `ALREADY_REVERSED` | o `ROLLBACK` já devolveu o débito; o `REFUND` devolveria outra vez (`TestREFUNDDeBETJaDesfeitaPorROLLBACKEhRejeitado` e, contra o banco, `TestREFUNDDeBETJaDesfeitaPorROLLBACKEhRejeitadoNoBanco`) |
 | `BET` → `REFUND` → `ROLLBACK` **do `REFUND`** | aceito, **débito** | desfazer o estorno é tirar o que foi devolvido |
 
 O índice parcial permite que **um** `REFUND` e **um** `ROLLBACK` coexistam sobre a
 mesma referência — é isso que torna possível desfazer o estorno. O que não pode
-existir são **dois do mesmo tipo**.
+existir são **dois do mesmo tipo** de reversão sobre a mesma referência, nem duas
+reversões do mesmo débito por tipos diferentes.
 
-> **Ponto a fechar se você mexer nesta matriz.** A checagem cruzada existe em uma
-> direção só: ao validar um `ROLLBACK` de `BET`, o serviço também consulta se já há
-> um `REFUND` (`reference.go:159`). O inverso — `REFUND` depois de um `ROLLBACK` da
-> mesma `BET` — não é consultado por `jaRevertida` (`reference.go:154`) e **não tem
-> teste**. Se a regra de negócio exigir que essa ordem também seja recusada, este é
-> o ponto a alterar, e o teste a escrever é o par simétrico de
-> `TestROLLBACKDesfazBETeDesfazEstorno`.
+> **Defeito 50, encontrado ao escrever este capítulo.** A checagem cruzada existia
+> em uma direção só: ao validar um `ROLLBACK` de `BET`, o serviço consultava se já
+> havia `REFUND`. O inverso — `REFUND` depois de `ROLLBACK` da mesma `BET` — não era
+> consultado, e o resultado era **dinheiro criado**: `BET 40 → ROLLBACK 40 →
+> REFUND 40` levava 100.00 a 140.00, com o ledger consistente (a reconciliação não
+> acusaria nada). A correção foi tornar a guarda simétrica em `jaRevertida`; os dois
+> testes acima são o par simétrico de `TestROLLBACKDesfazBETeDesfazEstorno`.
 
 ---
 
 # 7. As decisões, com motivo e consequência
 
 Toda decisão de arquitetura é uma troca. Este capítulo registra **o que se ganhou**
-e **o que se pagou** — na ordem em que as decisões foram tomadas. As seções 7.1 são
-as decisões congeladas antes da primeira linha de código (`PLANO.md` §1, A1–A14);
+e **o que se pagou** — na ordem em que as decisões foram tomadas. A seção 7.1
+traz as decisões congeladas antes da primeira linha de código (`PLANO.md` §1,
+A1–A14);
 as seguintes são as que apareceram durante as fases 6 a 11, cada uma com um
 "sem isso" que é a consequência concreta de remover a decisão.
 
@@ -1363,8 +1388,9 @@ roteador HTTP, `pgx` com SQL explícito, `golang-migrate` com `iofs`, o SDK v2 d
 AWS para SQS, `caarlos0/env` para configuração, `prometheus/client_golang` e
 `go.uber.org/fx`. Uma decisão do plano **mudou** na prática: o plano previa
 `go-oidc` + `golang-jwt` para OIDC, e a implementação usou a biblioteca padrão
-(`crypto/rsa`, `encoding/json`, `encoding/base64`) — três dependências a menos e
-~300 linhas de regra explícita e testável. Sem o congelamento, cada fase teria
+(`crypto/rsa`, `encoding/json`, `encoding/base64`) — duas dependências a menos (e
+as transitivas delas) em troca de ~300 linhas de regra explícita e testável. Sem o
+congelamento, cada fase teria
 discutido biblioteca em vez de resolver o problema; com ele, qualquer troca virou
 uma decisão registrada e não um deslize.
 
@@ -1430,14 +1456,17 @@ substituído. Sem a separação `201` × `200`, um cliente que conta operações
 contaria a mesma duas vezes; sem a separação `202` × `422`, ele reenviaria uma
 operação que já está esperando referência.
 
-**A10 — Autenticação e autorização com Keycloak.** Realm com dois clients
-`client_credentials`, roles `provider` e `internal`, `provider_id` por protocol
-mapper, e a regra de que a identidade autenticada **determina** o provedor. Sem o
-`provider_id` vindo do token, qualquer token válido operaria a carteira de qualquer
-provedor — eliminatório. A implementação foi além do plano em um ponto e ficou
-atrás em outro: `azp` só é conferido quando há múltiplas audiences (regra do OIDC
-Core, e o realm emite uma só), e não há introspecção de token (revogação antes do
-`exp` não é detectada) — as duas limitações estão no capítulo 9.
+**A10 — Autenticação e autorização com Keycloak.** Realm importado por
+`deploy/keycloak/realm.json`, com **três** clients de `client_credentials`
+(`provider-service`, `provider-b-service` e `internal-service`) mais o
+`jungleg-api` como audience `bearer-only`, as roles `provider` e `internal`, o
+`provider_id` como claim (protocol mapper) e a regra de que a identidade autenticada
+**determina** o provedor. Sem o `provider_id`
+vindo do token, qualquer token válido operaria a carteira de qualquer provedor —
+eliminatório. A implementação seguiu o plano e deixou **duas limitações
+explícitas**, ambas no capítulo 9: `azp` só é conferido quando o token tem
+múltiplas audiences (regra do OIDC Core; o realm emite uma só) e não há
+introspecção de token, então revogar um token antes do `exp` não é detectado.
 
 **A11 — Inbox e outbox.** Inbox com `UNIQUE (consumer_name, message_id)` e
 `body_hash`, registrada e concluída **na mesma transação** do domínio; outbox com
@@ -1854,7 +1883,7 @@ que pode ser instável.
 
 ---
 
-# 8. Os problemas resolvidos: 45 defeitos reais
+# 8. Os problemas resolvidos: 50 defeitos reais
 
 Nenhum destes foi introduzido de propósito. Todos foram encontrados durante o
 desenvolvimento, corrigidos e **travados por teste** — é por isso que a lista tem
@@ -1913,7 +1942,7 @@ aparece). A "correção" é o que mudou.
 | 35 | 8 | `attempts` da inbox ficava em `0` para sempre | o caminho da reentrega — o único que sobrevive quando o broker não é mais consultado — não tocava no contador | inserção grava 1 (normalizado no repositório) e a reentrega faz `attempts + 1` no SQL |
 | 36 | 8 | `mismatched param and argument count` nos testes de integração do repositório | o `INSERT` ganhou coluna sem os placeholders correspondentes (introduzido na correção do 35) | SQL e argumentos alinhados; pego pelos testes de `internal/infra/postgres` |
 
-## 8.3 Fases 9 a 11 — workers, prova multi-instância e observabilidade
+## 8.3 Fases 9 a 12 — workers, prova multi-instância, observabilidade e entrega
 
 | # | Fase | Sintoma | Causa de fundo | Correção |
 | --- | --- | --- | --- | --- |
@@ -1926,14 +1955,21 @@ aparece). A "correção" é o que mudou.
 | 43 | 11 | somar por `kind` num painel misturava tipo de operação com desfecho | o HTTP emitia `kind="PROCESSED", status="2xx_201"` e o SQS emitia `kind="BET", status="PROCESSED"` — mesmo nome, dois significados | o HTTP passou a emitir `kind=<tipo>` e `status=<desfecho>`; `StatusLabel` foi removido |
 | 44 | 11 | toda linha `http_request` trazia `"kind": ""` | o middleware lia `observability.StageFrom(ctx)` e nenhum código chamava `WithStage` (sobra de um desenho abandonado) | campo removido, junto com `WithStage`/`StageFrom` (sem chamador) |
 | 45 | 11 | a documentação do prazo de encerramento mentia — e o teste que acreditava nela não passava | o comentário dava a entender que `fx.StopTimeout` governava o shutdown; em Fx 1.24, `App.Stop(ctx)` obedece ao **contexto do chamador** | comentário corrigido; `TestScopeDoPrazoDeEncerramento` prova que o contexto manda e que `StopTimeout()` carrega o mesmo valor |
+| 46 | 12 | duas variáveis de ambiente existiam e **nunca eram lidas** (`SHUTDOWN_TIMEOUT` de topo e `SQS_PROVISION_QUEUES_ON_BOOT`) | configuração declarada com `env:`/default e nenhum consumidor: promete comportamento que não existe | campos removidos de `internal/config`; a composição Fx continua fechando |
+| 47 | 12 | o container do compose **nunca** ficava `healthy` | o healthcheck executava `/app/api -health-check`, mas o Dockerfile instala o binário em `/app/app` — o comando falhava sempre com "no such file or directory" | healthcheck passou a `/app/app`; o ensaio mostra `Up (healthy)` |
+| 48 | 12 | o **segundo** `docker compose up` nunca subia a API | o job `migrate` devolve 1 quando não há nada a aplicar (contrato do golang-migrate) e o `service_completed_successfully` exige 0; no primeiro `up` havia migrations, nos seguintes não | flag `up --noop-ok` no `cmd/migrate` (contrato preservado para uso manual) + `command: ["up","--noop-ok"]` no compose |
+| 49 | 12 | credenciais do broker documentadas com o nome errado (`AWS_*`), e três variáveis reais fora do `.env.example` | a aplicação lê `SQS_ACCESS_KEY_ID`/`SQS_SECRET_ACCESS_KEY`; as `AWS_*` eram inertes, e os defaults `test` escondiam o erro | `.env.example`, compose e a tabela do README da solução corrigidos; a conferência automática fecha com 0 faltando |
+| 50 | 12 | **`REFUND` depois de `ROLLBACK` da mesma `BET` criava dinheiro** | `BET 40 → ROLLBACK 40 → REFUND 40` levava 100.00 a **140.00**; a guarda de coerência entre os dois tipos existia em uma direção só | `jaRevertida` consulta o outro tipo nos DOIS sentidos; `TestREFUNDDeBETJaDesfeitaPorROLLBACKEhRejeitado` e `...NoBanco` |
 
-**O padrão que se repete nas 45 linhas**, e que vale mais que a lista: em 12 delas o
-sintoma apareceu **longe** da causa (log em `app`, métrica em `handlers`, coluna em
-`migrations`, identidade de mensagem em `infra/sqs`). Em 9, o defeito estava na
-**régua do teste**, não no código. E em 5, o defeito estava **dormente** desde uma
-fase anterior porque nenhum teste tocava o caminho: `RequestSize` desde a Fase 0, as
-filas do LocalStack desde a Fase 0, `application_name` desde a Fase 5, o JWKS do
-container desde a Fase 7, e a métrica de conflito desde a Fase 7. A conclusão
+**O padrão que se repete**, e que vale mais que a lista: em várias delas o sintoma
+apareceu **longe** da causa — log em `app` (27, 44), métrica na borda ou no
+consumidor (34, 42, 43), coluna em `migrations` (17, 29), identidade de mensagem em
+`internal/infra/sqs` e `internal/app/inbox` (30, 31). Alguns estavam na **régua do
+teste**, não no código (26, e a asserção de ordem que só falhava de vez em quando,
+em 19). E cinco ficaram **dormentes** por fases inteiras porque nenhum teste tocava
+o caminho: `chimw.RequestSize` desde a Fase 0 (20), as filas do LocalStack desde a
+Fase 0 (28), o `application_name` desde a Fase 5 (40), o JWKS dentro do container
+desde a Fase 7 (41) e a métrica de conflito desde a Fase 7 (42). A conclusão
 prática: **caminho sem teste não é caminho pronto**, mesmo quando todos os testes
 existentes estão verdes.
 
@@ -1958,7 +1994,7 @@ alguém prometer por você.
 | a ordem por carteira depende do tamanho do lote | com mais eventos pendentes da **mesma** carteira do que `OUTBOX_BATCH_SIZE` numa rodada, dois publishers podem dividir a carteira e a ordem de **envio** fica sujeita ao escalonamento. Na prática (lote 50), é preciso uma rajada de 50+ eventos da mesma carteira; com `OUTBOX_BATCH_SIZE=1` isso ficou **observado** (Fase 10) | o consumidor pode (e deve) ordenar por `walletVersion` do `WalletBalanceChanged`; não prometa ordem global, prometa ordem **por carteira** |
 | a distribuição de publicações entre réplicas não é asserida | a divisão depende de escalonamento (observado 4/4/4) | o que se promete é a **partição**: 12 eventos → 12 mensagens, sem repetição e sem perda |
 | publicação sem `SendMessageBatch` | cada evento é um `SendMessage`; o lote existe no claim, não no envio | é o que mantém o `MarkPublished` por evento e a recuperação observável; se o volume crescer, o custo é de latência do publisher |
-| a URL da fila é derivada do endpoint | com `SQS_ENDPOINT` (LocalStack) a URL é `<endpoint>/000000000000/<nome>`; **sem** ele, o que sobra é o **nome**, e a resolução por `GetQueueUrl` não está exercitada | em produção na AWS, ajuste a resolução de URL antes de subir (é o primeiro item da lista de "trabalho não concluído") |
+| a URL da fila é derivada do endpoint | com `SQS_ENDPOINT` (LocalStack) a URL é `<endpoint>/000000000000/<nome>`; **sem** ele, o que sobra é o **nome**, e a resolução por `GetQueueUrl` não está exercitada | em produção na AWS, ajuste a resolução de URL antes de subir |
 | a latência medida é de cliente local, na mesma máquina dos processos | p99 166 ms em carteiras distintas × 579 ms na mesma carteira: é comparação entre duas topologias de contenção, **não** número de produção | o README §14 não pede meta de RPS; não use esses números como capacidade |
 | `operations_total` conta **atendimentos**, inclusive replay | um replay é uma resposta atendida, e a latência dele também é medida | quem conta operação financeira distinta é `operations_total` − `idempotent_replays_total` |
 | `transaction_conflicts_total` conta **repetições**, não erros | cada `comRetentativa` que vai tentar de novo incrementa; a tentativa final que sobe com o erro não incrementa | o teste exige o valor exato (2) para fixar o contrato; não leia esse contador como "número de erros" |
@@ -2000,13 +2036,14 @@ alguém prometer por você.
 - **Carga e capacidade.** Há medição de latência sob concorrência (Fase 10), mas não
   há teste de carga com metodologia, throughput e p99 de produção — o §14 trata isso
   como diferencial opcional e não há meta de RPS.
-- **`README_SOLUCAO` na raiz.** O `README.md` da raiz é o **enunciado** e não pode ser
-  editado; as instruções de execução estão consolidadas em outro lugar (é a decisão
-  editorial registrada na conformidade, ⚠️ 3).
+- **README da solução na raiz.** O `README.md` da raiz é o **enunciado** e não pode ser
+  editado, então a entrega vive em `docs_desafio/`: o
+  [`README.md`](README.md) desta pasta é o README da solução (decisão registrada na
+  conformidade, ⚠️ 3).
 
 ## 9.4 As três coisas que eu verificaria primeiro ao assumir este código
 
-1. **Existe teste para o caminho que você vai mexer?** A lição das 45 linhas do
+1. **Existe teste para o caminho que você vai mexer?** A lição das 50 linhas do
    capítulo 8 é que defeito dormente mora em caminho sem teste — e cinco defeitos
    ficaram escondidos por fases inteiras exatamente assim.
 2. **A mudança toca a ordem de alguma coisa?** A ordem do lock, a ordem dos eventos,

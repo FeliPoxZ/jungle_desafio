@@ -500,6 +500,29 @@ func TestReversaoDuplicadaBarradaPeloIndiceDoBanco(t *testing.T) {
 	exigirLancamentosNaCarteira(t, w, "DEBIT 40.00", "CREDIT 40.00")
 }
 
+// O caminho inverso do teste de cima, contra o BANCO REAL — e o defeito 50.
+//
+// A BET é desfeita por ROLLBACK e depois estornada por REFUND. Sem a guarda
+// simétrica, o segundo crédito devolveria um débito que já tinha sido devolvido:
+// a carteira terminaria com MAIS dinheiro do que começou, e o ledger (que é
+// consistente com o saldo) não denunciaria nada na reconciliação.
+func TestREFUNDDeBETJaDesfeitaPorROLLBACKEhRejeitadoNoBanco(t *testing.T) {
+	limpar(t)
+	w := carteiraNova(t, "100.00")
+
+	processar(t, pedido(w, wagerdomain.KindBet, "40.00"))
+	processar(t, pedido(w, wagerdomain.KindRollback, "40.00", comReferencia("ext-BET")))
+	exigirSaldoNoBanco(t, w, 10000)
+
+	res := processar(t, pedido(w, wagerdomain.KindRefund, "40.00", comReferencia("ext-BET")))
+
+	if res.Status != wagerdomain.StatusRejected || res.FailureCode != wagerdomain.CodeReversed {
+		t.Fatalf("REFUND de BET desfeita por ROLLBACK = %+v; esperado REJECTED/ALREADY_REVERSED", res)
+	}
+	exigirSaldoNoBanco(t, w, 10000)
+	exigirLancamentosNaCarteira(t, w, "DEBIT 40.00", "CREDIT 40.00")
+}
+
 func TestROLLBACKSemSaldoTemCodigoProprio(t *testing.T) {
 	limpar(t)
 	w := carteiraNova(t, "100.00")

@@ -116,7 +116,7 @@ Estas decisões entram como texto no `ARCHITECTURE.md`. Congelar cedo evita refa
   - Referência existe mas ainda `PENDING`/`PENDING_REFERENCE` ⇒ continua pendente (nova tentativa).
   - Referência `REJECTED`/`FAILED` ⇒ `REJECTED` com `REFERENCE_NOT_PROCESSABLE` (definitivo).
 - **Dupla reversão bloqueada por constraint**: `UNIQUE (reference_transaction_id, kind) WHERE reference_transaction_id IS NOT NULL` → REFUND e ROLLBACK convivem, dois REFUND não.
-- Coerência REFUND+ROLLBACK sobre a mesma BET: aceito (um de cada), nunca devolvendo o mesmo débito duas vezes. Documentado em `ARCHITECTURE.md`.
+- Coerência REFUND+ROLLBACK sobre a mesma BET: a PRIMEIRA reversão do débito vale; a segunda, de qualquer tipo, é recusada com `ALREADY_REVERSED` — o mesmo débito nunca é devolvido duas vezes (guarda simétrica desde o defeito 50). Documentado em `ARCHITECTURE.md`.
 - `ROLLBACK` que exigiria débito > saldo ⇒ `REJECTED` com `ROLLBACK_INSUFFICIENT_FUNDS` (**código diferente** de `INSUFFICIENT_FUNDS` da aposta — exigido no item 7).
 
 ### A8. Códigos de falha (`failureCode` estáveis)
@@ -594,10 +594,35 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` feito e **validado por te
       teste que trava os dois lados
 - [x] `docs/evidencias/FASE_11.md` com a seção final **MATÉRIA-PRIMA PARA OS DOIS DOCUMENTOS**
 
-### FASE 12 — Documentação e entrega (D2, ~2h)
-- [ ] `README.md`: pré-requisitos, variáveis de ambiente, **inicialização das filas**, migrations (aplicar e reverter), execução, exemplos `curl` autenticados, comandos de teste, provisionamento do IdP + identidades de teste, execução de integração/múltiplas instâncias/simulações de falha, build tags
-- [ ] `.env.example`
-- [ ] `ARCHITECTURE.md`: dinheiro, transações, idempotência (hash/algoritmo/campos/normalizações), locks/concorrência, referências pendentes, reversões (matriz REFUND/ROLLBACK), inbox/outbox, autenticação/autorização, Fx/ciclo de vida/shutdown, máquina de estados + transitório×permanente, HTTP (status/corpos), SQS (MessageGroupId/DeduplicationId/visibility/limites/DLQ), **limitações, interpretações e trabalho não concluído**
+### FASE 12 — Documentação e entrega (D2, ~2h) — ✅ CONCLUÍDA E VALIDADA
+- [x] **README da solução** em `docs_desafio/README.md` (⚠️ 3 decidida com o usuário: a
+      raiz é o enunciado e não pode ser editada): pré-requisitos, **as 61 variáveis de
+      ambiente** conferidas contra `internal/config`, inicialização das filas, migrations
+      (aplicar **e reverter**, com ensaio real), execução (container e host, com
+      `-health-check`), exemplos `curl` autenticados **executados**, tabela de status HTTP,
+      comandos de teste com build tag e dependências, multi-instância e simulações de falha,
+      observabilidade e índice da documentação
+- [x] `.env.example` conferido por script (0 variáveis faltando) — **defeito 49** corrigido:
+      credenciais do broker com o nome errado (`AWS_*` em vez de `SQS_*`) e três variáveis
+      reais ausentes
+- [x] `ARCHITECTURE.md` fechado (§12 métrica → teste, §15 com os defeitos 42–50, §16
+      limitações, §17 números finais)
+- [x] **`docs_desafio/SISTEMA_EXPLICADO.md`** — 9 capítulos, 25 tabelas, os 50 defeitos,
+      dois diagramas ASCII, ~120 nomes de teste verificados; o capítulo "onde cada garantia
+      é imposta" é o núcleo
+- [x] **`docs_desafio/ENTREVISTA.md`** — 40 perguntas nos 6 blocos + anexo das 23
+      interpretações + "o que eu faria diferente" e "o que não entreguei"
+- [x] `docs/evidencias/FASE_12.md` com as saídas reais (suíte, checkout limpo, migrations,
+      curls) e a conferência §1–§15
+- [x] `docker compose up --build` **do zero em clone limpo** funcionou (52 s, `api`
+      `healthy`, readiness UP, carteira criada) — **defeitos 47 e 48** encontrados e
+      corrigidos (healthcheck em `/app/api` e o job `migrate` devolvendo 1)
+- [x] **Defeito 50**: `REFUND` depois de `ROLLBACK` da mesma `BET` **criava dinheiro**
+      (100 → 60 → 100 → 140) — achado ao escrever o `SISTEMA_EXPLICADO.md`, corrigido com
+      guarda simétrica e dois testes
+- [x] **Defeito 46**: duas variáveis de ambiente que nunca eram lidas — removidas
+- [x] Achado de ambiente documentado: o `api` do compose consome a **mesma fila** dos
+      testes e precisa estar parado durante a integração
 
 **⭐ COMPROMISSO DE ENTREGA ASSUMIDO COM O USUÁRIO (estratégia mudou na Fase 6):**
 
@@ -606,19 +631,19 @@ Legenda: `[ ]` pendente · `[~]` em andamento · `[x]` feito e **validado por te
 > lançamento de ledger, transação e lock, idempotência, outbox — e só depois as **ligações**
 > entre as partes e os **conceitos de regra de negócio**. Sem presumir que quem lê já conhece
 > o vocabulário do projeto.
-- [ ] **`docs/SISTEMA_EXPLICADO.md`** — explicação do sistema completo: o fluxo de uma
+- [x] **`docs_desafio/SISTEMA_EXPLICADO.md`** — explicação do sistema completo: o fluxo de uma
       requisição do HTTP ao commit e à publicação, cada componente e por que existe, **as
       lógicas pensadas e seguidas**, e **a lista de problemas resolvidos** em todas as fases
       (as guardas de overflow do `Money`, o `Neg` invertido, o `CHAR(3)` com padding, o
       `55P03` mal classificado, o tipo `Movement`, o `newEntryID` que não era UUID...), com
       sintoma e correção. Mais os limites conhecidos e o que ficou de fora conscientemente.
-- [ ] **`docs/ENTREVISTA.md`** — preparação para a entrevista em **formato de perguntas e
+- [x] **`docs_desafio/ENTREVISTA.md`** — preparação para a entrevista em **formato de perguntas e
       respostas**, cobrindo arquitetura, decisões, garantias financeiras e as perguntas de
       erro/aprendizado. As respostas devem deixar **arquitetura e lógica bem visíveis**, com
       motivo e consequência — não só o "o quê". Incluir as perguntas difíceis (as que expõem
       limitação) com resposta honesta.
-- [ ] `docs/evidencias/`: saídas de `go test -race`, curls, `/metrics` (prova para o avaliador)
-- [ ] `docker compose up --build` do zero em clone limpo funciona (teste real!)
+- [x] `docs/evidencias/`: saídas de `go test -race`, curls, `/metrics` (prova para o avaliador)
+- [x] `docker compose up --build` do zero em clone limpo funciona (teste real!)
 
 ---
 
@@ -858,7 +883,7 @@ Formato: `[data] [fase] status — o que foi feito / decisão / bloqueio`.
    seções **MATÉRIA-PRIMA** de `docs/evidencias/FASE_10.md` e `FASE_11.md` e das tabelas
    de decisão das Fases 6–11, a explicação do básico ao avançado (dinheiro em unidades
    mínimas, carteira, lançamento, transação/lock, idempotência, outbox → depois as
-   ligações e as regras), com os **45 defeitos** (sintoma → causa → correção).
+   ligações e as regras), com os **50 defeitos** (sintoma → causa → correção).
 2. **Fase 12, segundo documento — `docs/ENTREVISTA.md`:** transformar as tabelas
    pergunta→resposta (incluindo as difíceis e as que expõem limitação) em material de
    treino.
@@ -874,7 +899,7 @@ Formato: `[data] [fase] status — o que foi feito / decisão / bloqueio`.
 1. **`OPENING` e saldo zero**: zero ⇒ sem `OPENING`, sem ledger, sem eventos financeiros (itens 9 e 7). Carteira ainda é criada.
 2. **`LOSS` processa sem ledger** mas produz `WagerTransactionProcessed`; **não** incrementa `version`.
 3. **`WIN` com referência de aposta da mesma rodada**: opcional ("pode informar"). **Resolvido na 6a:** em `BET`/`WIN`/`LOSS` a referência é **informativa** — conferida quando resolve (provedor/jogador/carteira/moeda/rodada), e **não bloqueia** a operação quando não resolve (um `WIN` cujo referente ainda não chegou não pode atrasar o pagamento). Referente que existe e terminou rejeitado/falha ⇒ `REFERENCE_NOT_PROCESSABLE`. A referência informativa **não** é gravada em `reference_transaction_id`, senão o índice parcial passaria a tratar a operação como reversão.
-4. **`REFUND`+`ROLLBACK` na mesma BET**: ambos permitidos (um de cada tipo), nunca dois do mesmo tipo (constraint). **Resolvido na 6a:** `ROLLBACK` de uma `BET` **já estornada** é recusado com `ALREADY_REVERSED` (creditar de novo o mesmo débito criaria dinheiro); desfazer o estorno é `ROLLBACK` apontando para o `REFUND`, que **debita** e é aceito. A leitura prévia dá o código certo; o índice único continua sendo a barreira final.
+4. **`REFUND`+`ROLLBACK` na mesma BET**: o índice permite **um de cada tipo** (dois do mesmo tipo são impossíveis por constraint), mas a **primeira** reversão do débito é a que vale: a segunda, de qualquer tipo, é recusada com `ALREADY_REVERSED`. **Resolvido na 6a** para `ROLLBACK` de `BET` já estornada; **fechado na 12 (defeito 50)** para o sentido inverso — `REFUND` de `BET` já desfeita por `ROLLBACK` —, que antes era aceito e **criava dinheiro** (`100.00 → 60.00 → 100.00 → 140.00`, com o ledger consistente). Desfazer o estorno é `ROLLBACK` apontando para o `REFUND`, que **debita** e é aceito. A leitura prévia dá o código certo; o índice único continua sendo a barreira final.
 5. **Aceite assíncrono**: **não** implementaremos para operações sem dependência (permitido pelo item 6.3: "podem ser concluídas de forma síncrona, sem commit intermediário de aceite").
 6. **Nível de isolamento**: `READ COMMITTED` + `SELECT ... FOR UPDATE` explícito (justificar em `ARCHITECTURE.md`); reconciliação em snapshot consistente.
 7. **Moeda**: apenas `BRL` nos cenários principais, mas o tipo carrega moeda e há testes de incompatibilidade (exigido).

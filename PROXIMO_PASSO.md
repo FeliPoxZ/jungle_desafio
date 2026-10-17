@@ -316,7 +316,7 @@ numa entrevista. Um único texto falharia nos dois — ensina devagar e não tre
 | Unidade de texto | componente, fluxo, tabela | pergunta → resposta → "se insistirem" → número/teste |
 | A tabela `DECISÃO \| MOTIVO \| O QUE QUEBRARIA SEM ELA` vira | **prosa** que ensina | **fala** que defende |
 | Limitação | capítulo "limites conhecidos", com o motivo de cada uma | pergunta difícil, com resposta honesta |
-| Erro do passado (41 defeitos) | capítulo "problemas resolvidos": sintoma → causa → correção | "qual foi o bug mais difícil?" e "o que faria diferente?" |
+| Erro do passado (50 defeitos) | capítulo "problemas resolvidos": sintoma → causa → correção | "qual foi o bug mais difícil?" e "o que faria diferente?" |
 | Extensão | longa (é um manual) | média (é um treino) |
 | Critério de pronto | o leitor explica **onde** cada garantia é imposta | nenhuma resposta sem motivo e consequência |
 | O que NÃO é | resumo do `ARCHITECTURE.md` (aquele é do avaliador, denso, em 3ª pessoa) | lista de jargão decorado |
@@ -326,7 +326,7 @@ problema → vocabulário do zero (unidades mínimas, carteira, lançamento, tra
 idempotência, outbox/inbox, pendência, worker, lease) → fluxo completo de uma requisição
 (HTTP → commit → publicação; e o mesmo pela fila) → cada componente e por que existe →
 **onde cada garantia é imposta** (garantia → camada → arquivo/teste) → regras de negócio
-com o porquê → decisões com motivo/consequência → os 41 defeitos → limites conhecidos.
+com o porquê → decisões com motivo/consequência → os 50 defeitos → limites conhecidos.
 
 **Blocos obrigatórios do `ENTREVISTA.md`:** arquitetura, decisão, garantia,
 **concorrência** (a nota de 20 pontos), erro e aprendizado, e **as difíceis** (queda
@@ -867,7 +867,7 @@ corrigida (defeito 21).
 
 - [ ] Ler `README.md` (o enunciado é a fonte de verdade), `ARCHITECTURE.md` (§12, §16, §17), as seções finais de `docs/evidencias/FASE_10.md` e `FASE_11.md` (matéria-prima dos dois documentos) e o `PROMPT_FASE_12.md`
 - [ ] Resolver a **⚠️ 3**: onde vive o "README da solução" (o `README.md` da raiz é o enunciado e **não pode ser editado**)
-- [ ] `docs/SISTEMA_EXPLICADO.md` — do zero de vocabulário ao onde-cada-garantia-é-imposta, com os 45 defeitos (sintoma → causa → correção)
+- [ ] `docs/SISTEMA_EXPLICADO.md` — do zero de vocabulário ao onde-cada-garantia-é-imposta, com os 50 defeitos (sintoma → causa → correção)
 - [ ] `docs/ENTREVISTA.md` — pergunta → resposta curta com número, incluindo as difíceis (limitações admitidas)
 - [ ] `docker compose up --build` **do zero** (clone limpo) e os fluxos autenticados documentados
 - [ ] Conferência de conformidade §1–§15, item por item, com evidência

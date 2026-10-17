@@ -551,6 +551,28 @@ reprova o comportamento **errado** — se ele passa nos dois, ele não prova nad
 antigo, então não discrimina) e `TestOrdemDaOutboxNaoDependeDoRelogio` (reprova o código
 antigo, então é o que sustenta a correção).
 
+### "Você achou algum bug escrevendo a documentação?"
+
+**Resposta (30–60s):** Sim, e foi o mais grave de todos: o **defeito 50**. Eu estava
+escrevendo a matriz `REFUND` × `ROLLBACK` e afirmei "os dois sentidos são barrados". Fui
+conferir o código para citar a linha e a guarda era **assimétrica**: `ROLLBACK` de uma `BET`
+já estornada era recusado, mas `REFUND` de uma `BET` já desfeita por `ROLLBACK` era
+**aceito**. O efeito era dinheiro criado: `BET 40 → ROLLBACK 40 → REFUND 40` levava
+100.00 a **140.00** — e o ledger ficava consistente com o saldo, então a reconciliação não
+acusava nada. Reproduzi contra o container (saldo 125.00 depois de 100.00), tornei a guarda
+simétrica e escrevi o par de testes que faltava.
+
+**Se insistirem:** documentar é revisar o código com outra lente. Ao escrever "onde cada
+garantia é imposta" eu fui **obrigado a nomear a guarda** de cada regra — e, ao nomeá-la,
+vi que ela não cobria o caso que eu tinha acabado de descrever. O teste que faltava era
+exatamente o par simétrico do que já existia, o que mostra que "tem teste para a regra" não
+é o mesmo que "tem teste para a regra nos dois sentidos".
+
+**Número/teste que sustenta:** `TestREFUNDDeBETJaDesfeitaPorROLLBACKEhRejeitado` (unidade) e
+`TestREFUNDDeBETJaDesfeitaPorROLLBACKEhRejeitadoNoBanco` (integração: saldo 100.00 e dois
+lançamentos); antes da correção, o mesmo cenário respondia `201` com saldo `125.00`.
+
+
 ### "O que você faria diferente?"
 
 **Resposta (30–60s):** No processo, três coisas: escrever primeiro o teste que

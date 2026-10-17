@@ -177,12 +177,12 @@ assume no dia em que existir aceite assíncrono.
 | `WIN` crédito, podendo referenciar aposta da mesma rodada | ✅ referência **informativa**: conferida quando resolve, não bloqueia quando não |
 | `LOSS` sem movimentação, `amount` = `"0.00"`, sem ledger e sem mudar a versão | ✅ (e produz `WagerTransactionProcessed`, sem `WalletBalanceChanged`) |
 | `REFUND` devolve integralmente uma `BET` processada | ✅ valor igual ao referenciado; referência obrigatória |
-| `ROLLBACK` desfaz movimento de `BET`/`WIN`/`REFUND` | ✅ direção contrária ao original; `ROLLBACK` de `BET` já estornada ⇒ `ALREADY_REVERSED` |
+| `ROLLBACK` desfaz movimento de `BET`/`WIN`/`REFUND` | ✅ direção contrária ao original; `ROLLBACK` de `BET` já estornada ⇒ `ALREADY_REVERSED`; e, desde o defeito 50 da Fase 12, `REFUND` de `BET` já desfeita por `ROLLBACK` também ⇒ `ALREADY_REVERSED` |
 | Referência resolvida por `(providerId, referenceExternalTransactionId)` | ✅ |
 | Concordância em provedor, jogador, carteira, moeda e rodada; valor igual | ✅ `REFERENCE_MISMATCH` |
 | Zero aceito no saldo inicial e em `LOSS`; os outros exigem valor > 0 | ✅ validado no domínio e por CHECK no banco |
 | Sem duas reversões bem-sucedidas do mesmo tipo | ✅ índice único parcial + leitura prévia (`ALREADY_REVERSED`) |
-| Documentar `REFUND` + `ROLLBACK` sobre a mesma aposta | ✅ `ARCHITECTURE.md` §9 e `docs/evidencias/FASE_6.md` §7: `ROLLBACK` da `BET` estornada é recusado; desfazer o estorno é `ROLLBACK` do `REFUND`, que debita |
+| Documentar `REFUND` + `ROLLBACK` sobre a mesma aposta | ✅ `ARCHITECTURE.md` §9 e `docs/evidencias/FASE_6.md` §7: a PRIMEIRA reversão do débito vale; a segunda, de qualquer tipo, é recusada com `ALREADY_REVERSED` (guarda simétrica desde o defeito 50); desfazer o estorno é `ROLLBACK` do `REFUND` |, que debita |
 | Reversão que exigiria mais saldo: código DIFERENTE do de aposta sem saldo | ✅ `ROLLBACK_INSUFFICIENT_FUNDS` × `INSUFFICIENT_FUNDS`, separados pelo tipo |
 | `PENDING_REFERENCE` persistida, worker com backoff exponencial **após reinício**, TTL/máx. de tentativas, e comportamento quando a referência existe mas está pendente ou terminou mal | 🟡 persistência, backoff inicial e os dois comportamentos ✅; o **worker** com backoff/TTL é a Fase 9 (`PLANO.md` A7 define 20 tentativas/24h) |
 | Toda rejeição com `failureCode` estável e documentado | ✅ 17 códigos na tabela A8 + os dois novos (`WALLET_PLAYER_MISMATCH`, `TRANSACTION_NOT_FOUND`), distinguindo corrigível de definitivo |
@@ -288,23 +288,26 @@ checks com `workers`, dashboard e alertas versionados com runbook. Dois defeitos
 reais de observabilidade foram corrigidos (42 e 43) e dois de documentação/código
 morto (44 e 45).
 
-**Documentação (5 pontos):** 🟡 o `ARCHITECTURE.md` está completo e atualizado até
-a Fase 11 (§12 com a tabela métrica → teste, §15 com os defeitos 42–45, §16 com as
-limitações novas, §17 com os números). O "README da solução" e os dois documentos
-finais são a Fase 12.
+**Documentação (5 pontos):** ✅ **fechada na Fase 12** — o
+[`docs_desafio/README.md`](../docs_desafio/README.md) é o README da solução (⚠️ 3
+decidida com o usuário), com todo comando **executado** e a saída na evidência; os
+dois documentos finais estão em [`docs_desafio/SISTEMA_EXPLICADO.md`](../docs_desafio/SISTEMA_EXPLICADO.md)
+e [`docs_desafio/ENTREVISTA.md`](../docs_desafio/ENTREVISTA.md); o `ARCHITECTURE.md`
+está completo (§12 com a tabela métrica → teste, §15 com os 50 defeitos, §16 com as
+limitações, §17 com os números finais).
 
-## 15. Entrega — 🟡 Fase 12
+## 15. Entrega — ✅ Fase 12
 
 | Exigência | Estado |
 | --- | --- |
-| Código, migrations, Docker Compose e instruções para reproduzir de um checkout limpo | 🟡 código, migrations e compose ✅; **P1 resolvida**, então `docker compose up --build` sobe o `api` saudável. As instruções consolidadas são a Fase 12 |
-| `README.md` da solução com pré-requisitos, variáveis, filas, migrations (aplicar/reverter), execução, exemplos e testes | 🟡 os exemplos autenticados já existem em `docs/evidencias/FASE_7.md` §4; a decisão de **onde** esse arquivo vive é a ⚠️ 3 da Fase 12 |
-| `.env.example` sem segredos reais | ✅ completo (HTTP, banco, OIDC, SQS, outbox, workers) — e agora com `OIDC_HTTP_TIMEOUT`, `OIDC_TOKEN_URL` e `HTTP_STOP_TIMEOUT` |
-| Provisionamento automático do IdP, identidades de teste e instruções dos fluxos autenticados | 🟡 realm, clients, roles, mapper e usuários de teste ✅; o fluxo `client_credentials` é exercitado pelos testes (com os três clients do realm); as instruções ⬜ Fase 12 |
-| `ARCHITECTURE.md` com decisões e limitações | ✅ atualizado até a **Fase 11** (§12 com a tabela métrica → teste que prova e o log por caminho, §13 recuperação, §15 defeitos 42–45, §16 limitações — inclusive as de observabilidade, §17 números e comandos) |
-| Comandos documentados: `docker compose up --build`, `go test ./...`, `go test -race ./...`, `go vet ./...` | 🟡 documentados em `ARCHITECTURE.md` §17 e nas evidências; a consolidação é a Fase 12 |
-| Documentar como preparar dependências de teste, integração, múltiplas instâncias e simulações de falha; informar as build tags | 🟡 a tag `integration` está documentada (§17 e `FASE_8.md` §10), inclusive as dependências (PostgreSQL, Keycloak e **LocalStack com as filas provisionadas**); a Fase 11 acrescentou a rotina reduzida (`-run 'TestMetrica\|TestLogsDoProcesso\|TestCicloDeVidaFx'`). A consolidação é a Fase 12 |
-| Código formatado com `gofmt` e dependências reproduzíveis | ✅ **`go mod tidy` aplicado na Fase 11**: `testcontainers-go` e a árvore removidos, dependências realmente usadas (aws-sdk, pgx, prometheus client_model/common) promovidas a diretas; `go.mod` de 88 → 42 linhas, `go.sum` 56 linhas menor, `go mod verify` limpo, e a suíte inteira revalidada **depois** do tidy |
+| Código, migrations, Docker Compose e instruções para reproduzir de um checkout limpo | ✅ **provado**: `git clone` para diretório temporário + `docker compose up -d --build` = 52 s, `api` `healthy`, `/health/ready` 200 com as quatro dependências e carteira criada em banco novo. Saída em `docs/evidencias/FASE_12.md` |
+| `README.md` da solução com pré-requisitos, variáveis, filas, migrations (aplicar/reverter), execução, exemplos e testes | ✅ [`docs_desafio/README.md`](../docs_desafio/README.md) — todas as 61 variáveis conferidas contra `internal/config`, migrations aplicadas **e revertidas** no ensaio, curls autenticados com saída real, comandos de teste com build tag e dependências. O `README.md` da raiz continua sendo o enunciado, intocado |
+| `.env.example` sem segredos reais | ✅ completo e **conferido por script** contra `internal/config`: as 61 variáveis da aplicação estão lá (as 5 restantes são `POSTGRES_*`/`KEYCLOAK_*`, do compose) e nenhuma credencial real |
+| Provisionamento automático do IdP, identidades de teste e instruções dos fluxos autenticados | ✅ `deploy/keycloak/realm.json` importado no boot (realm, 3 clients `client_credentials`, roles, mapper de audience); token e curls autenticados documentados e **executados** (§7 do README da solução) |
+| `ARCHITECTURE.md` com decisões e limitações | ✅ atualizado até a **Fase 12** (§12 métrica → teste e log por caminho, §13 recuperação, §15 defeitos 42–50, §16 limitações, §17 números e comandos) |
+| Comandos documentados: `docker compose up --build`, `go test ./...`, `go test -race ./...`, `go vet ./...` | ✅ no README da solução (§4, §5, §8) e no `ARCHITECTURE.md` §17 |
+| Documentar como preparar dependências de teste, integração, múltiplas instâncias e simulações de falha; informar as build tags | ✅ README da solução §8 e §9: containers, banco de teste separado, filas, Keycloak, tag `integration`, as três instâncias (faixa 18091+), a queda entre commit e delete e o SIGTERM no container — incluindo o aviso de **parar o `api` do compose** antes da integração |
+| Código formatado com `gofmt` e dependências reproduzíveis | ✅ `gofmt -l` limpo, `go mod tidy` aplicado (Fase 11), `go.mod` com 42 linhas e `go mod verify` limpo |
 
 ---
 
@@ -391,17 +394,18 @@ detalhadas em `docs/evidencias/FASE_6.md` §8, `docs/evidencias/FASE_7.md` §8 e
 
 ## O que ainda NÃO existe (lista direta, sem rodeio)
 
-- **Consumidor de `wallet-events.fifo`**: nesta fase o evento é **publicado**, e o
-  contrato de consumo está documentado (`ARCHITECTURE.md` §11). O consumidor (com
-  dedup durável por `eventId`) é escopo das Fases 11–12.
-- **Dashboards e tracing** (diferenciais opcionais do §14).
+- **Consumidor de `wallet-events.fifo`**: o evento é **publicado**, e o contrato de
+  consumo está documentado (`ARCHITECTURE.md` §11, com as 7 regras). O consumidor em
+  si não foi implementado — decisão de escopo (o README §11 pede a publicação).
+- **Tracing com OpenTelemetry** e **partidas dobradas**: diferenciais opcionais do
+  §14; não implementados, e o `correlationId` cobre o rastreio por log.
 - **Contador durável de falhas do reaper**: uma linha `PENDING` inconsistente é
   repetida indefinidamente em vez de virar `FAILED` (`ARCHITECTURE.md` §16).
 - **Prova de SIGTERM no Windows** (P8): não existe sinal de término de host; a
   prova é do container Linux (`docs/evidencias/FASE_10.md` §6).
-- **`go mod tidy`** para remover o `testcontainers-go` que ficou baixado e não é
-  usado (Fase 12).
-- **O README da solução** (o enunciado ocupa esse nome) — a consolidação é a
-  Fase 12, junto com os dois documentos finais (`docs/SISTEMA_EXPLICADO.md` e
-  `docs/ENTREVISTA.md`), cuja matéria-prima a Fase 10 entrega em
-  `docs/evidencias/FASE_10.md` (seção final).
+- **Teste de carga com metodologia e throughput**: há medição de latência sob
+  concorrência (Fase 10), mas não teste de carga — diferencial opcional, sem meta de
+  RPS no enunciado.
+- **`README.md` da solução na raiz**: o arquivo da raiz é o enunciado e não pode ser
+  editado; a entrega vive em [`docs_desafio/`](../docs_desafio/README.md) (a ⚠️ 3,
+  decidida com o usuário na Fase 12), junto com os dois documentos finais.
