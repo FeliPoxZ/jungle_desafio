@@ -1,17 +1,22 @@
 <!--
 ================================================================================
-ARCHITECTURE.md — DOCUMENTO EM CONSTRUÇÃO
+ARCHITECTURE.md — DOCUMENTO DO AVALIADOR (concluído)
 ================================================================================
-Este arquivo é atualizado a cada fase. Cada seção traz um marcador de estado:
+Este é o registro técnico do projeto, denso e em terceira pessoa: as decisões,
+o porquê de cada uma, os 50 defeitos encontrados e corrigidos e as limitações.
+Ele está completo e atualizado até a Fase 12 (a entrega).
+
+**A entrega em si está em `docs_desafio/`**:
+  docs_desafio/README.md             como rodar, configurar, migrar e testar
+  docs_desafio/SISTEMA_EXPLICADO.md  o sistema explicado do zero (para quem mantém)
+  docs_desafio/ENTREVISTA.md         treino de entrevista (40 perguntas)
+
+Marcadores de estado usados aqui:
 
   [PRONTO]       implementado, testado e validado contra o banco/container real
   [PARCIAL]      parte implementada, o resto vem em fase indicada
   [PLANEJADO]    desenhado, ainda não escrito (a fase indica quando entra)
   [DECISÃO]      escolha tomada, com motivo — não muda sem motivo novo
-
-Ao concluir uma fase, troque os marcadores dela e acrescente as decisões que
-surgiram. O objetivo final é que este documento responda, sozinho, "por que o
-sistema é assim".
 ================================================================================
 -->
 
@@ -40,7 +45,9 @@ referências entram na Fase 9 — o prompt de abertura dela está em `PROMPT_FAS
 | Caso de uso da aplicação | `[PRONTO]` — `Process`, `OpenWallet`, leituras e `Reconcile` (Fase 6) |
 | HTTP + autenticação | `[PRONTO]` — Fase 7 (§10) |
 | Consumo do SQS (inbox) | `[PRONTO]` — Fase 8 (§11) |
-| Outbox publisher e worker de referências | `[PLANEJADO]` — Fase 9 (`PROMPT_FASE_9.md`) |
+| Outbox publisher e worker de referências | `[PRONTO]` — Fase 9 (§8 e §11) |
+| Observabilidade (12 métricas, log do processo, dashboard/alerta) | `[PRONTO]` — Fase 11 (§12) |
+| Documentação de entrega (`docs_desafio/`) | `[PRONTO]` — Fase 12 |
 
 ---
 
@@ -1678,7 +1685,7 @@ que funciona não ajuda quem vai manter.
 | `Rehydrate` da transação tem ~20 parâmetros | Espelha as colunas e evita depender de ordem de campo. Feio, mas explícito e seguro contra troca de argumentos |
 | `Kind` é `string`, então um valor inválido responde `true` a `MovesMoney` | Mitigado por `Validate` rodar antes em todo caminho. Um tipo fechado exigiria enumeração em Go, que não existe |
 | Sem foreign key de `outbox_events` para o agregado | A outbox precisa sobreviver à remoção do agregado; ela é a fila, não um detalhe dele |
-| `testcontainers-go` baixado e **não usado** | Os testes apontam para o Postgres do compose. Remover com `go mod tidy` na Fase 12 |
+| `testcontainers-go` foi baixado e **não é usado** | Resolvido na Fase 11 com `go mod tidy` — os testes apontam para o Postgres do compose (`TEST_DATABASE_URL`), e a dependência saiu junto com a árvore dela |
 | `LOSS` com referência: o serviço confere quando ela resolve | O README permite referência opcional. A régua adotada está registrada em `docs/evidencias/FASE_6.md` §8: referência informativa não bloqueia a operação |
 | O dublê em memória não prova lock nem concorrência | Ele tem semântica de transação (cópia do estado, troca só no fim sem erro), mas não tem `FOR UPDATE`. Lock, lost update e disputa entre processos são provados contra o PostgreSQL real |
 | `next_resolution_attempt_at` fica preenchido em reversão já `PROCESSED` | Efeito de usar `MarkPendingReference` + `ResolveReference`, que é o único caminho que o agregado oferece para vincular a referência interna. A coluna só é lida para linhas `PENDING_REFERENCE`, então o valor é inerte |
@@ -1704,6 +1711,7 @@ que funciona não ajuda quem vai manter.
 | **O readiness não é métrica** | `/health/ready` é JSON. Para alertar "workers DOWN" é preciso o `blackbox_exporter` (`probe_success` sobre o readiness), configurado em `deploy/observability/prometheus.yml`. Sem ele, o alerta de outbox atrasada cobre o sintoma em minutos. Criar uma métrica de readiness seria violar a regra da fase ("não criar métrica nova") |
 | **A idade da outbox é medida a cada 15 s** | Um pico curto entre medições não aparece no gauge; aparece no log `outbox_atrasada` (WARN) do ciclo em que aconteceu |
 | **O dashboard não é exercitado em CI** | É JSON validado (`ConvertFrom-Json`) e as regras passam no `promtool`, mas não há Grafana no compose (decisão registrada na Fase 11): o painel é importado à mão uma vez |
+| **A política de acesso da fila (IAM) não é exercida no LocalStack** | O README §2 pede o acesso à mensageria controlado por "credenciais e políticas do broker". O que existe: o cliente autentica com credenciais (`SQS_ACCESS_KEY_ID`/`SQS_SECRET_ACCESS_KEY`) e o provisionamento declara FIFO, DLQ e `maxReceiveCount`. O que **não** existe: uma *queue policy* de principal — o LocalStack não aplica IAM, e as credenciais de exemplo são estáticas (`test`). Em AWS, o deploy precisa anexar a policy à fila e a role à tarefa; nada no código impede, mas isso não está provisionado aqui |
 
 ---
 

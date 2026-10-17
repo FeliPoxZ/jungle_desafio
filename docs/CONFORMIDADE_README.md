@@ -30,7 +30,7 @@
 | Dinheiro (`Money`) | ✅ | `internal/domain/money` — 574 casos no domínio |
 | Carteira + ledger | ✅ | `internal/domain/{wallet,ledger}` + schema com trigger |
 | Transação de aposta (máquina de estados) | ✅ | `internal/domain/wagering` |
-| Schema, constraints, imutabilidade | ✅ | `migrations/000001..000003` + `deploy/postgres/verify_constraints.sql` |
+| Schema, constraints, imutabilidade | ✅ | `migrations/000001..000005` + `deploy/postgres/verify_constraints.sql` |
 | Persistência + transação + lock | ✅ | `internal/infra/postgres` |
 | Caso de uso (as 5 operações + referências) | ✅ | `internal/app/wagering` |
 | Abertura de carteira (`OPENING`) | ✅ | `internal/app/wagering/opening.go` |
@@ -41,8 +41,8 @@
 | **Consumidor SQS + inbox** | ✅ **Fase 8** | `internal/consumer` + `internal/app/inbox`, com integração contra o LocalStack |
 | **Publisher da outbox + workers** | ✅ **Fase 9** | `internal/worker` (publicador, referências, reaper, runner) |
 | **Concorrência e recuperação com 3 processos** | ✅ **Fase 10** | `test/integration` (T1–T8 + conferência final + latência) e a prova de SIGTERM no container |
-| Métricas de negócio alimentadas | 🟡 **Fase 11** | **12 das 12 já emitidas** (Fases 7–9); falta dashboard/alerta |
-| README da solução + `.env.example` | 🟡 **Fase 12** | `.env.example` existe; ver ⚠️ 3 |
+| Métricas de negócio + dashboard/alerta | ✅ **Fase 11** | **12 de 12 emitidas E provadas** em `/metrics`; dashboard e 7 alertas em `deploy/observability/` |
+| README da solução + `.env.example` | ✅ **Fase 12** | [`docs_desafio/README.md`](../docs_desafio/README.md) (decisão da ⚠️ 3) + `.env.example` conferido |
 
 ### Os cinco pontos de atenção que valem mais que o resto
 
@@ -59,12 +59,12 @@
 2. **✅ P1 resolvida:** a flag `-health-check` existe, é testada **subindo o
    binário real** e `docker compose up --build` deixa de subir o `api` como
    `unhealthy`.
-3. **⚠️ Onde vive o "README da solução"?** O §15 pede que o `README.md` explique
-   pré-requisitos, variáveis, filas, migrations, execução, exemplos de chamadas e
-   testes. O `README.md` da raiz **é o enunciado** e não pode ser editado. Decisão a
-   tomar com o usuário na Fase 12: (a) um `README_SOLUCAO.md` na raiz, (b) um
-   `docs/README_SOLUCAO.md` referenciado no topo do `PROXIMO_PASSO`, ou (c) uma
-   seção nova no topo do `README.md` preservando o texto do enunciado.
+3. **✅ Onde vive o "README da solução" (decidido na Fase 12):** o §15 pede
+   pré-requisitos, variáveis, filas, migrations, execução, exemplos e testes no
+   "README da solução"; o `README.md` da raiz **é o enunciado** e não pode ser
+   editado. A decisão, tomada com o usuário, foi uma pasta de entrega
+   [`docs_desafio/`](../docs_desafio/README.md) com o README da solução e os dois
+   documentos finais.
 4. **✅ "pelo menos três processos independentes" (README §8 e §13.4) e
    "carteiras distintas simultaneamente" (§13.3) têm prova desde a Fase 10:**
    três processos do binário com pools e memórias próprios (medido em
@@ -78,17 +78,17 @@
 
 ---
 
-## 1. Objetivo — 🟡
+## 1. Objetivo — ✅
 
 > "oferecer uma API HTTP e um consumidor de mensagens que movimentem carteiras...
 > Demonstre que o resultado financeiro continua correto com várias instâncias em
 > execução e falhas entre as etapas do processamento."
 
-O **núcleo financeiro** está pronto e provado (domínio + schema + persistência +
-caso de uso). A **API HTTP** e o **consumidor** entram nas Fases 7 e 8, e a prova
-com várias instâncias na Fase 10. Enquanto isso, a garantia que o enunciado cobra
-("não pode gerar movimentação duplicada, saldo negativo ou perda de evento") já
-está implementada e testada no nível do caso de uso.
+O núcleo financeiro, a **API HTTP**, o **consumidor** e a prova com **três processos
+independentes** estão prontos e provados (Fases 1–10). A garantia que o enunciado
+cobra ("não pode gerar movimentação duplicada, saldo negativo ou perda de evento")
+é demonstrada no caso de uso, no banco e nos dois caminhos de entrada — HTTP e SQS —
+com a conferência final saldo × ledger.
 
 ## 2. Autenticação e autorização — ✅ Fase 7 (era eliminatório)
 
@@ -98,23 +98,23 @@ está implementada e testada no nível do caso de uso.
 | A identidade autenticada determina o `providerId` | ✅ o `providerId` sai do **token**; o corpo só pode confirmá-lo, e divergência responde **403 sem chamar o caso de uso** (teste unitário + integração) |
 | Provedores acessam só as próprias transações, inclusive em replay | ✅ no caso de uso e na borda: `:providerId` do path divergente ⇒ 403; operação alheia consultada pela própria rota ⇒ **404** (não 403, que confirmaria a existência); o replay devolve o resultado **daquele** provedor |
 | Operações de carteira restritas ao serviço interno | ✅ `POST /wallets`, `GET /wallets*`, `/reconciliation` e a leitura interna por id exigem role `internal`. Teste de integração prova **403 com zero efeito financeiro** (contagem de tabelas antes/depois) |
-| Acesso à mensageria controlado por credenciais e políticas do broker | ✅ o acesso é por credenciais do broker (`SQS_ACCESS_KEY_ID`/`SQS_SECRET_ACCESS_KEY`, com as de teste no compose) e as políticas da fila estão declaradas no provisionamento (FIFO, DLQ com `maxReceiveCount`). As validações de DOMÍNIO continuam no consumidor, como o §10 exige |
+| Acesso à mensageria controlado por credenciais e políticas do broker | ✅ **credenciais**: o cliente autentica no broker com `SQS_ACCESS_KEY_ID`/`SQS_SECRET_ACCESS_KEY` (estáticas no LocalStack, IAM em produção), e o provisionamento declara FIFO + DLQ + `maxReceiveCount`. ⚠️ **A política de acesso da fila (IAM) não é exercida no LocalStack** — limitação registrada no `ARCHITECTURE.md` §16. As validações de DOMÍNIO continuam no consumidor, como o §10 exige |
 | Escolha do IdP e modelo de permissões justificados no `ARCHITECTURE.md` | ✅ `ARCHITECTURE.md` §10 (era `[PLANEJADO]`): escolha do Keycloak, roles `internal`/`provider`, `provider_id` do token, duas classes de erro (401 x 503), cache/rotação de chave e as limitações registradas |
 | Rejeição de credenciais ausentes, inválidas ou expiradas | ✅ token ausente, malformado, expirado, `nbf` no futuro, emissor errado, audience errada, `kid` inexistente, assinatura de outra chave, `alg: none` e `alg: HS256` — 11 casos, cada um afirmando a causa exata |
 | IdP indisponível não pode gerar efeito financeiro | ✅ discovery/JWKS fora ⇒ **503** com `Retry-After`, e teste de integração confere saldo e ledger intactos |
 
-## 3. Ambiente de execução e falhas — 🟡
+## 3. Ambiente de execução e falhas — ✅
 
 | Situação que o enunciado exige suportar | Estado |
 | --- | --- |
 | Recebimento repetido por **HTTP** | ✅ replay por chave/idempotência, e o reenvio simultâneo é repetido e devolve o resultado persistido (provado com 12 disparos) |
 | Recebimento repetido por **SQS** | ✅ **Fase 8**: a inbox deduplica por `(consumer_name, messageId)` na MESMA transação do tratamento, com o hash do corpo distinguindo reentrega (mesmo hash) de conflito real (hash diferente). Provado contra o LocalStack: reentrega com o mesmo identificador e a mesma operação enviada duas vezes debitam **uma** vez |
-| Reversão que chega antes da transação referenciada | ✅ `PENDING_REFERENCE` persistida + evento + `202`, com `next_resolution_attempt_at` no futuro; a retomada é do worker (Fase 9) |
+| Reversão que chega antes da transação referenciada | ✅ `PENDING_REFERENCE` persistida + evento + `202`, com `next_resolution_attempt_at` no futuro; o worker de referências retoma com backoff e TTL (Fase 9), inclusive **após reinício** (T8) |
 | Processamento simultâneo de operações da mesma carteira | ✅ lock de linha + versão; provado (cenário do README e 12 disparos) |
-| Encerramento abrupto antes ou depois do commit | ✅ antes: rollback (nada fica — provado com a outbox quebrada); depois: o evento fica na outbox e o lease expira (worker é a Fase 9). **No consumo (Fase 8):** a mensagem cujo commit não aconteceu volta para a fila (visibilidade liberada), e a que commitou mas não foi removida é reconhecida pela inbox |
-| Publicação repetida de um evento | ✅ `eventId` estável na outbox; republicação com o mesmo id — o publisher é a Fase 9 |
+| Encerramento abrupto antes ou depois do commit | ✅ antes: rollback (nada fica — provado com a outbox quebrada); depois: o evento fica na outbox e o lease vence (T5/T6). **No consumo:** a mensagem cujo commit não aconteceu volta para a fila (visibilidade liberada), e a que commitou mas não foi removida é reconhecida pela inbox |
+| Publicação repetida de um evento | ✅ `eventId` estável na outbox; republicação com o mesmo id (provado em `TestQuedaEntrePublicacaoEMarkPublishedRepublicaComOMesmoEvento`) |
 | Indisponibilidade temporária do PostgreSQL | ✅ erros transitórios classificados (`55P03`, deadlocks, conexão) e repetidos até 3 vezes; esgotado ⇒ erro transitório (503 na borda) |
-| Indisponibilidade temporária do SQS | 🟡 **consumo** ✅ (o `Receive` que falha registra e espera; falha de tratamento adia por `ChangeMessageVisibility` com backoff exponencial). **Publicação** ⬜ Fase 9 |
+| Indisponibilidade temporária do SQS | ✅ **consumo**: o `Receive` que falha registra e espera, e a falha de tratamento adia por `ChangeMessageVisibility` com backoff. **Publicação**: falha vira `retry` com backoff e, esgotado, quarentena — o evento **não** se perde (`TestMetricasDaOutbox`, `TestPublicadorColocaEmQuarentenaAposEsgotarTentativas`) |
 
 ## 4. Stack — ✅ (com duas observações)
 
@@ -123,27 +123,27 @@ está implementada e testada no nível do caso de uso.
 | Go com versão no `go.mod` e no Dockerfile | ✅ (Fase 0 corrigiu o Dockerfile que não compilava) |
 | Go Modules versionados | ✅ `go.mod` + `go.sum` |
 | Uber Fx com `fx.Module`/`Provide`/`Invoke` | ✅ `internal/app/{app,modules}.go` — módulos `config`, `infra` (pool + Unit of Work + verificador OIDC + health checker), `usecase` (`appwagering.Service`), `auth` (autenticador + health checker) e `httpapi` (rotas, servidor, handlers) |
-| `fx.Lifecycle` com validação, cancelamento e shutdown | ✅ o HTTP (`OnStart` detecta erro de bind, `OnStop` faz `Shutdown` com prazo) e o **fechamento do pool** por `Lifecycle`, na ordem inversa do registro (servidor para antes, dependências fecham depois). **P7 resolvida**: `StopTimeout` vem de `HTTP_STOP_TIMEOUT`, validado contra o `ShutdownTimeout`. Shutdown dos workers entra nas Fases 8–9 |
+| `fx.Lifecycle` com validação, cancelamento e shutdown | ✅ o HTTP (`OnStart` detecta erro de bind, `OnStop` faz `Shutdown` com prazo), o consumidor, os laços (runner com prazo) e o **fechamento do pool** por `Lifecycle`, na ordem inversa do registro (servidor para antes, dependências fecham depois) — provado com `Start`/`Stop` reais (`TestCicloDeVidaFxComStartEStopReais`). **P7 resolvida**: o prazo vem de `HTTP_STOP_TIMEOUT`, validado contra a soma dos encerramentos |
 | HTTP (`net/http` ou roteador) | ✅ `chi` + middlewares (`RequestID`, `RealIP`, `AccessLog`, `Recoverer`, `Timeout`, `MaxBody`) — com a ordem corrigida (P2) |
 | IdP OIDC | ✅ Keycloak no compose **e middleware implementado** (`internal/infra/auth`): discovery, JWKS com cache/rotação, RS256, `iss`/`aud`/`exp`/`nbf` |
 | PostgreSQL | ✅ |
 | SQS com LocalStack | ✅ filas FIFO + DLQ + redrive provisionadas (`deploy/localstack/init-queues.sh`) |
 | Docker Compose | ✅ `postgres`, `keycloak`, `localstack`, `localstack-init`, `migrate`, `api` |
-| Migrations versionadas com aplicação **e reversão** documentadas | ✅ 3 migrations, `up`/`down`/`version` pelo `cmd/migrate`; a condição da reversão da 000002 está no próprio `.down.sql` |
+| Migrations versionadas com aplicação **e reversão** documentadas | ✅ **5 migrations** (`000001` a `000005`), com `up`/`down`/`version` pelo `cmd/migrate` — aplicadas e **revertidas** no ensaio da Fase 12 (banco descartável), e o caminho documentado no README da solução §5 |
 | `pgx` com SQL explícito, transações/locks/constraints verificáveis | ✅ documentado em `ARCHITECTURE.md` §1, §6 e §7 |
 | Biblioteca de banco, mapeamento de `Money` e delimitação da transação documentados | ✅ `ARCHITECTURE.md` §2 (Money), §6 (transação) e §17 (como validar) |
 | Domínio independente de Fx, HTTP, SQS e persistência | ✅ verificado com `go list -deps`: nenhum Fx, `net/http`, `chi`, `pgx` ou SDK da AWS. **Nuance honesta:** aparece `database/sql/driver` porque `github.com/google/uuid` implementa `sql.Scanner`/`driver.Valuer` — é o pacote de **interfaces**, não um driver; e o caso de uso (`app/wagering`) não importa `internal/infra` |
 
-## 5. Garantias obrigatórias — ✅ (6 de 8 com prova completa)
+## 5. Garantias obrigatórias — ✅ (8 de 8 com prova)
 
 | # | Garantia | Estado |
 | --- | --- | --- |
 | 1 | Dinheiro nunca em `float32`/`float64` | ✅ `int64` em unidades mínimas, `Money` sem aritmética de ponto flutuante, parsing por dígitos, JSON como **string** decimal. Há teste de estilo em `money` que recusa `float`, `math` e `strconv.ParseFloat`. **Nuance:** `float64` aparece em `internal/observability` (duração de log e buckets do Prometheus) — não é caminho monetário. O `PLANO.md` E3 dizia "grep vazio em `internal/`", e o certo é "vazio nos caminhos monetários" |
 | 2 | Idempotência persistente, sobrevive a reinício | ✅ índices únicos no banco + decisão de replay no caso de uso; provado com um `Service` e um Unit of Work **novos** devolvendo o resultado original |
 | 3 | Invariantes financeiras no banco, independentes de lock e da dedup do SQS | ✅ 29 CHECK, 4 FK, 2 UNIQUE, 3 índices únicos parciais, 5 triggers; 32 operações inválidas testadas e recusadas |
-| 4 | Evento só publicado depois do commit | ✅ os eventos entram na outbox **na mesma transação**; nada publica inline (o publisher é a Fase 9) |
+| 4 | Evento só publicado depois do commit | ✅ os eventos entram na outbox **na mesma transação** e o publisher publica **fora** dela, sempre antes de marcar (Fase 9); provado no caminho de saída (T6: 12 eventos → 12 mensagens) e na queda entre commit e publicação |
 | 5 | Ledger append-only | ✅ trigger que recusa `UPDATE`/`DELETE` + repositório sem método de alteração |
-| 6 | Carteiras independentes em paralelo; sem lock global | ✅ o lock é **de linha** (`SELECT ... FOR UPDATE` na carteira), não de tabela. 🟡 Falta a prova explícita de "carteiras distintas avançam juntas" (Fase 10) |
+| 6 | Carteiras independentes em paralelo; sem lock global | ✅ o lock é **de linha** (`SELECT ... FOR UPDATE` na carteira), não de tabela. Provado na Fase 10 (`TestT3CarteirasDistintasEmParaleloSemLockGlobal`: com a carteira A presa, B..F concluem em 14–34 ms e nenhum backend espera lock; A espera 408 ms) |
 | 7 | Sem lost update | ✅ provado: dois débitos concorrentes de 100 e 200 sobre 1000 terminam em **700** e versão 3 |
 | 8 | Unicidade, não negatividade e imutabilidade impostas pelo schema | ✅ |
 
