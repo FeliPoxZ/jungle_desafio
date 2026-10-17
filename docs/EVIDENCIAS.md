@@ -17,9 +17,11 @@
 | Esquema | versão 5 |
 
 ```powershell
-$env:GOMODCACHE='E:\jungleg\.gocache\mod'
-$env:GOCACHE='E:\jungleg\.gocache\build'
-$env:GOPATH='E:\jungleg\.gocache\gopath'
+# Cache do Go dentro do repositório (o global não era gravável nesta máquina;
+# o .gitignore exclui .gocache/). Números abaixo saíram deste ambiente.
+$env:GOMODCACHE="$PWD\.gocache\mod"
+$env:GOCACHE="$PWD\.gocache\build"
+$env:GOPATH="$PWD\.gocache\gopath"
 $env:TEST_DATABASE_URL='postgres://jungleg:jungleg@localhost:5432/jungle_test?sslmode=disable'
 $env:OIDC_ISSUER='http://localhost:8080/realms/jungleg'
 $env:OIDC_DISCOVERY_URL='http://localhost:8080/realms/jungleg'

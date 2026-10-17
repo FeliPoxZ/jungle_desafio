@@ -1721,13 +1721,15 @@ que funciona não ajuda quem vai manter.
 ## 17. Como validar tudo `[PRONTO]`
 
 ```powershell
-$env:GOMODCACHE='E:\jungleg\.gocache\mod'
-$env:GOCACHE='E:\jungleg\.gocache\build'
-$env:GOPATH='E:\jungleg\.gocache\gopath'
+# Se o cache global do Go não for gravável na sua máquina, use um cache dentro do
+# repositório (o .gitignore já exclui .gocache/):
+$env:GOMODCACHE="$PWD\.gocache\mod"
+$env:GOCACHE="$PWD\.gocache\build"
+$env:GOPATH="$PWD\.gocache\gopath"
 
 docker compose up -d postgres keycloak localstack
 $env:DATABASE_URL='postgres://jungleg:jungleg@localhost:5432/jungleg?sslmode=disable'
-.\bin\migrate.exe up
+go run ./cmd/migrate up
 
 go build ./... ; go vet ./... ; go vet -tags=integration ./...
 gofmt -l .\internal\ .\cmd\ .\migrations\ .\test\
