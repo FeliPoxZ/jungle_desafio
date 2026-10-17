@@ -10,12 +10,17 @@
 > 3. `docs/CONFORMIDADE_README.md` — o que do enunciado já está atendido, o que falta e em que fase
 > 4. `CONTEXTO.md` (raiz) — estado geral, ambiente, decisões congeladas, pendências
 > 5. `PLANO.md` §3 — checklist por fase
-> 6. `docs/evidencias/FASE_1.md` a `FASE_8.md` — provas do que já funciona
+> 6. `docs/evidencias/FASE_1.md` a `FASE_9.md` — provas do que já funciona
 > 7. `docs/LEDGER_VS_WALLET.md` — a distinção central do domínio financeiro
 >
 > **Não comece a codar sem ler as seções 3 e 3.5.**
 >
-> ⭐ **A próxima fase é a 10 (concorrência e recuperação: 3 instâncias, T1–T8).**
+> ⭐ **A próxima fase é a 10 (concorrência e recuperação: 3 processos independentes,
+> T1–T8).** O prompt de abertura dela está pronto em **`PROMPT_FASE_10.md`** —
+> autossuficiente, com o escopo do §8/§13 do README, os quatro blocos, os critérios
+> de aceite e as armadilhas de ambiente. Use-o como primeira mensagem da nova
+> conversa; este arquivo continua sendo o handoff completo.
+>
 > A Fase 9 está CONCLUÍDA: a outbox publica de verdade em `wallet-events.fifo`, o
 > worker de referências dá desfecho a `PENDING_REFERENCE`, o reaper retoma
 > `PENDING` e o runner supervisiona os três laços. Provas em
@@ -86,6 +91,7 @@ Publicação e laços (Fase 9): 38 unitários + 8 funções de integração.
 ### Histórico de commits (mais recente primeiro)
 
 ```
+3624557 docs(fase9): registra as evidencias, a arquitetura e a conformidade da Fase 9
 8c78384 test(fase9): prova as recuperacoes com LocalStack e PostgreSQL reais              ← FASE 9d
 45fffe2 feat(app): liga os lacos da fase 9 no Fx com supervisao e readiness honesto       ← FASE 9c
 212e02b feat(worker): adiciona o worker de referencias e o reaper de PENDING             ← FASE 9b
@@ -346,6 +352,23 @@ docker exec jungleg-localstack sh /etc/localstack/init/ready.d/init-queues.sh
 As filas esperadas: `wager-transactions.fifo`, `wager-transactions-dlq.fifo`,
 `wallet-events.fifo`, `wallet-events-dlq.fifo`.
 
+### 4.6. Três instâncias (o que a Fase 10 vai precisar)
+
+O README §8 exige **três processos independentes**, "cada um com suas próprias
+conexões e memória". O padrão já existe no teste do binário real
+(`internal/app/healthcheck_integration_test.go`: `compilarBinario`, `exec.Command`,
+`portaDeTeste`, `esperarPronto`), hoje com **um** processo. Para três:
+
+| Item | Detalhe |
+| --- | --- |
+| Portas | o compose publica **8081**; a suíte usa **18099**. Escolha uma faixa livre (ex.: 18091/18092/18093) e documente |
+| Banco | os três apontam para `jungle_test` (os testes TRUNCAM — nunca aponte para `jungleg`) |
+| Pool | `DB_MAX_CONNS` padrão 20 → 3 instâncias = 60 conexões no PostgreSQL de teste; baixe se precisar |
+| Filas | as mesmas do LocalStack; esvazie entre cenários e use nonce no `MessageDeduplicationId` |
+| Consumidor/workers | ligue por instância (`SQS_CONSUME_TRANSACTIONS`, `OUTBOX_ENABLED`, `REFERENCE_ENABLED`); nos cenários de número, deixe DESLIGADO para a asserção não ser poluída |
+| Encerramento | `t.Cleanup` com Kill/`Taskkill` no Windows; `docker stop`/SIGTERM no container (Linux) é a prova de sinal |
+| Timeout | a integração desta fase precisa de `-timeout 600s` (processos reais) |
+
 ---
 
 ## 5. DECISÕES TÉCNICAS JÁ CONGELADAS
@@ -568,6 +591,24 @@ worker.Runner           → supervisão + readiness + encerramento com prazo
 
 ---
 
+## 6d. LIÇÕES DA FASE 9 QUE A FASE 10 NÃO PODE REPETIR
+
+A Fase 10 é de **verificação** (3 processos, T1–T8). O que a Fase 9 ensinou, e que
+vale para os testes de concorrência:
+
+| Lição | Como aplicar na Fase 10 |
+| --- | --- |
+| **Teste de integração diz QUE está errado; teste de unidade com o dado REAL diz ONDE** | quando um cenário de concorrência falhar, capture o corpo/estado exato e reproduza em unitário antes de mexer no código |
+| **A régua erra antes do código** (6 vezes até aqui) | antes de acusar o `SELECT ... FOR UPDATE` ou o índice único, releia a asserção: contagem de linhas, versão da carteira, saldo esperado, ordem das chamadas |
+| **Testar contra o banco real revela o que o dublê esconde** (defeitos 37 e 38) | os 8 cenários são com PostgreSQL/Keycloak/LocalStack reais; nenhum dublê nas garantias |
+| **Nada de `time.Sleep` mágico** | barreira (channel) para simultaneidade, `esperarAtende` (polling com prazo) para convergência, `t.Cleanup` para encerrar processo |
+| **Processo real ≠ goroutine** | 3 processos com `HTTP_ADDR` distintos, pool e memória próprios; o `README §8` pede exatamente isso |
+| **O log do processo é o diagnóstico** | `LOG_LEVEL=warn` na saída normal, mas **despeje o log do processo na falha** (na Fase 8 o log em `io.Discard` escondeu "mensagens=0 em laço") |
+| **Resíduo de fila quebra o próximo teste** | `esvaziarFila` no começo E no fim, nonce no `MessageDeduplicationId`, um `MessageGroupId` por cenário |
+| **`Set-Content` corrompe acento** (aconteceu no bloco 9a) | sempre a ferramenta de edição ou `[System.IO.File]::WriteAllText` com `UTF8Encoding($false)` |
+
+---
+
 ## 7. PENDÊNCIAS CONHECIDAS
 
 Do `CONTEXTO.md` §4: **P1 a P5 e P7 foram resolvidas na Fase 7** (P1 `-health-check`,
@@ -621,10 +662,11 @@ corrigida (defeito 21).
 
 ## 8. CHECKLIST DE ARRANQUE PARA A NOVA CONVERSA (Fase 10)
 
-> ⭐ **A Fase 9 está concluída.** O prompt de abertura da Fase 10 deve cobrir os 8
-> cenários do README §13 (T1–T8) e a exigência do §8: "as garantias devem ser
-> demonstradas com pelo menos **três processos independentes**, cada um com suas
-> próprias conexões e memória".
+> ⭐ **O prompt de abertura da Fase 10 está em `PROMPT_FASE_10.md`** — autossuficiente,
+> com o escopo do §8/§13 do README, os quatro blocos (10a infraestrutura
+> multi-instância, 10b T1/T2/T3, 10c T5/T8, 10d fechamento), os critérios de aceite,
+> as armadilhas de ambiente e o formato da primeira resposta esperada. Use-o como
+> primeira mensagem; o checklist abaixo é o resumo operacional.
 
 - [ ] Ler `README.md` (**§8 concorrência, §13 verificação, §14 critérios**), `ARCHITECTURE.md` (§6 locks, §8 outbox, §11 SQS, §15 defeitos, §16 limitações), `docs/evidencias/FASE_9.md` e `PLANO.md` §3 (Fase 10)
 - [ ] **T1** mesma aposta 50× em paralelo (HTTP e SQS) → um débito, replays devolvem o mesmo resultado
