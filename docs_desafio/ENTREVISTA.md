@@ -828,6 +828,42 @@ Ligado à §16 do `ARCHITECTURE.md` e à seção final de `docs/CONFORMIDADE_REA
 - **Dashboard exercitado em CI.** A definição está versionada e validada (`promtool` e
   inspeção do JSON), mas não há Grafana no compose por decisão registrada: o compose é o
   artefato que precisa subir limpo, e o painel sobe com dois `docker run` documentados (§16).
-- **README da solução e documento de sistema.** A decisão de **onde** eles vivem está
-  registrada como pendência em `docs/CONFORMIDADE_README.md` (⚠️ 3); o enunciado ocupa o
-  nome `README.md` e não pode ser editado.
+- **README da solução.** A decisão de **onde** ele vive foi tomada com o usuário: esta
+  pasta, `docs_desafio/` (o enunciado ocupa o nome `README.md` na raiz e não pode ser
+  editado). O arquivo é o [`README.md`](README.md) desta pasta.
+
+---
+
+## Anexo — as 23 interpretações adotadas (decore o "por quê", não a lista)
+
+O enunciado deixou margem em 23 pontos. Nenhuma escolha contraria o `README.md`; todas
+estão registradas em `docs/CONFORMIDADE_README.md`. Se o entrevistador perguntar "isso
+estava no enunciado?", a resposta honesta é: **o enunciado permitia, e eu escolhi assim
+por este motivo**.
+
+| # | Interpretação | Por quê |
+| ---: | --- | --- |
+| 1 | Referência em `BET`/`WIN`/`LOSS` é informativa | O §7 diz "pode informar"; bloquear um `WIN` porque a aposta referenciada não chegou atrasaria o pagamento |
+| 2 | `WALLET_PLAYER_MISMATCH` e `TRANSACTION_NOT_FOUND` são códigos novos | O §7 exige código estável e documentado, não uma lista fechada |
+| 3 | Rejeição de negócio é desfecho, não `error` | O status HTTP é decisão da borda; o caso de uso devolve um fato auditável |
+| 4 | Operação de outro provedor responde **não encontrado** | `403` confirmaria que a operação existe — vazamento entre provedores |
+| 5 | Replay da abertura devolve a carteira **como está** | O recurso é mutável; o replay de operação devolve o resultado original, que é fato imutável |
+| 6 | Nunca existe `PENDING` commitado para operação externa | O §6.3 permite conclusão síncrona; o `PENDING` durável é só `PENDING_REFERENCE` |
+| 7 | `sequence` global na outbox, não por carteira | A ordem que importa é dentro do grupo (a carteira), e a global a preserva |
+| 8 | `POST /wallets` sem header de idempotência | O §9 não define um; a chave é derivada de `(playerId, moeda)` e a do cliente é usada como veio |
+| 9 | Na rejeição (422) o corpo é o do desfecho | Rejeição é fato auditável, não erro de transporte; o contrato continua distinguível |
+| 10 | `GET /wagering/transactions/{id}` exige role `internal` | O identificador é interno; o provedor consulta pela rota dele |
+| 11 | Token do serviço interno não é aceito nas rotas de provedor | Sem `provider_id` não existe provedor autorizado |
+| 12 | Identidade durável da mensagem = `MessageId` do broker | O produtor não conhece o id antes do envio; o campo do envelope é opcional e conferido |
+| 13 | A DLQ recebe o erro permanente de forma **explícita** | Numa FIFO, a mensagem envenenada que gira até o `maxReceiveCount` bloqueia o grupo inteiro |
+| 14 | Erro não classificável é retentável | A DLQ é o fim da linha; o `maxReceiveCount` já limita |
+| 15 | "Não republicar mais" é **quarentena** | Nada é apagado nem marcado como publicado; o atraso da outbox denuncia o evento |
+| 16 | `MessageDeduplicationId` por **tentativa** | Com o `eventId`, o broker engoliria a republicação dentro de 5 min e o §11 deixaria de valer |
+| 17 | Tentar antes de expirar | Se a referência chegou, a operação conclui mesmo depois do TTL — rejeitar seria destruir informação |
+| 18 | `FAILED` não emite `WagerTransactionRejected` | O §11 define o evento como rejeição de **negócio**; dado inconsistente não é decisão de negócio |
+| 19 | As tentativas de referência incluem a do intake | A operação que entra em `PENDING_REFERENCE` grava `attempt = 1`; o default (20) e o TTL por idade decidem na prática |
+| 20 | "Três processos" são três processos do binário | O §8 pede conexões e memória próprias — PID, pool e memória próprios; o container entra na prova de SIGTERM |
+| 21 | O T4 do `PLANO.md` não é um teste separado | É a rodada consolidada (T1–T3, T5–T8 e a conferência com três processos) |
+| 22 | O T6 não assere a ordem com `OUTBOX_BATCH_SIZE=1` | Nesse arranjo dois publishers podem trocar a ordem; a invariante é a partição (12→12, sem perda) |
+| 23 | O endereço do JWKS é configurável | O Keycloak anuncia o nome público, inalcançável de dentro do container; `OIDC_JWKS_URL` muda **onde** busca, não afrouxa a validação |
+
