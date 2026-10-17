@@ -164,7 +164,7 @@ func TestT5QuedaEntreCommitEDeleteReentregaReconhecida(t *testing.T) {
 	fila.esvaziarFila(t, fila.urlTxn)
 	fila.esvaziarFila(t, fila.urlDLQ)
 	t.Cleanup(func() {
-		fila.esvaziarFila(t, fila.urlTxn)
+		fila.drenar(t, fila.urlTxn)
 		fila.esvaziarFila(t, fila.urlDLQ)
 	})
 
@@ -185,6 +185,15 @@ func TestT5QuedaEntreCommitEDeleteReentregaReconhecida(t *testing.T) {
 	alvo := ids.WalletID(carteira)
 
 	embrulhada, pararConsumidor := consumidorQueEnvolve(t, fila)
+
+	// Quantas mensagens já estavam EM VOO antes deste cenário.
+	//
+	// A fila é compartilhada com os outros testes do pacote, e um teste anterior
+	// pode ter deixado mensagem in-flight (o `VisibilityTimeout` de 60s a mantém
+	// invisível). A asserção do estado da queda é sobre a mensagem DESTE teste, e
+	// por isso mede o DELTA — exigir "a fila tem exatamente 1 em voo" fazia o T5
+	// falhar por resíduo alheio (aconteceu na primeira rodada da suíte inteira).
+	_, emVooAntes := fila.atributosDaFila(t, fila.urlTxn)
 
 	corpo := mensagemParaOperacao("provider-a", "txn-t5", "provider-a:txn-t5",
 		jogador, carteira, "round-1", "fortune-chimp", "BET", "25.00")
@@ -219,9 +228,13 @@ func TestT5QuedaEntreCommitEDeleteReentregaReconhecida(t *testing.T) {
 	}
 
 	visiveis, invisiveis := fila.atributosDaFila(t, fila.urlTxn)
-	if visiveis != 0 || invisiveis != 1 {
-		t.Fatalf("fila: visíveis=%d invisíveis=%d, quer 0 e 1 (a mensagem ainda está lá, em voo)",
-			visiveis, invisiveis)
+	if visiveis != 0 {
+		t.Fatalf("fila com %d mensagem(ns) DISPONÍVEL(is) para entrega: a mensagem da queda não devia estar visível", visiveis)
+	}
+	if invisiveis != emVooAntes+1 {
+		t.Fatalf("fila: em voo=%d, esperado %d (as %d que já estavam + a da queda); a mensagem "+
+			"da queda não pode ter sido removida nem liberada",
+			invisiveis, emVooAntes+1, emVooAntes)
 	}
 
 	// (4) A reentrega: a mensagem volta sozinha quando o `VisibilityTimeout`
@@ -707,6 +720,24 @@ func (s *sqsDeTeste) atributosDaFila(t *testing.T, queueURL string) (visiveis, i
 	visiveis, _ = strconv.Atoi(saida.Attributes[string(types.QueueAttributeNameApproximateNumberOfMessages)])
 	invisiveis, _ = strconv.Atoi(saida.Attributes[string(types.QueueAttributeNameApproximateNumberOfMessagesNotVisible)])
 	return visiveis, invisiveis
+}
+
+// drenar esvazia a fila INCLUSIVE as mensagens em voo.
+//
+// `esvaziarFila` só remove o que está VISÍVEL: uma mensagem recebida e não
+// apagada continua invisível pelo `VisibilityTimeout` e volta depois, no meio do
+// cenário seguinte. Como `abrirSQS` deixa o prazo em 2s no ambiente de teste,
+// esperar o prazo vencer e drenar de novo custa segundos — e é o que impede um
+// teste de falhar por resíduo de outro (aconteceu na primeira rodada da suíte
+// inteira da Fase 10).
+func (s *sqsDeTeste) drenar(t *testing.T, queueURL string) {
+	t.Helper()
+
+	esperarAtende(t, "a fila drenar (inclusive mensagens em voo)", 60*time.Second, func() bool {
+		s.esvaziarFila(t, queueURL)
+		visiveis, emVoo := s.atributosDaFila(t, queueURL)
+		return visiveis == 0 && emVoo == 0
+	})
 }
 
 // ajustarVisibilidadeDaFila muda o `VisibilityTimeout` da fila e devolve a função

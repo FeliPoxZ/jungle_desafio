@@ -106,6 +106,28 @@ func abrirSQS(t *testing.T) *sqsDeTeste {
 		t.Skipf("LocalStack/SQS não disponível (%v): pulando testes de consumo", err)
 	}
 
+	// O `VisibilityTimeout` da FILA vai para 2s no ambiente de TESTE.
+	//
+	// A fila entregue pelo compose usa 60s, que é o valor certo em produção. Nos
+	// testes, porém, a suíte compartilha UMA fila: uma mensagem recebida e não
+	// apagada (resíduo de um cenário, ou de uma queda de propósito) fica invisível
+	// por um minuto e reaparece no meio do teste SEGUINTE — na Fase 10 isso
+	// apareceu como `SQSMensagemProcessaEMovimentaCarteira` falhando por "a fila
+	// ainda tem 1 mensagem" e como uma reentrega alheia no T5. Com 2s, o resíduo
+	// volta logo e `drenar` o remove antes do cenário começar.
+	//
+	// É idempotente e não muda o que se prova: os consumidores de produção TÊM o
+	// próprio `SQS_VISIBILITY_TIMEOUT` para o retry, e a invisibilidade inicial é
+	// só uma espera.
+	if _, err := api.SetQueueAttributes(ctx, &awssqs.SetQueueAttributesInput{
+		QueueUrl: &urlTxn,
+		Attributes: map[string]string{
+			string(types.QueueAttributeNameVisibilityTimeout): "2",
+		},
+	}); err != nil {
+		t.Skipf("não foi possível ajustar o visibility timeout da fila de teste: %v", err)
+	}
+
 	return &sqsDeTeste{cfg: cfg, api: api, urlTxn: urlTxn, urlDLQ: urlDLQ}
 }
 

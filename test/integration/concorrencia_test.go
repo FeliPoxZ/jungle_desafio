@@ -265,7 +265,9 @@ func TestT1MesmaOperacao50VezesPelaFila(t *testing.T) {
 	fila.esvaziarFila(t, fila.urlTxn)
 	fila.esvaziarFila(t, fila.urlDLQ)
 	t.Cleanup(func() {
-		fila.esvaziarFila(t, fila.urlTxn)
+		// `drenar` (e não `esvaziarFila`): as 50 entregas podem deixar mensagem em
+		// voo, e o teste seguinte não pode herdá-la.
+		fila.drenar(t, fila.urlTxn)
 		fila.esvaziarFila(t, fila.urlDLQ)
 	})
 
@@ -288,11 +290,18 @@ func TestT1MesmaOperacao50VezesPelaFila(t *testing.T) {
 		fila.enviar(t, corpo, fmt.Sprintf("fase10-t1-%d", i))
 	}
 
-	// Convergência observada no BANCO e na FILA (o consumo é assíncrono): o saldo
-	// certo e a fila vazia significam que as 50 foram tratadas e removidas.
+	// Convergência observada no BANCO e nos ATRIBUTOS da fila (o consumo é
+	// assíncrono).
+	//
+	// Nada de `mensagensNaFila` aqui: aquela leitura RECEBE a mensagem sem
+	// apagá-la, e as que ela recebe ficam em voo pelo `VisibilityTimeout` — o que
+	// faria este teste sujar a fila para os seguintes (foi a origem de uma falha
+	// de resíduo no T5). `atributosDaFila` só LÊ contadores.
 	alvo := ids.WalletID(carteira)
 	esperarAtende(t, "as 50 entregas serem tratadas", 120*time.Second, func() bool {
-		return saldoNoBanco(t, alvo) == 97500 && fila.mensagensNaFila(t, fila.urlTxn) == 0
+		processadas, _ := statusDaInbox(t)
+		visiveis, _ := fila.atributosDaFila(t, fila.urlTxn)
+		return processadas == entrega && visiveis == 0 && saldoNoBanco(t, alvo) == 97500
 	})
 
 	// Um débito, uma linha, versão 2.
