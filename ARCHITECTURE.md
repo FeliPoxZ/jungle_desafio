@@ -1496,32 +1496,63 @@ nesta fase de propósito: o README §11 pede publicação, e o consumidor de eve
 
 ---
 
-## 12. Observabilidade `[PRONTO]` — Fases 7–9
+## 12. Observabilidade `[PRONTO]` — Fases 7–11
 
 `[PRONTO]` log estruturado JSON com `correlationId`/`requestId` automáticos,
 redação de dado sensível, e métricas Prometheus (`jungleg_*`).
 
-**As 12 métricas do README §12 estão emitidas** (4 na borda HTTP, 3 no consumo,
-5 nos laços desta fase):
+**As 12 métricas do README §12 estão emitidas, e cada uma tem um teste que dispara
+o gatilho real e lê o valor em `/metrics`** (Fase 11). Antes disso havia teste do
+MECANISMO (`ObserveOperation` incrementa o contador) e nenhum da EMISSÃO — foi
+assim que `wager_transaction_conflicts_total` ficou sem emissor nenhum (defeito 42)
+e que o caminho SQS ficou sem `wager_operations_total` por uma fase inteira
+(defeito 34).
 
-| Métrica | Quem emite | Para que serve |
-| --- | --- | --- |
-| `wager_operations_total{kind,status}` | HTTP e SQS | resultado por tipo e status |
-| `wager_operation_duration_seconds{kind,status}` | HTTP e SQS | latência de processamento |
-| `wager_idempotent_replays_total` | HTTP | duplicatas (replay por chave) |
-| `wager_reconciliation_divergences_total` | HTTP | divergência de reconciliação |
-| `wager_retries_total{stage}` | SQS e laços | retries (`sqs_consume`, `outbox_claim`, `outbox_publish`, `outbox_mark`, `reference_claim`, `reaper_scan`, `worker_<laço>`) |
-| `wager_dlq_messages_total` | SQS | mensagens que foram para a DLQ |
-| `wager_inbox_duplicates_total` | SQS | reentregas reconhecidas pela inbox |
-| `wager_transaction_conflicts_total` | caso de uso | conflitos de concorrência |
-| **`wager_outbox_publish_total{result}`** | publicador | resultado da publicação (`success`/`retry`/`failed`) |
-| **`wager_outbox_pending_age_seconds`** | publicador (`PendingStats`) | **atraso da outbox**: idade do evento pendente mais antigo |
-| **`wager_outbox_publish_attempts`** | publicador | distribuição de tentativas até publicar |
-| **`wager_reference_resolution_total{result}`** | worker de referências (`resolvida`/`pendente`/`rejeitada`/`ignorada`) e reaper (`reaper_*`) | desfecho da resolução de referência |
+| Métrica | Quem emite | Para que serve | Teste que prova (Fase 11) |
+| --- | --- | --- | --- |
+| `wager_operations_total{kind,status}` | HTTP (`handlers.go`) e SQS (`consumer.go`) | resultado por tipo e desfecho | `TestMetricaOperacoesPorHTTP`, `TestMetricaOperacoesPelaFila` |
+| `wager_operation_duration_seconds{kind,status}` | HTTP e SQS | latência de processamento (p50/p95/p99) | os mesmos dois, com asserção de `_count`, `_sum` e dos 11 buckets |
+| `wager_idempotent_replays_total` | HTTP | duplicatas (replay por chave) | `TestMetricaReplayIdempotente` |
+| `wager_reconciliation_divergences_total` | HTTP | divergência de reconciliação | `TestMetricaReconciliacaoDivergente` |
+| `wager_retries_total{stage}` | consumo (`sqs_receive`, `sqs_consume`, `sqs_publish`), publicador (`outbox_claim`, `outbox_mark`), referências (`reference_claim`), reaper (`reaper_scan`), runner (`worker_<laço>`) | retentativas por etapa | `TestMetricaRetryDaEtapa*` em `internal/consumer` e `internal/worker` |
+| `wager_dlq_messages_total` | SQS | mensagens que foram para a DLQ | `TestMetricaMensagemParaDLQ` |
+| `wager_inbox_duplicates_total` | SQS | reentregas reconhecidas pela inbox | `TestMetricaDuplicataDaInbox` |
+| `wager_transaction_conflicts_total` | caso de uso (`Service.comRetentativa`, via `ports.ConflictCounter`) | transações repetidas por conflito/transição | `TestMetricaConflitoDeTransacao`, `TestConflitoDeUnicidadeERepetidoEContado`, `TestFalhaTransitoriaERepetida` |
+| `wager_outbox_publish_total{result}` | publicador | resultado da publicação (`success`/`retry`/`failed`) | `TestMetricasDaOutbox`, `TestPublicadorNaoMarcaPublicadoQuandoAPublicacaoFalha` |
+| `wager_outbox_pending_age_seconds` | publicador (`PendingStats`) | **atraso da outbox**: idade do evento pendente mais antigo | `TestMetricasDaOutbox` |
+| `wager_outbox_publish_attempts` | publicador | distribuição de tentativas até publicar | `TestMetricasDaOutbox` |
+| `wager_reference_resolution_total{result}` | worker de referências (`resolvida`/`pendente`/`rejeitada`/`ignorada`) e reaper (`reaper_*`) | desfecho da resolução de referência | `TestMetricaResolucaoDeReferencia` |
+
+### O que a Fase 11 mudou nas métricas
+
+| Correção | Motivo |
+| --- | --- |
+| `wager_transaction_conflicts_total` passou a ser emitida no ponto onde a transação é repetida (defeito 42) | Ela existia registrada e **nunca saía de zero**: o `IncConflict` só era chamado pelo teste do mecanismo. Agora o caso de uso conta cada repetição por conflito/transição, através de uma interface de um método (`ports.ConflictCounter`) — sem importar Prometheus |
+| Caminho HTTP passou a usar `kind="BET"`, `status="PROCESSED"` (defeito 43) | Antes o label `kind` recebia o STATUS e o `status` recebia o código HTTP (`2xx_201`), enquanto o caminho SQS usava `kind=BET`/`status=PROCESSED`. O MESMO nome de métrica tinha dois significados para o mesmo label; somar por `kind` num painel misturava tipo e desfecho |
+| Cardinalidade virou asserção (`TestMetricasSemLabelsDeAltaCardinalidade`) | A regra "label só com valor de baixa cardinalidade, nunca identificador" estava escrita em comentário. Agora um `walletId` como label reprova o teste |
+
+**Semântica dos contadores** (para o painel não mentir): `operations_total` conta
+ATENDIMENTOS — uma linha por requisição/mensagem atendida, inclusive replay, que é
+destacado em `idempotent_replays_total`; `transaction_conflicts_total` conta
+REPETIÇÕES da transação (a terceira tentativa que falha não é conflito tratado, é o
+erro que sobe).
 
 O atraso da outbox é medido a cada 15s (não a cada ciclo) e o publicador loga
 `outbox_atrasada` (WARN) quando o pendente mais antigo é mais velho que um lease
 inteiro. `/health/ready` passou a incluir a dependência **`workers`**.
+
+### Identificadores no log (README §12)
+
+| Caminho | Linha de log | Identificadores |
+| --- | --- | --- |
+| HTTP | `operacao_concluida` / `operacao_rejeitada` | `correlationId`, `requestId`, `transactionId`, `walletId`, `providerId` |
+| SQS | `sqs_mensagem_processada` | `correlationId` (= `MessageId` da entrega), `messageId`, `transactionId`, `walletId`, `providerId` |
+| Retomada | `reference_resolvida` / `_ainda_pendente` / `_rejeitada` | `correlationId` (da coluna `correlation_id`), `transactionId`, `walletId`, `providerId` |
+| Outbox | `outbox_evento_publicado` | `eventId`, `eventType`, `aggregateId` (= `walletId`) |
+
+O valor monetário **nunca** entra no log; o que entra é o `failureCode`, o
+`status` e, na divergência de reconciliação, os valores em unidades mínimas
+(`storedMinor`/`calculatedMinor`) — número de conferência, não payload.
 
 ---
 

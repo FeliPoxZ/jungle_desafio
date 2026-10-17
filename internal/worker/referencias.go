@@ -150,6 +150,17 @@ func (w *ReferenceWorker) RetomarVencidas(ctx context.Context) (int, error) {
 func (w *ReferenceWorker) retomarUma(ctx context.Context, tx *wagerdomain.WagerTransaction, agora time.Time) {
 	inicio := time.Now()
 
+	// A correlação ORIGINAL da operação acompanha a retomada (migration 000005).
+	//
+	// Sem isto, a linha que conta o desfecho de uma referência minutos depois —
+	// em outro processo — sairia com o `correlationId` vazio, e o README §12
+	// deixaria de valer justamente no caminho que ele mais serve para investigar:
+	// "o REFUND da rodada X resolveu?". A transação guarda o valor desde a
+	// chegada; aqui ele volta para o contexto e é injetado pelo handler de log.
+	if corr := tx.CorrelationID(); corr != "" {
+		ctx = observability.WithCorrelationID(ctx, corr)
+	}
+
 	// A tentativa que ACABOU de ser reivindicada é a próxima da linha. O backoff
 	// é calculado sobre o número de falhas até aqui, e não sobre o valor lido do
 	// banco depois da gravação: o valor do processo é o que descreve ESTA rodada.

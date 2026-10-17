@@ -32,17 +32,30 @@ type ambiente struct {
 	uow       *uowMemoria
 	relogio   *relogioFixo
 	carteiras int
+
+	// conflitos é o contador de teste ligado ao serviço: ele prova a EMISSÃO da
+	// métrica `transaction_conflicts_total`, que até a Fase 11 existia e nunca
+	// era incrementada (defeito 42).
+	conflitos *contadorConflitos
 }
+
+// contadorConflitos é o dublê do contador: em produção quem conta é
+// `observability.Metrics`, atrás da interface `ports.ConflictCounter`.
+type contadorConflitos struct{ total int }
+
+func (c *contadorConflitos) IncConflict() { c.total++ }
 
 func novoAmbiente() *ambiente {
 	estado := novoEstado()
 	uow := &uowMemoria{estado: estado}
 	relogio := novoRelogio()
+	conflitos := &contadorConflitos{}
 	return &ambiente{
-		servico: appwagering.New(uow, relogio, &idsSequenciais{}),
-		estado:  estado,
-		uow:     uow,
-		relogio: relogio,
+		servico:   appwagering.New(uow, relogio, &idsSequenciais{}, conflitos),
+		estado:    estado,
+		uow:       uow,
+		relogio:   relogio,
+		conflitos: conflitos,
 	}
 }
 
@@ -726,6 +739,11 @@ func TestFalhaTransitoriaERepetida(t *testing.T) {
 	if a.uow.chamadas != 2 {
 		t.Fatalf("execuções = %d, esperado 2 (uma que falhou e uma que concluiu)", a.uow.chamadas)
 	}
+	// A repetição ACONTECEU, então a métrica de conflito precisa ter contado
+	// exatamente uma vez (defeito 42: a métrica existia e nunca saía de zero).
+	if a.conflitos.total != 1 {
+		t.Fatalf("conflitos contados = %d, esperado 1", a.conflitos.total)
+	}
 	exigirSaldo(t, a, w, 97500)
 	// E o lançamento é UM só: a tentativa que falhou não gravou nada.
 	exigirLancamentos(t, a, "DEBIT 25.00")
@@ -747,6 +765,34 @@ func TestRetentativaEsgotadaDevolveErroTransitorio(t *testing.T) {
 	if a.uow.chamadas != 3 {
 		t.Fatalf("execuções = %d, esperado 3 (o teto)", a.uow.chamadas)
 	}
+	// Duas repetições e uma desistência: o contador conta as REPETIÇÕES, não as
+	// tentativas — a última não é conflito tratado, é o erro que sobe.
+	if a.conflitos.total != 2 {
+		t.Fatalf("conflitos contados = %d, esperado 2", a.conflitos.total)
+	}
 	exigirSaldo(t, a, w, 100000)
 	exigirLancamentos(t, a)
+}
+
+// TestConflitoDeUnicidadeERepetidoEContado cobre o OUTRO motivo de repetição: a
+// violação de unicidade (alguém chegou primeiro), que o serviço trata igual a
+// falha transitória — repetir a transação inteira e decidir na segunda passada.
+func TestConflitoDeUnicidadeERepetidoEContado(t *testing.T) {
+	a := novoAmbiente()
+	w := a.abrirCarteira("1000.00")
+	a.uow.falharSempreConflito = true
+
+	err := falhar(t, a, pedido(w, wagerdomain.KindBet, "25.00"))
+
+	if !ports.IsConflict(err) {
+		t.Fatalf("o erro precisa continuar classificável como conflito: %v", err)
+	}
+	// Duas repetições, e a terceira tentativa sobe com o conflito original.
+	if a.conflitos.total != 2 {
+		t.Fatalf("conflitos contados = %d, esperado 2", a.conflitos.total)
+	}
+	if a.uow.chamadas != 3 {
+		t.Fatalf("execuções = %d, esperado 3", a.uow.chamadas)
+	}
+	exigirSaldo(t, a, w, 100000)
 }

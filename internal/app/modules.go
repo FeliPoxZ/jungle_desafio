@@ -109,7 +109,13 @@ func usecaseModule() fx.Option {
 		fx.Provide(func() clock.System { return clock.System{} }),
 		fx.Provide(func() ports.Clock { return clock.System{} }),
 		fx.Provide(func() idgen.Generator { return idgen.New() }),
-		fx.Provide(appwagering.New),
+		// O contador de conflitos (defeito 42) entra AQUI, na composição: o caso
+		// de uso recebe uma interface de um método (`ports.ConflictCounter`) e
+		// continua sem conhecer Prometheus. `*observability.Metrics` a satisfaz
+		// estruturalmente — nenhum adaptador é necessário.
+		fx.Provide(func(uow ports.UnitOfWork, relogio ports.Clock, gerador idgen.Generator, metricas *observability.Metrics) *appwagering.Service {
+			return appwagering.New(uow, relogio, gerador, metricas)
+		}),
 	)
 }
 

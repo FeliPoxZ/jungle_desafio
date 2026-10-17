@@ -142,6 +142,27 @@ func pedirToken(base, clientID, segredo string) (string, error) {
 func apiDeTeste(t *testing.T) *httptest.Server {
 	t.Helper()
 
+	servidor, _ := apiDeTesteCom(t, servico, nil)
+	return servidor
+}
+
+// apiDeTesteCom sobe a borda HTTP com um caso de uso e um registry de métricas
+// ESCOLHIDOS pelo teste.
+//
+// # Por que o registry é devolvido, e não recriado
+//
+// Até a Fase 11 esta função criava DOIS `observability.NewMetrics()`: um para o
+// roteador (que serve `/metrics`) e outro para os handlers (que incrementam). O
+// endpoint exposto lia um registry que ninguém alimentava, e qualquer teste que
+// somasse as métricas veria zero — a régua errada, não o código: em produção o
+// Fx injeta a MESMA instância nos dois. O helper agora faz o mesmo.
+func apiDeTesteCom(t *testing.T, casoDeUso httpapi.WageringService, metricas *observability.Metrics) (*httptest.Server, *observability.Metrics) {
+	t.Helper()
+
+	if metricas == nil {
+		metricas = observability.NewMetrics()
+	}
+
 	cfg := &config.Config{
 		Env: "test",
 		HTTP: config.HTTPConfig{
@@ -170,20 +191,20 @@ func apiDeTeste(t *testing.T) *httptest.Server {
 	autenticador := auth.NewAutenticador(verificador, observability.DiscardLogger())
 
 	logger := observability.DiscardLogger()
-	rotas := httpapi.NewRouter(cfg, logger, observability.NewMetrics(), nil)
+	rotas := httpapi.NewRouter(cfg, logger, metricas, nil)
 
 	handlers := httpapi.NewHandlers(httpapi.HandlersDeps{
-		Service:       servico,
+		Service:       casoDeUso,
 		Routes:        rotas,
 		Authenticator: autenticador,
 		Logger:        logger,
-		Metrics:       observability.NewMetrics(),
+		Metrics:       metricas,
 	})
 	handlers.RegistrarRotas()
 
 	servidor := httptest.NewServer(rotas.Base)
 	t.Cleanup(servidor.Close)
-	return servidor
+	return servidor, metricas
 }
 
 // ---------------------------------------------------------------------------
@@ -1020,10 +1041,13 @@ func TestHTTPIdPForaDoArResponde503SemEfeito(t *testing.T) {
 
 	cfg := &config.Config{Env: "test", HTTP: config.HTTPConfig{RequestTimeout: 5 * time.Second, MaxBodyBytes: 1 << 20}}
 	logger := observability.DiscardLogger()
-	rotas := httpapi.NewRouter(cfg, logger, observability.NewMetrics(), nil)
+	// Uma instância de métricas para o roteador E para os handlers (o mesmo
+	// cuidado do `apiDeTesteCom`).
+	metricas := observability.NewMetrics()
+	rotas := httpapi.NewRouter(cfg, logger, metricas, nil)
 	handlers := httpapi.NewHandlers(httpapi.HandlersDeps{
 		Service: servico, Routes: rotas, Authenticator: autenticador,
-		Logger: logger, Metrics: observability.NewMetrics(),
+		Logger: logger, Metrics: metricas,
 	})
 	handlers.RegistrarRotas()
 

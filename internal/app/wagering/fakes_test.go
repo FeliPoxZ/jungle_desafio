@@ -91,6 +91,7 @@ type uowMemoria struct {
 	// falhas injetadas, para provar rollback e retentativa.
 	falhaTransitoriaEm      int // número da chamada de Run que falha (0 = nunca)
 	falharSempreTransitorio bool
+	falharSempreConflito    bool
 	chamadas                int
 	falhaOutbox             error
 
@@ -106,6 +107,10 @@ func (u *uowMemoria) Run(ctx context.Context, fn func(context.Context, ports.Rep
 	u.chamadas++
 	if u.falharSempreTransitorio || (u.falhaTransitoriaEm > 0 && u.chamadas == u.falhaTransitoriaEm) {
 		return ports.ErrTransient
+	}
+	if u.falharSempreConflito {
+		// Conflito de unicidade como o banco devolve: alguém chegou primeiro.
+		return ports.ErrConflict
 	}
 
 	rascunho := u.estado.clone()

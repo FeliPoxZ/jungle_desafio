@@ -232,7 +232,7 @@ func TestOpenWalletIdempotenteNaoDuplicaNada(t *testing.T) {
 func TestOpenWalletComOutboxQuebradaNaoDeixaNemCarteira(t *testing.T) {
 	limpar(t)
 
-	quebrado := appwagering.New(uowComOutboxQuebrada{interno: postgresUOW(t)}, clock.System{}, idgen.New())
+	quebrado := appwagering.New(uowComOutboxQuebrada{interno: postgresUOW(t)}, clock.System{}, idgen.New(), nil)
 	_, err := quebrado.OpenWallet(context.Background(), appwagering.OpenWalletRequest{
 		PlayerID:       ids.PlayerID("jogador-quebrado"),
 		InitialBalance: brl(t, "1000.00"),

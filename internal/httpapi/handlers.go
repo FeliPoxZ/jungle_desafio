@@ -106,8 +106,8 @@ func (h *Handlers) enviarOperacao(w http.ResponseWriter, r *http.Request) {
 	}
 
 	status := statusDoResultado(res)
-	h.observarOperacao(res.Status.String(), observability.StatusLabel(status), time.Since(inicio))
-	h.registrarResultado(r, res, identidade)
+	h.observarOperacao(corpo.Kind, res.Status.String(), time.Since(inicio))
+	h.registrarResultado(r, res, identidade, corpo.WalletID)
 	writeJSON(w, r, status, respostaDoResultado(res))
 }
 
@@ -138,9 +138,14 @@ func respostaDoResultado(res appwagering.Result) wagerResponse {
 
 // registrarResultado acompanha a operação com log e métrica.
 //
-// Campos do README §12: transactionId, walletId, providerId. O valor monetário
-// NÃO entra no log (payload financeiro completo é proibido).
-func (h *Handlers) registrarResultado(r *http.Request, res appwagering.Result, identidade auth.Identity) {
+// Campos do README §12: correlationId (automático, pelo handler de contexto),
+// transactionId, walletId e providerId. O valor monetário NÃO entra no log
+// (payload financeiro completo é proibido).
+//
+// `walletId` vinha faltando aqui até a Fase 11: a operação era rastreável pelo
+// transactionId, mas quem chegava com o id da CARTEIRA na mão (o suporte do
+// provedor, o plantonista) não tinha como ligar o fato ao pedido.
+func (h *Handlers) registrarResultado(r *http.Request, res appwagering.Result, identidade auth.Identity, walletID string) {
 	if res.IdempotentReplay {
 		h.metrics.IncReplay()
 	}
@@ -150,6 +155,7 @@ func (h *Handlers) registrarResultado(r *http.Request, res appwagering.Result, i
 	if res.FailureCode != "" {
 		h.logger.WarnContext(r.Context(), "operacao_rejeitada",
 			slog.String("transactionId", string(res.TransactionID)),
+			slog.String("walletId", walletID),
 			slog.String("providerId", identidade.ProviderID),
 			slog.String("failureCode", res.FailureCode),
 			slog.String("status", res.Status.String()),
@@ -160,6 +166,7 @@ func (h *Handlers) registrarResultado(r *http.Request, res appwagering.Result, i
 
 	h.logger.InfoContext(r.Context(), "operacao_concluida",
 		slog.String("transactionId", string(res.TransactionID)),
+		slog.String("walletId", walletID),
 		slog.String("providerId", identidade.ProviderID),
 		slog.String("status", res.Status.String()),
 		slog.Bool("idempotentReplay", res.IdempotentReplay),
@@ -169,8 +176,22 @@ func (h *Handlers) registrarResultado(r *http.Request, res appwagering.Result, i
 
 // observarOperacao alimenta `wager_operations_total` e a latência.
 //
-// Os labels são de cardinalidade BAIXA (tipo e status), nunca identificadores:
-// usar walletId como label explodiria a série temporal do Prometheus.
+// Os labels são de cardinalidade BAIXA (tipo e status final), nunca
+// identificadores: usar walletId como label explodiria a série temporal do
+// Prometheus.
+//
+// # O que mudou na Fase 11 (defeito 43)
+//
+// Antes, o caminho HTTP chamava `observeOperation(res.Status.String(),
+// StatusLabel(statusHTTP))`, ou seja, o label `kind` recebia **PROCESSED** e o
+// label `status` recebia **2xx_201**. O caminho SQS (Fase 8) sempre usou
+// `kind="BET"`, `status="PROCESSED"`. O MESMO nome de métrica tinha dois
+// significados para o mesmo label — somar por `kind` num painel misturava tipo
+// de operação com desfecho e ninguém percebia, porque nenhum teste lia a métrica
+// em `/metrics`.
+//
+// Agora as duas portas emitem a MESMA semântica: `kind` é o tipo da operação e
+// `status` é o desfecho do domínio. O código HTTP continua no log de acesso.
 func (h *Handlers) observarOperacao(kind, status string, duracao time.Duration) {
 	if kind == "" {
 		kind = "unknown"

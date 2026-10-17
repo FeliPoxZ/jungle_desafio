@@ -25,6 +25,7 @@ import (
 	"github.com/FeliPoxZ/jungle_desafio/internal/consumer"
 	"github.com/FeliPoxZ/jungle_desafio/internal/domain/ids"
 	"github.com/FeliPoxZ/jungle_desafio/internal/infra/sqs"
+	"github.com/FeliPoxZ/jungle_desafio/internal/observability"
 	"github.com/FeliPoxZ/jungle_desafio/internal/platform/canonicaljson"
 )
 
@@ -246,6 +247,16 @@ func (s *sqsDeTeste) mensagensNaDLQ(t *testing.T) int {
 // com ela?" — e sem o log a depuração vira adivinhação. O buffer é despejado
 // automaticamente na falha.
 func (s *sqsDeTeste) rodarConsumidor(t *testing.T) func() {
+	return s.rodarConsumidorCom(t, nil)
+}
+
+// rodarConsumidorCom sobe o consumidor com um registry de métricas ESCOLHIDO
+// pelo teste.
+//
+// O `nil` é aceito pelos helpers de métrica (todos são nil-safe), mas o teste
+// que quer LER a métrica precisa passar o registry que depois será raspado — é a
+// diferença entre "o código emitiria" e "a métrica está em /metrics".
+func (s *sqsDeTeste) rodarConsumidorCom(t *testing.T, metricas *observability.Metrics) func() {
 	t.Helper()
 
 	var (
@@ -268,6 +279,7 @@ func (s *sqsDeTeste) rodarConsumidor(t *testing.T) func() {
 		Fila:        sqs.NovoConsumidorFila(sqs.NewClient(s.cfg)),
 		Processador: processador,
 		Config:      s.cfg,
+		Metrics:     metricas,
 		URLDaFila:   s.urlTxn,
 		URLDaDLQ:    s.urlDLQ,
 		Logger:      logger,

@@ -6,14 +6,17 @@ import (
 	"io"
 	"log/slog"
 	"math/rand"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/FeliPoxZ/jungle_desafio/internal/app/inbox"
+	"github.com/FeliPoxZ/jungle_desafio/internal/app/ports"
 	"github.com/FeliPoxZ/jungle_desafio/internal/config"
 	"github.com/FeliPoxZ/jungle_desafio/internal/observability"
+	"github.com/FeliPoxZ/jungle_desafio/internal/testutil"
 )
 
 // Testes da POLÍTICA de consumo, com um broker dublê.
@@ -52,6 +55,7 @@ type brokerFalso struct {
 
 	acoes       []acaoBroker
 	erroReceive error
+	erroSend    error
 
 	// recebido é fechado quando todas as mensagens do roteiro foram entregues —
 	// o teste espera por ele em vez de dormir um tempo arbitrário.
@@ -96,6 +100,12 @@ func (b *brokerFalso) ChangeVisibility(_ context.Context, _ string, handles []st
 }
 
 func (b *brokerFalso) Send(_ context.Context, _ string, body []byte, grupo, dedupID string) error {
+	b.mu.Lock()
+	erro := b.erroSend
+	b.mu.Unlock()
+	if erro != nil {
+		return erro
+	}
 	b.registrar(acaoBroker{tipo: "send", body: body, grupo: grupo, dedupID: dedupID})
 	return nil
 }
@@ -182,12 +192,20 @@ func configDeTeste() *config.Config {
 func rodar(t *testing.T, b *brokerFalso, p *processadorFalso) (context.CancelFunc, *sync.WaitGroup) {
 	t.Helper()
 
+	return rodarCom(t, b, p, observability.NewMetrics())
+}
+
+// rodarCom é o `rodar` com um registry ESCOLHIDO pelo teste — é o que permite
+// ler a métrica depois em `/metrics`.
+func rodarCom(t *testing.T, b *brokerFalso, p *processadorFalso, metricas *observability.Metrics) (context.CancelFunc, *sync.WaitGroup) {
+	t.Helper()
+
 	consumidor := New(Options{
 		Fila:        b,
 		Processador: p,
 		Config:      configDeTeste(),
 		Logger:      slog.New(slog.NewTextHandler(io.Discard, nil)),
-		Metrics:     observability.NewMetrics(),
+		Metrics:     metricas,
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -518,4 +536,92 @@ func asserirSemDLQ(t *testing.T, acoes []acaoBroker) {
 			t.Errorf("a mensagem foi para a DLQ sem ser permanente: %+v", acoes)
 		}
 	}
+}
+
+// --- métricas de retry por etapa (Fase 11) -----------------------------------
+//
+// `retries_total{stage}` tem SEIS emissores no consumidor. Até a Fase 11 nenhum
+// deles tinha teste: o único teste da métrica chamava o helper direto. Estes
+// testes exercitam a POLÍTICA real do consumidor e leem o valor no mesmo handler
+// que a aplicação expõe em `/metrics`.
+
+// esperarMetricaNoEndpoint espera a série aparecer em `/metrics`, com prazo.
+func esperarMetricaNoEndpoint(t *testing.T, baseURL, nome string, labels map[string]string) {
+	t.Helper()
+
+	fim := time.Now().Add(5 * time.Second)
+	for time.Now().Before(fim) {
+		familias := testutil.DoEndpoint(t, baseURL)
+		if valor, ok := familias.Valor(nome, labels); ok && valor >= 1 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("a série %s%v não apareceu em /metrics", nome, labels)
+}
+
+// O `Receive` falhando é retry da etapa `sqs_receive`: o broker não caiu, a
+// busca falhou — e o laço precisa continuar.
+func TestMetricaRetryDaEtapaSqsReceive(t *testing.T) {
+	b := novoBrokerFalso()
+	b.erroReceive = errors.New("broker indisponível")
+	p := novoProcessadorFalso()
+
+	metricas := observability.NewMetrics()
+	cancel, terminou := rodarCom(t, b, p, metricas)
+	defer parar(t, cancel, terminou)
+
+	endpoint := httptest.NewServer(metricas.Handler())
+	defer endpoint.Close()
+
+	esperarMetricaNoEndpoint(t, endpoint.URL, "jungleg_wager_retries_total",
+		map[string]string{"stage": "sqs_receive"})
+}
+
+// Processamento transitório é retry da etapa `sqs_consume`.
+func TestMetricaRetryDaEtapaSqsConsume(t *testing.T) {
+	b := novoBrokerFalso([]Message{mensagem("msg-1", "rh-1", 1)})
+	p := novoProcessadorFalso()
+	p.erro = ports.ErrTransient
+
+	metricas := observability.NewMetrics()
+	cancel, terminou := rodarCom(t, b, p, metricas)
+	defer parar(t, cancel, terminou)
+
+	// A mensagem é ADIADA (não apagada)...
+	if acoes := b.esperarAcao(t, 1, 5*time.Second); acoes[0].tipo != "visibility" {
+		t.Fatalf("primeira ação = %q, quer visibility", acoes[0].tipo)
+	}
+
+	endpoint := httptest.NewServer(metricas.Handler())
+	defer endpoint.Close()
+
+	// ...e o retry é contado na etapa do consumo.
+	esperarMetricaNoEndpoint(t, endpoint.URL, "jungleg_wager_retries_total",
+		map[string]string{"stage": "sqs_consume"})
+}
+
+// A DLQ que não aceita a mensagem é retry da etapa `sqs_publish`: a mensagem
+// NÃO pode ser apagada da fila de origem.
+func TestMetricaRetryDaEtapaSqsPublish(t *testing.T) {
+	b := novoBrokerFalso([]Message{mensagem("msg-1", "rh-1", 1)})
+	b.erroSend = errors.New("DLQ indisponível")
+	p := novoProcessadorFalso()
+	p.erro = inbox.ErrMensagemInvalida
+
+	metricas := observability.NewMetrics()
+	cancel, terminou := rodarCom(t, b, p, metricas)
+	defer parar(t, cancel, terminou)
+
+	select {
+	case <-p.processados:
+	case <-time.After(5 * time.Second):
+		t.Fatal("o consumidor não processou a mensagem")
+	}
+
+	endpoint := httptest.NewServer(metricas.Handler())
+	defer endpoint.Close()
+
+	esperarMetricaNoEndpoint(t, endpoint.URL, "jungleg_wager_retries_total",
+		map[string]string{"stage": "sqs_publish"})
 }

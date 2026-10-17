@@ -110,7 +110,7 @@ func TestMain(m *testing.M) {
 	}
 
 	uow = postgres.NewUnitOfWork(poolTeste)
-	servico = appwagering.New(uow, clock.System{}, idgen.New())
+	servico = appwagering.New(uow, clock.System{}, idgen.New(), nil)
 
 	// O binário real é compilado UMA vez por execução da suíte (Fase 10): os
 	// cenários multi-instância sobem N processos deste MESMO binário. Compilar

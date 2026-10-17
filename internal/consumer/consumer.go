@@ -245,7 +245,14 @@ func (c *Consumidor) tratar(ctx context.Context, entrega *entregaRastreada) {
 	// ABORTADA no meio — exatamente o que a etapa 3 do encerramento quer evitar.
 	// O teto de tempo é imposto pelo `encerrar`, que espera por um prazo e depois
 	// libera a visibilidade.
-	ctxProcessamento := context.WithoutCancel(ctx)
+	//
+	// A correlação é o `MessageId` da ENTREGA — a mesma escolha do processador
+	// para o `correlationId` da operação (README §12): o envelope do §10 não traz
+	// campo de correlação, e o produtor não tem outro identificador de rastreio
+	// antes do envio. Sem pôr isso no contexto, TODA linha do caminho SQS saía sem
+	// `correlationId`, enquanto o evento publicado saía com ele — o log contava
+	// metade da história.
+	ctxProcessamento := observability.WithCorrelationID(context.WithoutCancel(ctx), msg.ID)
 
 	resultado, err := c.processador.Processar(ctxProcessamento, inbox.Entrada{
 		// O identificador da ENTREGA (do broker) vai junto para o processador
@@ -270,13 +277,13 @@ func (c *Consumidor) tratar(ctx context.Context, entrega *entregaRastreada) {
 	switch {
 	case err != nil:
 		// Erro de classificação: transitório volta, permanente vai para a DLQ.
-		c.tratarErro(ctx, entrega, err, inicio)
+		c.tratarErro(ctxProcessamento, entrega, err, inicio)
 		return
 
 	case resultado.Transitoria:
 		// Falha classificada como "repita", ou conflito de unicidade (no nosso
 		// schema, unicidade violada quer dizer "alguém chegou primeiro").
-		c.adiar(ctx, entrega, "transitorio", resultado.Status, inicio)
+		c.adiar(ctxProcessamento, entrega, "transitorio", resultado.Status, inicio)
 		return
 
 	case resultado.Processada:
@@ -285,13 +292,13 @@ func (c *Consumidor) tratar(ctx context.Context, entrega *entregaRastreada) {
 		// `Transitoria` é conferido ANTES de `Processada` de propósito: um
 		// resultado poderia vir com os dois marcados por bug, e a escolha segura
 		// é NÃO apagar (reprocessar é inofensivo; perder não é).
-		c.confirmar(ctx, entrega, resultado, inicio)
+		c.confirmar(ctxProcessamento, entrega, resultado, inicio)
 		return
 
 	default:
 		// Desfecho que o consumidor não conhece. Não apagar é a escolha segura:
 		// a mensagem volta e o próximo ciclo decide de novo.
-		c.adiar(ctx, entrega, "resultado_desconhecido", "", inicio)
+		c.adiar(ctxProcessamento, entrega, "resultado_desconhecido", "", inicio)
 		return
 	}
 }
@@ -325,6 +332,9 @@ func (c *Consumidor) confirmar(ctx context.Context, entrega *entregaRastreada, r
 
 	c.logger.InfoContext(ctx, "sqs_mensagem_processada",
 		slog.String("messageId", entrega.msg.ID),
+		slog.String("transactionId", res.TransactionID),
+		slog.String("walletId", res.WalletID),
+		slog.String("providerId", res.ProviderID),
 		slog.String("status", status),
 		slog.String("failureCode", res.FailureCode),
 		slog.Bool("replay", res.Replay),

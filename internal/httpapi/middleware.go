@@ -103,7 +103,6 @@ func AccessLogMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
 				slog.Int("status", status),
 				slog.Int("bytes", rec.bytes),
 				observability.LogDuration(time.Since(start)),
-				slog.String("kind", observability.StageFrom(r.Context())),
 				slog.String("idempotencyKey", r.Header.Get(HeaderIdempotencyKey)),
 			)
 		})

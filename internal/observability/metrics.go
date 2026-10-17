@@ -1,9 +1,7 @@
 package observability
 
 import (
-	"context"
 	"net/http"
-	"strconv"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -89,7 +87,7 @@ func NewMetrics() *Metrics {
 			Namespace: namespace,
 			Subsystem: subsystem,
 			Name:      "retries_total",
-			Help:      "Total de retentativas por etapa (postgres, sqs_consume, sqs_publish, reference).",
+			Help:      "Total de retentativas por etapa (a etapa diz quem repetiu: consumo, publicação da outbox, referências, runner dos laços).",
 		}, []string{"stage"}),
 
 		dlqMessages: prometheus.NewCounter(prometheus.CounterOpts{
@@ -103,7 +101,7 @@ func NewMetrics() *Metrics {
 			Namespace: namespace,
 			Subsystem: subsystem,
 			Name:      "transaction_conflicts_total",
-			Help:      "Total de conflitos de concorrência (lock wait, serialization, unique violation) tratados.",
+			Help:      "Total de transações repetidas por conflito de concorrência ou falha transitória (unicidade, lock wait, deadlock, serialização, conexão).",
 		}),
 
 		outboxPublished: prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -257,35 +255,4 @@ func (m *Metrics) ObserveReferenceResolution(result string) {
 		return
 	}
 	m.referenceResolved.WithLabelValues(result).Inc()
-}
-
-// StatusLabel converte um código HTTP em label estável para métricas.
-func StatusLabel(status int) string {
-	switch {
-	case status >= 200 && status < 300:
-		return "2xx_" + strconv.Itoa(status)
-	case status >= 400 && status < 500:
-		return "4xx_" + strconv.Itoa(status)
-	case status >= 500:
-		return "5xx_" + strconv.Itoa(status)
-	default:
-		return strconv.Itoa(status)
-	}
-}
-
-// stageContextKey permite que middlewares registrem a etapa de retry no contexto
-// (usado apenas para logs).
-type stageContextKey struct{}
-
-// WithStage carrega a etapa atual (http, sqs_consume, outbox_publish, reference).
-func WithStage(ctx context.Context, stage string) context.Context {
-	return context.WithValue(ctx, stageContextKey{}, stage)
-}
-
-// StageFrom extrai a etapa atual do contexto.
-func StageFrom(ctx context.Context) string {
-	if v, ok := ctx.Value(stageContextKey{}).(string); ok {
-		return v
-	}
-	return ""
 }

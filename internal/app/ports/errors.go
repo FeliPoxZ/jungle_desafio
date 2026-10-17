@@ -46,6 +46,18 @@ var (
 	ErrForeignKey = errors.New("violação de chave estrangeira")
 )
 
+// ConflictCounter conta uma transação que precisou ser REPETIDA por conflito de
+// concorrência (unicidade, lock) ou falha transitória do banco.
+//
+// Por que uma interface de um método, e não o pacote de métricas: o caso de uso
+// não conhece Prometheus (decisão do ARCHITECTURE §16). Ele conhece a IDEIA de
+// "alguém conta conflitos"; quem conta é a infraestrutura de observabilidade,
+// ligada no Fx. É o que tira a métrica do papel sem inverter a direção das
+// dependências.
+type ConflictCounter interface {
+	IncConflict()
+}
+
 // IsNotFound informa se o erro é "não existe".
 func IsNotFound(err error) bool { return errors.Is(err, ErrNotFound) }
 

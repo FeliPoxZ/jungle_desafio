@@ -82,6 +82,19 @@ type Resultado struct {
 	// Replay diz que o caso de uso reconheceu a operação como já aplicada pela
 	// chave de idempotência (a porta HTTP já a tinha processado, por exemplo).
 	Replay bool
+
+	// Identificadores da operação, para o LOG do consumidor.
+	//
+	// O consumidor não tem acesso à requisição (ela morre dentro do
+	// processador), e o README §12 pede os identificadores disponíveis em toda
+	// linha de rastreio. Sem estes campos, o caminho SQS — o principal do
+	// serviço — registrava só o `messageId`: dá para saber que a mensagem foi
+	// tratada, mas não QUAL transação, carteira e provedor ela tocou.
+	//
+	// Vazios quando a mensagem nem chegou a ser decodificada (nada a rastrear).
+	TransactionID string
+	WalletID      string
+	ProviderID    string
 }
 
 // Processador liga a mensagem do broker ao caso de uso.
@@ -173,15 +186,22 @@ func (p *Processador) Processar(ctx context.Context, entrada Entrada) (Resultado
 
 	res, err := p.servico.ProcessWithHooks(ctx, op.Request, ganchos)
 	if err != nil {
-		return p.classificarErro(err, res)
+		resultado, classificado := p.classificarErro(err, res)
+		resultado.TransactionID = string(res.TransactionID)
+		resultado.WalletID = string(op.Request.WalletID)
+		resultado.ProviderID = op.Request.ProviderID
+		return resultado, classificado
 	}
 
 	return Resultado{
-		Processada:  true,
-		Status:      res.Status.String(),
-		FailureCode: res.FailureCode,
-		Replay:      res.IdempotentReplay,
-		Duplicada:   res.IdempotentReplay,
+		Processada:    true,
+		Status:        res.Status.String(),
+		FailureCode:   res.FailureCode,
+		Replay:        res.IdempotentReplay,
+		Duplicada:     res.IdempotentReplay,
+		TransactionID: string(res.TransactionID),
+		WalletID:      string(op.Request.WalletID),
+		ProviderID:    op.Request.ProviderID,
 	}, nil
 }
 

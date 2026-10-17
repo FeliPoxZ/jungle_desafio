@@ -200,7 +200,7 @@ func TestIdempotenciaSobreviveAProcessoNovo(t *testing.T) {
 	// Serviço novo, Unit of Work novo: em memória não há nada. Se a idempotência
 	// dependesse de estado do processo, aqui apareceria.
 	outroServico := appwagering.New(
-		postgresUOW(t), clock.System{}, idgen.New(),
+		postgresUOW(t), clock.System{}, idgen.New(), nil,
 	)
 	res, err := outroServico.Process(context.Background(), pedido(w, wagerdomain.KindBet, "25.00"))
 	if err != nil {
@@ -523,7 +523,7 @@ func TestFalhaNaOutboxDesfazTudoNoBancoReal(t *testing.T) {
 	limpar(t)
 	w := carteiraNova(t, "1000.00")
 
-	quebrado := appwagering.New(uowComOutboxQuebrada{interno: postgresUOW(t)}, clock.System{}, idgen.New())
+	quebrado := appwagering.New(uowComOutboxQuebrada{interno: postgresUOW(t)}, clock.System{}, idgen.New(), nil)
 	_, err := quebrado.Process(context.Background(), pedido(w, wagerdomain.KindBet, "25.00"))
 	if err == nil {
 		t.Fatal("esperava erro da outbox")

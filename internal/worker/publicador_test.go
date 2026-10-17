@@ -62,6 +62,9 @@ type uowFake struct {
 	registro *registrador
 	outbox   []ports.OutboxEvent
 	erro     error
+	// erroMark faz o `MarkPublished` falhar: é o gatilho da etapa
+	// `outbox_mark` de `retries_total` (a mensagem saiu, a confirmação não).
+	erroMark error
 }
 
 func (u *uowFake) Run(ctx context.Context, fn func(context.Context, ports.Repos) error) error {
@@ -114,6 +117,9 @@ func (o *outboxFake) ClaimBatch(_ context.Context, limit int, lease time.Duratio
 
 func (o *outboxFake) MarkPublished(_ context.Context, eventID string, now time.Time) error {
 	o.u.registro.registrar("markPublished")
+	if o.u.erroMark != nil {
+		return o.u.erroMark
+	}
 	for i := range o.outbox {
 		if o.outbox[i].EventID == eventID {
 			o.outbox[i].PublishedAt = now

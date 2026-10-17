@@ -42,15 +42,27 @@ type Service struct {
 	uow   ports.UnitOfWork
 	clock ports.Clock
 	ids   idgen.Generator
+
+	// conflitos conta cada repetição da transação (defeito 42).
+	//
+	// Opcional de propósito: o serviço funciona sem contador, e o teste que não
+	// se interessa por métrica passa nil. Em produção o Fx liga o contador de
+	// observability.Metrics.
+	conflitos ports.ConflictCounter
 }
 
 // New monta o serviço.
 //
-// As três dependências são contratos: o Unit of Work (quem delimita a transação),
-// o relógio (quem diz que horas são, para o teste poder afirmar instantes) e o
-// gerador de identificadores (para o teste não comparar UUIDs aleatórios).
-func New(uow ports.UnitOfWork, clock ports.Clock, ids idgen.Generator) *Service {
-	return &Service{uow: uow, clock: clock, ids: ids}
+// As QUATRO dependências são contratos: o Unit of Work (quem delimita a
+// transação), o relógio (quem diz que horas são, para o teste poder afirmar
+// instantes), o gerador de identificadores (para o teste não comparar UUIDs
+// aleatórios) e o contador de conflitos (quem conta cada repetição da
+// transação).
+//
+// `conflitos` pode ser nil: o serviço não depende de existir métrica para
+// funcionar, e o teste que não se interessa por ela passa nil.
+func New(uow ports.UnitOfWork, clock ports.Clock, ids idgen.Generator, conflitos ports.ConflictCounter) *Service {
+	return &Service{uow: uow, clock: clock, ids: ids, conflitos: conflitos}
 }
 
 // Process executa uma operação externa e devolve o desfecho.
@@ -143,6 +155,12 @@ func (s *Service) comRetentativa(ctx context.Context, fn func(ctx context.Contex
 			return err
 		}
 
+		// Conta a repetição ANTES de esperar: é aqui que o sistema sabe que uma
+		// transação foi descartada por disputa (unicidade, lock, deadlock,
+		// conexão). Sem esta linha a métrica `transaction_conflicts_total`
+		// existia e nunca saía de zero — o defeito 42.
+		s.conflito()
+
 		select {
 		case <-ctx.Done():
 			return err
@@ -150,6 +168,13 @@ func (s *Service) comRetentativa(ctx context.Context, fn func(ctx context.Contex
 		}
 	}
 	return err
+}
+
+// conflito incrementa o contador de conflitos, quando existe.
+func (s *Service) conflito() {
+	if s.conflitos != nil {
+		s.conflitos.IncConflict()
+	}
 }
 
 // processar executa uma tentativa dentro de UMA transação.

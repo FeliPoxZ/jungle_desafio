@@ -192,31 +192,6 @@ func TestMetricsHandlerServesRuntimeMetrics(t *testing.T) {
 	}
 }
 
-func TestStatusLabel(t *testing.T) {
-	tests := map[int]string{
-		200: "2xx_200",
-		201: "2xx_201",
-		409: "4xx_409",
-		422: "4xx_422",
-		503: "5xx_503",
-	}
-	for in, want := range tests {
-		if got := observability.StatusLabel(in); got != want {
-			t.Errorf("StatusLabel(%d) = %q, quer %q", in, got, want)
-		}
-	}
-}
-
-func TestStageRoundTrip(t *testing.T) {
-	ctx := observability.WithStage(context.Background(), "sqs_consume")
-	if got := observability.StageFrom(ctx); got != "sqs_consume" {
-		t.Errorf("StageFrom = %q", got)
-	}
-	if got := observability.StageFrom(context.Background()); got != "" {
-		t.Errorf("StageFrom(vazio) = %q", got)
-	}
-}
-
 // scrape coleta as métricas no formato de exposição do Prometheus.
 func scrape(t *testing.T, m *observability.Metrics) string {
 	t.Helper()
