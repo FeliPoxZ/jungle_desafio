@@ -2,7 +2,7 @@
 //
 // Uso:
 //
-//	migrate up              aplica todas as migrations pendentes
+//	migrate up [--noop-ok]  aplica todas as migrations pendentes
 //	migrate down [n]        reverte n migrations (sem n, reverte todas)
 //	migrate version         mostra a versão atual do schema
 //
@@ -13,6 +13,12 @@
 //	0  operação aplicou mudança
 //	1  nada a fazer (schema já atualizado ou sem migrations para reverter)
 //	2  erro
+//
+// `--noop-ok` (só no `up`) muda "nada a fazer" de 1 para 0. Existe para o
+// `docker-compose.yml`: o `depends_on: service_completed_successfully` exige
+// código 0, e sem a flag o SEGUNDO `docker compose up` — com o schema já na
+// versão corrente — nunca subia a API (defeito 48). O contrato acima continua
+// valendo para uso manual, onde 1 distingue "já estava atualizado" de "aplicou".
 package main
 
 import (
@@ -40,7 +46,7 @@ const (
 	usage = `uso: migrate <comando>
 
 comandos:
-  up              aplica todas as migrations pendentes
+  up [--noop-ok]  aplica todas as migrations pendentes
   down [n]        reverte n migrations (sem n, reverte todas)
   version         mostra a versão atual do schema
 `
@@ -80,7 +86,7 @@ func run(logger *slog.Logger, args []string) int {
 
 	switch args[0] {
 	case "up":
-		return cmdUp(logger, m)
+		return cmdUp(logger, m, temFlag(args[1:], "--noop-ok"))
 	case "down":
 		return cmdDown(logger, m, args[1:])
 	case "version":
@@ -89,6 +95,16 @@ func run(logger *slog.Logger, args []string) int {
 		fmt.Fprint(os.Stderr, usage)
 		return exitFailure
 	}
+}
+
+// temFlag informa se a flag está entre os argumentos.
+func temFlag(args []string, flag string) bool {
+	for _, arg := range args {
+		if arg == flag {
+			return true
+		}
+	}
+	return false
 }
 
 // newMigrator monta o migrator a partir dos SQL embutidos e da URL do banco.
@@ -100,11 +116,15 @@ func newMigrator(databaseURL string) (*migrate.Migrate, error) {
 	return migrate.NewWithSourceInstance("iofs", src, databaseURL)
 }
 
-func cmdUp(logger *slog.Logger, m *migrate.Migrate) int {
+func cmdUp(logger *slog.Logger, m *migrate.Migrate, noopOK bool) int {
 	err := m.Up()
 	switch {
 	case errors.Is(err, migrate.ErrNoChange):
 		logger.Info("schema já está atualizado, nada a aplicar")
+		if noopOK {
+			// "Nada a fazer" é sucesso para o compose (defeito 48).
+			return exitOK
+		}
 		return exitNoop
 	case err != nil:
 		logger.Error("falha ao aplicar as migrations", "erro", err)

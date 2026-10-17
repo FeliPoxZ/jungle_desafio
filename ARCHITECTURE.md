@@ -1750,7 +1750,7 @@ LocalStack (Fase 8) + **8 funções** de publicação e recuperação com LocalS
 com **três processos independentes** (Fase 10) + **2 funções** de
 `application_name` (Fase 10) + **10 funções** de métrica, **2 de log do processo
 real** e **1 de ciclo de vida Fx real** (Fase 11) + 2 de integração do binário
-real. `go test -race` verde nos **18 pacotes** com teste de unidade (18 também no
+real. `go test -race` verde nos **17 pacotes** com teste de unidade (18 também no
 comando com a tag `integration`), em **duas rodadas consecutivas** da suíte
 inteira na Fase 11 (integração: 147,9 s e 146,8 s). Cobertura do domínio: `money`
 97,9%, `wallet` 99,0%, `wagering` 100,0%.

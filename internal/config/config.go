@@ -23,16 +23,15 @@ import (
 // Config é a raiz de configuração da aplicação, dividida por área de
 // responsabilidade para manter os construtores pequenos e explícitos.
 type Config struct {
-	Env         string          `env:"APP_ENV" envDefault:"local"`
-	HTTP        HTTPConfig      `envPrefix:"HTTP_"`
-	Database    DatabaseConfig  `envPrefix:"DB_"`
-	OIDC        OIDCConfig      `envPrefix:"OIDC_"`
-	SQS         SQSConfig       `envPrefix:"SQS_"`
-	Outbox      OutboxConfig    `envPrefix:"OUTBOX_"`
-	Reference   ReferenceConfig `envPrefix:"REFERENCE_"`
-	Workers     WorkersConfig   `envPrefix:"WORKERS_"`
-	LogLevel    string          `env:"LOG_LEVEL" envDefault:"info"`
-	ShutdownTTL time.Duration   `env:"SHUTDOWN_TIMEOUT" envDefault:"25s"`
+	Env       string          `env:"APP_ENV" envDefault:"local"`
+	HTTP      HTTPConfig      `envPrefix:"HTTP_"`
+	Database  DatabaseConfig  `envPrefix:"DB_"`
+	OIDC      OIDCConfig      `envPrefix:"OIDC_"`
+	SQS       SQSConfig       `envPrefix:"SQS_"`
+	Outbox    OutboxConfig    `envPrefix:"OUTBOX_"`
+	Reference ReferenceConfig `envPrefix:"REFERENCE_"`
+	Workers   WorkersConfig   `envPrefix:"WORKERS_"`
+	LogLevel  string          `env:"LOG_LEVEL" envDefault:"info"`
 
 	// DatabaseURL não tem prefixo DB_ por ser uma string de conexão completa,
 	// padronizada desse jeito em praticamente todo ecossistema Go.
@@ -165,8 +164,7 @@ type SQSConfig struct {
 	//
 	// Precisa caber dentro do `HTTP_STOP_TIMEOUT` (o prazo total do Fx), junto com
 	// o encerramento do servidor HTTP — a config valida essa ordem.
-	ShutdownGrace         time.Duration `env:"SHUTDOWN_GRACE" envDefault:"15s"`
-	ProvisionQueuesOnBoot bool          `env:"PROVISION_QUEUES_ON_BOOT" envDefault:"false"`
+	ShutdownGrace time.Duration `env:"SHUTDOWN_GRACE" envDefault:"15s"`
 	// ConsumeTransactions liga o consumidor da fila de entrada. Em testes de
 	// unidade e em execuções só-HTTP pode ser desligado.
 	ConsumeTransactions bool `env:"CONSUME_TRANSACTIONS" envDefault:"false"`

@@ -158,7 +158,16 @@ services:
         TARGET: migrate
     image: jungleg-migrate:local
     container_name: jungleg-migrate
-    command: ["up"]
+    # `--noop-ok`: o comando `up` devolve 1 quando NÃO há nada a aplicar (contrato
+    # do CLI do golang-migrate: 0 = mudou, 1 = nada a fazer, 2 = erro). Para o
+    # compose, "nada a fazer" é SUCESSO — e `service_completed_successfully` exige
+    # código 0. Sem a flag, o SEGUNDO `docker compose up` (com o schema já na
+    # versão corrente) nunca subia a API: o `migrate` terminava com 1, o
+    # `depends_on` o tratava como falha e a API não era criada (defeito 48,
+    # encontrado no ensaio de entrega da Fase 12). O `docker compose run --rm
+    # migrate down 1` continua funcionando: o override de `command` não passa
+    # pela flag.
+    command: ["up", "--noop-ok"]
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-jungleg}:${POSTGRES_PASSWORD:-jungleg}@postgres:5432/${POSTGRES_DB:-jungleg}?sslmode=disable
     depends_on:
@@ -255,7 +264,11 @@ services:
       migrate:
         condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "/app/api", "-health-check"]
+      # O Dockerfile instala o binário em /app/app (ENTRYPOINT ["/app/app"]); o
+      # healthcheck apontava para /app/api e falhava SEMPRE com "no such file or
+      # directory" — o container ficava unhealthy mesmo com o serviço pronto
+      # (defeito 47, encontrado no ensaio de entrega da Fase 12).
+      test: ["CMD", "/app/app", "-health-check"]
       interval: 10s
       timeout: 5s
       retries: 5
