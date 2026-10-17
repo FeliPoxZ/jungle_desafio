@@ -1,7 +1,20 @@
+#!/bin/sh
 # =============================================================================
 # Provisionamento automático das filas SQS no LocalStack.
-# Executado pelo serviço "localstack-init" do docker-compose e também pelo
-# hook de ready do LocalStack (deploy/localstack/init-queues.sh).
+#
+# COMO ELE É EXECUTADO (dois caminhos, e o primeiro exigiu correção):
+#   1. o LocalStack roda os scripts de `/etc/localstack/init/ready.d` no stage
+#      READY, e o faz EXECUTANDO O ARQUIVO — não via `sh arquivo`. Sem shebang e
+#      sem bit de execução, o kernel recusa com "Exec format error" e as filas
+#      nunca são criadas;
+#   2. o serviço `localstack-init` do compose roda `["/bin/sh", "/scripts/..."]`
+#      (esse caminho não depende de shebang nem de permissão).
+#
+# Em 2026-10-16 o log do container mostrou, nas três subidas, exatamente:
+#   ERROR ... stage=READY, state=ERROR): [Errno 8] Exec format error
+# — e `ListQueues` respondia VAZIO. Nenhum teste tinha percebido porque as filas
+# também não eram usadas por nenhum teste até a Fase 8 (README §13 exige o
+# LocalStack nos testes de integração).
 #
 # O script é IDEMPOTENTE: cria o que falta e não faz nada se já existir.
 # =============================================================================

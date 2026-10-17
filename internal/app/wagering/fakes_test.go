@@ -422,6 +422,31 @@ func (r *inboxMemoria) MarkProcessed(_ context.Context, consumerName, messageID 
 	return ports.ErrNotFound
 }
 
+// MarkRejected separa "recusei" de "falhei": rejeição é terminal e a mensagem
+// pode ser removida da fila; falha ainda pode ser retentada.
+func (r *inboxMemoria) MarkRejected(_ context.Context, consumerName, messageID, failureCode string, now time.Time) error {
+	for i, x := range r.e.inbox {
+		if x.ConsumerName == consumerName && x.MessageID == messageID {
+			r.e.inbox[i].Status = "REJECTED"
+			r.e.inbox[i].FailureCode = failureCode
+			r.e.inbox[i].CompletedAt = now
+			return nil
+		}
+	}
+	return ports.ErrNotFound
+}
+
+// CountAttempt incrementa o recebimento, como o repositório real faz no SQL.
+func (r *inboxMemoria) CountAttempt(_ context.Context, consumerName, messageID string, _ time.Time) error {
+	for i, x := range r.e.inbox {
+		if x.ConsumerName == consumerName && x.MessageID == messageID {
+			r.e.inbox[i].Attempts++
+			return nil
+		}
+	}
+	return ports.ErrNotFound
+}
+
 func (r *inboxMemoria) MarkFailed(_ context.Context, consumerName, messageID, reason string, now time.Time) error {
 	for i, x := range r.e.inbox {
 		if x.ConsumerName == consumerName && x.MessageID == messageID {

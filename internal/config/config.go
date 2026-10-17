@@ -102,19 +102,33 @@ type OIDCConfig struct {
 
 // SQSConfig descreve o broker e as filas usadas pela aplicação.
 type SQSConfig struct {
-	Endpoint              string        `env:"ENDPOINT" envDefault:"http://localhost:4566"`
-	Region                string        `env:"REGION" envDefault:"us-east-1"`
-	AccessKeyID           string        `env:"ACCESS_KEY_ID" envDefault:"test"`
-	SecretAccessKey       string        `env:"SECRET_ACCESS_KEY" envDefault:"test"`
-	TransactionsQueue     string        `env:"TRANSACTIONS_QUEUE" envDefault:"wager-transactions.fifo"`
-	TransactionsDLQ       string        `env:"TRANSACTIONS_DLQ" envDefault:"wager-transactions-dlq.fifo"`
-	EventsQueue           string        `env:"EVENTS_QUEUE" envDefault:"wallet-events.fifo"`
-	EventsDLQ             string        `env:"EVENTS_DLQ" envDefault:"wallet-events-dlq.fifo"`
-	MaxReceiveCount       int32         `env:"MAX_RECEIVE_COUNT" envDefault:"5"`
-	VisibilityTimeout     time.Duration `env:"VISIBILITY_TIMEOUT" envDefault:"30s"`
-	WaitTime              time.Duration `env:"WAIT_TIME" envDefault:"20s"`
-	BatchSize             int32         `env:"BATCH_SIZE" envDefault:"10"`
-	ConsumerConcurrency   int           `env:"CONSUMER_CONCURRENCY" envDefault:"8"`
+	Endpoint            string        `env:"ENDPOINT" envDefault:"http://localhost:4566"`
+	Region              string        `env:"REGION" envDefault:"us-east-1"`
+	AccessKeyID         string        `env:"ACCESS_KEY_ID" envDefault:"test"`
+	SecretAccessKey     string        `env:"SECRET_ACCESS_KEY" envDefault:"test"`
+	TransactionsQueue   string        `env:"TRANSACTIONS_QUEUE" envDefault:"wager-transactions.fifo"`
+	TransactionsDLQ     string        `env:"TRANSACTIONS_DLQ" envDefault:"wager-transactions-dlq.fifo"`
+	EventsQueue         string        `env:"EVENTS_QUEUE" envDefault:"wallet-events.fifo"`
+	EventsDLQ           string        `env:"EVENTS_DLQ" envDefault:"wallet-events-dlq.fifo"`
+	MaxReceiveCount     int32         `env:"MAX_RECEIVE_COUNT" envDefault:"5"`
+	VisibilityTimeout   time.Duration `env:"VISIBILITY_TIMEOUT" envDefault:"30s"`
+	WaitTime            time.Duration `env:"WAIT_TIME" envDefault:"20s"`
+	BatchSize           int32         `env:"BATCH_SIZE" envDefault:"10"`
+	ConsumerConcurrency int           `env:"CONSUMER_CONCURRENCY" envDefault:"8"`
+	// BaseBackoff e MaxBackoff são o RETRY do consumidor, aplicado por
+	// `ChangeMessageVisibility`: a mensagem não é removida nem descartada, apenas
+	// fica invisível pelo prazo calculado (exponencial com teto e jitter).
+	//
+	// O teto existe para a fila não parecer travada: sem ele, a décima tentativa
+	// adiaria a mensagem por horas.
+	BaseBackoff time.Duration `env:"BASE_BACKOFF" envDefault:"2s"`
+	MaxBackoff  time.Duration `env:"MAX_BACKOFF" envDefault:"1m"`
+	// ShutdownGrace é quanto tempo o consumidor espera o trabalho em voo antes de
+	// LIBERAR a visibilidade do que sobrou (reentrega segura).
+	//
+	// Precisa caber dentro do `HTTP_STOP_TIMEOUT` (o prazo total do Fx), junto com
+	// o encerramento do servidor HTTP — a config valida essa ordem.
+	ShutdownGrace         time.Duration `env:"SHUTDOWN_GRACE" envDefault:"15s"`
 	ProvisionQueuesOnBoot bool          `env:"PROVISION_QUEUES_ON_BOOT" envDefault:"false"`
 	// ConsumeTransactions liga o consumidor da fila de entrada. Em testes de
 	// unidade e em execuções só-HTTP pode ser desligado.
@@ -214,6 +228,12 @@ func (c *Config) Validate() error {
 	if c.HTTP.StopTimeout < c.HTTP.ShutdownTimeout {
 		problems = append(problems, "HTTP_STOP_TIMEOUT deve ser maior ou igual a HTTP_SHUTDOWN_TIMEOUT")
 	}
+	// O encerramento do consumidor e o do servidor acontecem DENTRO do mesmo
+	// StopTimeout: se a soma dos dois não couber, um deles é abortado no meio.
+	if c.SQS.ConsumeTransactions && c.HTTP.StopTimeout < c.HTTP.ShutdownTimeout+c.SQS.ShutdownGrace {
+		problems = append(problems,
+			"HTTP_STOP_TIMEOUT deve cobrir HTTP_SHUTDOWN_TIMEOUT + SQS_SHUTDOWN_GRACE quando SQS_CONSUME_TRANSACTIONS está ligado")
+	}
 
 	if c.SQS.BatchSize < 1 || c.SQS.BatchSize > 10 {
 		problems = append(problems, "SQS_BATCH_SIZE deve estar entre 1 e 10 (limite do SQS)")
@@ -226,6 +246,15 @@ func (c *Config) Validate() error {
 	}
 	if c.SQS.MaxReceiveCount < 1 {
 		problems = append(problems, "SQS_MAX_RECEIVE_COUNT deve ser maior que zero")
+	}
+	if c.SQS.BaseBackoff < time.Second {
+		problems = append(problems, "SQS_BASE_BACKOFF muito baixo: repetir rápido demais sobre um broker fora do ar só amplifica a falha")
+	}
+	if c.SQS.MaxBackoff < c.SQS.BaseBackoff {
+		problems = append(problems, "SQS_MAX_BACKOFF deve ser maior ou igual a SQS_BASE_BACKOFF")
+	}
+	if c.SQS.ShutdownGrace <= 0 {
+		problems = append(problems, "SQS_SHUTDOWN_GRACE deve ser maior que zero")
 	}
 	for _, q := range []struct{ name, value string }{
 		{"SQS_TRANSACTIONS_QUEUE", c.SQS.TransactionsQueue},

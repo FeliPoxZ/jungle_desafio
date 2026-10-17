@@ -144,6 +144,14 @@ type InboxMessage struct {
 	FailureCode  string
 	ReceivedAt   time.Time
 	CompletedAt  time.Time
+
+	// Attempts é quantas vezes este consumidor JÁ recebeu a mensagem.
+	//
+	// É o histórico de reentregas do broker, e existe para o diagnóstico: quando
+	// a mensagem chega à DLQ, este número conta a história dela (o
+	// `ApproximateReceiveCount` do SQS é por mensagem recebida, e se perde
+	// quando ela é removida).
+	Attempts int
 }
 
 // InboxRepository registra as mensagens já recebidas.
@@ -161,8 +169,24 @@ type InboxRepository interface {
 	// Get lê a mensagem registrada.
 	Get(ctx context.Context, consumerName, messageID string) (*InboxMessage, error)
 
+	// CountAttempt incrementa o contador de recebimentos da mensagem.
+	//
+	// O incremento acontece **no banco** (`attempts + 1`), e não a partir do
+	// valor lido: duas instâncias recebendo a mesma mensagem ao mesmo tempo
+	// contariam a mesma tentativa se o número viesse do processo. Mesma decisão
+	// do `MarkRetry` da outbox.
+	CountAttempt(ctx context.Context, consumerName, messageID string, now time.Time) error
+
 	// MarkProcessed marca a mensagem como concluída.
 	MarkProcessed(ctx context.Context, consumerName, messageID string, now time.Time) error
+
+	// MarkRejected marca a recusa por regra de negócio.
+	//
+	// É separado de `MarkProcessed` porque a auditoria precisa distinguir
+	// "apliquei" de "recusei" — e separado de `MarkFailed` porque rejeição é
+	// TERMINAL (a mensagem pode ser removida), enquanto falha é o que ainda pode
+	// ser retentado.
+	MarkRejected(ctx context.Context, consumerName, messageID, failureCode string, now time.Time) error
 
 	// MarkFailed registra a falha e incrementa as tentativas.
 	MarkFailed(ctx context.Context, consumerName, messageID, reason string, now time.Time) error

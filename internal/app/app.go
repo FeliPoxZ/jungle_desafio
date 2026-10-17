@@ -40,12 +40,18 @@ const (
 // ModuleOptions devolve as opções do Fx que compõem a aplicação.
 // É uma função (e não uma variável) para permitir a inclusão condicional de
 // módulos de worker conforme a configuração.
+//
+// A ORDEM dos módulos define a ordem dos hooks de parada: o Fx executa os `OnStop`
+// na ordem inversa do registro, então o servidor HTTP (registrado antes) para de
+// aceitar conexões primeiro, e o consumidor de SQS para de buscar em seguida. Os
+// dois cabem no `StopTimeout`.
 func ModuleOptions() fx.Option {
 	return fx.Options(
 		configModule(),
 		infraModule(),
 		usecaseModule(),
 		authModule(),
+		workerModule(),
 		httpapiModule(),
 	)
 }

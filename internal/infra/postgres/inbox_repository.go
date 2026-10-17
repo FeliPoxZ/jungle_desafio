@@ -20,6 +20,7 @@ type InboxMessage struct {
 	FailureCode  string
 	ReceivedAt   time.Time
 	CompletedAt  time.Time
+	Attempts     int
 }
 
 type inboxRepo struct {
@@ -29,7 +30,7 @@ type inboxRepo struct {
 // NewInboxRepo cria o repositório sobre o pool ou sobre uma transação.
 func NewInboxRepo(q querier) ports.InboxRepository { return &inboxRepo{q: q} }
 
-const inboxColumns = `id, consumer_name, message_id, body_hash, status, failure_code, received_at, completed_at`
+const inboxColumns = `id, consumer_name, message_id, body_hash, status, failure_code, received_at, completed_at, attempts`
 
 // InsertIfAbsent tenta inserir e traduz a violação de unicidade em resultado
 // normal, não em erro: mensagem repetida é o caminho esperado do consumidor.
@@ -70,7 +71,7 @@ func (r *inboxRepo) Get(ctx context.Context, consumerName, messageID string) (*p
 
 	err := r.q.QueryRow(ctx, sql, consumerName, messageID).Scan(
 		&m.ID, &m.ConsumerName, &m.MessageID, &m.BodyHash, &m.Status,
-		&failureCode, &m.ReceivedAt, &completedAt,
+		&failureCode, &m.ReceivedAt, &completedAt, &m.Attempts,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -84,6 +85,27 @@ func (r *inboxRepo) Get(ctx context.Context, consumerName, messageID string) (*p
 	return &m, nil
 }
 
+// CountAttempt incrementa o contador de recebimentos da mensagem.
+//
+// O `+1` acontece no SQL, não em Go: com o número vindo do processo, duas
+// instâncias recebendo a mesma mensagem ao mesmo tempo gravariam o MESMO valor
+// final em vez de somar as duas entregas.
+func (r *inboxRepo) CountAttempt(ctx context.Context, consumerName, messageID string, now time.Time) error {
+	const sql = `
+		UPDATE inbox_messages
+		SET attempts = attempts + 1, updated_at = $3
+		WHERE consumer_name = $1 AND message_id = $2`
+
+	tag, err := r.q.Exec(ctx, sql, consumerName, messageID, now)
+	if err != nil {
+		return Classify(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 func (r *inboxRepo) MarkProcessed(ctx context.Context, consumerName, messageID string, now time.Time) error {
 	const sql = `
 		UPDATE inbox_messages
@@ -91,6 +113,27 @@ func (r *inboxRepo) MarkProcessed(ctx context.Context, consumerName, messageID s
 		WHERE consumer_name = $1 AND message_id = $2`
 
 	return r.marcar(ctx, sql, consumerName, messageID, now)
+}
+
+// MarkRejected registra a recusa por regra de negócio.
+//
+// `status = 'REJECTED'` e não `FAILED`: a recusa é terminal e a mensagem PODE ser
+// removida da fila (README §10) — o oposto de `FAILED`, que ainda pode ser
+// retentado.
+func (r *inboxRepo) MarkRejected(ctx context.Context, consumerName, messageID, failureCode string, now time.Time) error {
+	const sql = `
+		UPDATE inbox_messages
+		SET status = 'REJECTED', completed_at = $3, failure_code = $4
+		WHERE consumer_name = $1 AND message_id = $2`
+
+	tag, err := r.q.Exec(ctx, sql, consumerName, messageID, now, nuloSeVazio(failureCode))
+	if err != nil {
+		return Classify(err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 func (r *inboxRepo) MarkFailed(ctx context.Context, consumerName, messageID, failureCode string, now time.Time) error {

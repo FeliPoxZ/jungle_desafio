@@ -58,7 +58,26 @@ func New(uow ports.UnitOfWork, clock ports.Clock, ids idgen.Generator) *Service 
 // Erro é o que impede a operação de existir: entrada inválida, conflito de
 // idempotência, indisponibilidade. Rejeição de negócio NÃO é erro — volta em
 // `Result`, porque a operação existe, foi decidida e ficou auditável.
+//
+// É o caminho do HTTP. O consumo por SQS chama `ProcessWithHooks`, que acrescenta
+// o registro da inbox **dentro da mesma transação** (README §6.5).
 func (s *Service) Process(ctx context.Context, req Request) (Result, error) {
+	return s.ProcessWithHooks(ctx, req, nil)
+}
+
+// ProcessWithHooks é o `Process` com ganchos dentro da transação.
+//
+// # Por que os ganchos existem
+//
+// O README §6.5 exige que, na entrada por SQS, "o registro da inbox e a conclusão
+// durável do tratamento compartilhem a transação SQL das alterações de domínio,
+// do ledger e dos eventos". Só existe uma forma de garantir isso: o registro
+// acontecer DENTRO do `uow.Run` da operação — e é isso que os ganchos permitem,
+// sem que o caso de uso passe a conhecer SQS, inbox ou broker.
+//
+// `hooks == nil` devolve exatamente o comportamento do `Process`: o HTTP não
+// paga nada por este recurso existir.
+func (s *Service) ProcessWithHooks(ctx context.Context, req Request, hooks *ProcessHooks) (Result, error) {
 	req = req.normalizado()
 
 	if err := req.validate(); err != nil {
@@ -73,7 +92,7 @@ func (s *Service) Process(ctx context.Context, req Request) (Result, error) {
 	var res Result
 	err = s.comRetentativa(ctx, func(ctx context.Context) error {
 		var e error
-		res, e = s.processar(ctx, req, hash)
+		res, e = s.processar(ctx, req, hash, hooks)
 		return e
 	})
 	if err != nil {
@@ -134,13 +153,42 @@ func (s *Service) comRetentativa(ctx context.Context, fn func(ctx context.Contex
 }
 
 // processar executa uma tentativa dentro de UMA transação.
-func (s *Service) processar(ctx context.Context, req Request, hash wagerdomain.Hash) (Result, error) {
+func (s *Service) processar(ctx context.Context, req Request, hash wagerdomain.Hash, hooks *ProcessHooks) (Result, error) {
 	var res Result
 
 	err := s.uow.Run(ctx, func(ctx context.Context, r ports.Repos) error {
+		// O gancho de abertura roda ANTES de qualquer leitura de domínio: ele é
+		// quem grava o registro da inbox e diz "esta mensagem já foi tratada".
+		// Registrar depois do trabalho não protegeria nada — a reentrega
+		// debitaria de novo e só então descobriria que era duplicata.
+		if hooks != nil && hooks.OnBegin != nil {
+			curtoCircuito, pular, err := resolverGancho(hooks.OnBegin(ctx, r))
+			if err != nil {
+				return err
+			}
+			if pular {
+				// A transação termina SEM erro e sem mudança: o `Run` faz commit
+				// de nada, e o resultado sai como replay.
+				res = curtoCircuito
+				return nil
+			}
+		}
+
 		var e error
 		res, e = s.executar(ctx, r, req, hash)
-		return e
+		if e != nil {
+			return e
+		}
+
+		// O gancho de conclusão roda DENTRO da transação, depois do domínio e
+		// antes do commit: a conclusão da inbox entra no mesmo commit do saldo,
+		// do ledger e dos eventos.
+		if hooks != nil && hooks.OnCommit != nil {
+			if err := hooks.OnCommit(ctx, r, res); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 	if err != nil {
 		return Result{}, err
