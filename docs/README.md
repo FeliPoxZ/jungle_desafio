@@ -1,10 +1,13 @@
-# Jungle Desafio — serviço de processamento de apostas
+# Jungle Desafio — como rodar, operar e testar
 
-> **Este é o "README da solução"**: como subir, operar, autenticar e testar o
-> sistema. O enunciado do desafio está no [`../README.md`](../README.md) e **não foi
-> alterado**. As decisões técnicas estão no [`../ARCHITECTURE.md`](../ARCHITECTURE.md);
-> a explicação didática do código, em [`SISTEMA_EXPLICADO.md`](SISTEMA_EXPLICADO.md);
-> o treino de entrevista, em [`ENTREVISTA.md`](ENTREVISTA.md).
+> **Este é o guia de execução da entrega** (o "README da solução" do enunciado). O
+> enunciado do desafio está no [`../README.md`](../README.md) e **não foi alterado**.
+> As decisões técnicas estão no [`ARCHITECTURE.md`](ARCHITECTURE.md); a explicação
+> didática do código, em [`../docs_desafio/SISTEMA_EXPLICADO.md`](../docs_desafio/SISTEMA_EXPLICADO.md);
+> o treino de entrevista, em [`../docs_desafio/ENTREVISTA.md`](../docs_desafio/ENTREVISTA.md).
+>
+> **Se você só quer ver rodando:** `docker compose up -d --build` e depois
+> `curl http://localhost:8081/health/ready` — o resto está na §4.
 
 ---
 
@@ -41,11 +44,11 @@ inexistente (`PENDING_REFERENCE`), e um reaper cobre a linha que ficou presa em
 | Evento só depois do commit | outbox na mesma transação; `TestQuedaEntreCommitEPublicacaoOutraInstanciaAssume` |
 | Nenhuma operação aplicada duas vezes | inbox por `(consumer_name, messageId)` + chave financeira; `TestT1MesmaOperacao50VezesPelaFila` |
 | Três instâncias independentes funcionam | `TestT1…`, `TestT2…`, `TestT3…`, `TestT6…`, `TestT7…` (processos reais) |
-| Encerramento seguro | SIGTERM no container com `exit=0` e visibilidade liberada (`docs/evidencias/FASE_10.md` §6) |
+| Encerramento seguro | SIGTERM no container com `exit=0` e visibilidade liberada (`EVIDENCIAS.md` §3) |
 
 A lista completa, com a camada que impõe cada garantia, está no
-[`SISTEMA_EXPLICADO.md`](SISTEMA_EXPLICADO.md) (capítulo 5) e no
-[`../ARCHITECTURE.md`](../ARCHITECTURE.md) §5, §6 e §13.
+[`SISTEMA_EXPLICADO.md`](../docs_desafio/SISTEMA_EXPLICADO.md) (capítulo 5) e no
+[`ARCHITECTURE.md`](ARCHITECTURE.md) §5, §6 e §13.
 
 ---
 
@@ -189,7 +192,7 @@ termina) e `api` (HTTP + consumidor + workers, publicada em **`http://localhost:
 > **Use `--build`.** As migrations são **embutidas no binário** (`go:embed`), então
 > uma imagem antiga pode não conhecer a versão atual do schema e falhar com
 > `no migration found for version 5: read down for version 5`. Foi o que aconteceu
-> no ensaio de entrega (defeito 47/48 — ver [`../docs/evidencias/FASE_12.md`](../docs/evidencias/FASE_12.md)).
+> no ensaio de entrega (defeitos 47 e 48 — ver [`EVIDENCIAS.md`](EVIDENCIAS.md) §6).
 
 ### As filas do SQS
 
@@ -244,21 +247,21 @@ Para derrubar: `docker compose down` (mantém os volumes) ou `docker compose dow
 
 ## 5. Migrations (aplicar e reverter)
 
-Há cinco migrations em `migrations/`, embutidas no binário por `go:embed`. O
-binário `bin/migrate.exe` (e o job `migrate` do Compose) carrega todas.
+Há cinco migrations em `migrations/`, embutidas no binário por `go:embed`. Tanto o
+`go run ./cmd/migrate` quanto o job `migrate` do Compose carregam todas.
 
 ```sh
 # aplicar tudo
-DATABASE_URL='postgres://jungleg:jungleg@localhost:5432/jungleg?sslmode=disable' ./bin/migrate.exe up
+DATABASE_URL='postgres://jungleg:jungleg@localhost:5432/jungleg?sslmode=disable' go run ./cmd/migrate up
 
 # versão atual
-DATABASE_URL='postgres://jungleg:jungleg@localhost:5432/jungleg?sslmode=disable' ./bin/migrate.exe version
+DATABASE_URL='postgres://jungleg:jungleg@localhost:5432/jungleg?sslmode=disable' go run ./cmd/migrate version
 
 # reverter UMA
-DATABASE_URL='...' ./bin/migrate.exe down 1
+DATABASE_URL='...' go run ./cmd/migrate down 1
 
 # reverter TUDO
-DATABASE_URL='...' ./bin/migrate.exe down
+DATABASE_URL='...' go run ./cmd/migrate down
 ```
 
 Saída real do ensaio (banco descartável `jungle_entrega`):
@@ -279,11 +282,12 @@ a fazer, **2** erro. O Compose usa `up --noop-ok`, que trata "nada a fazer" como
 sucesso — sem isso, o **segundo** `docker compose up` nunca subiria a API
 (defeito 48).
 
-> **Armadilha que já custou tempo três vezes:** `bin/migrate.exe` carrega as
-> migrations **embutidas**. Depois de criar ou alterar uma migration, é preciso
-> recompilá-lo (`go build -o bin/migrate.exe ./cmd/migrate`), senão ele responde
-> "schema já está atualizado" e não aplica nada. O mesmo vale para a imagem do
-> Compose: `docker compose build migrate`.
+> **Armadilha que já custou tempo três vezes:** as migrations são **embutidas**
+> no binário (`go:embed`). Um binário velho responde "schema já está atualizado" e
+> não aplica nada — e uma imagem velha do Compose falha com
+> `no migration found for version 5`. Com `go run ./cmd/migrate` o binário é sempre
+> o do código atual; depois de alterar uma migration **rebuilde a imagem**
+> (`docker compose build migrate`).
 
 ---
 
@@ -503,9 +507,25 @@ go test -count=1 -race -tags=integration -timeout 600s \
   -run 'TestMetrica|TestLogsDoProcesso|TestCicloDeVidaFx' ./test/integration/ -v
 ```
 
-Números da última execução (Fase 12, duas rodadas): unidade verde em **17
-pacotes**; integração verde em **18 pacotes** (o 18º é `test/integration`), com
+Números da última execução (duas rodadas): unidade verde em **17 pacotes**;
+integração verde em **18 pacotes** (o 18º é `test/integration`), com
 `test/integration` em ~147 s.
+
+### Smoke test pronto (só `curl.exe`, sem jq)
+
+Há um script que exercita **todos os endpoints** e confere status + corpo:
+[`../teste-curl.ps1`](../teste-curl.ps1) — 26 passos (públicos, 201/200/409/400/422,
+replay, `PENDING_REFERENCE`, ledger, reconciliação, isolamento por provedor,
+401/403/404 e a série de métricas):
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\teste-curl.ps1
+```
+
+> **Windows:** use `curl.exe` (no PowerShell 5.1, `curl` é apelido de
+> `Invoke-WebRequest`). E o PowerShell 5.1 **remove as aspas** do JSON ao chamar um
+> `.exe` nativo: mande o corpo por arquivo (`--data-binary "@corpo.json"`), como o
+> script faz — ou use `cmd.exe`, onde `-d "{\"campo\":\"valor\"}"` funciona.
 
 ---
 
@@ -535,7 +555,7 @@ recusa (`attempts` 1→2) e **não** há débito novo.
 
 ### SIGTERM de verdade (container Linux)
 
-A prova está em [`../docs/evidencias/FASE_10.md`](../docs/evidencias/FASE_10.md) §6:
+A prova está em [`EVIDENCIAS.md`](EVIDENCIAS.md) (T5/T6):
 `docker stop` com `stop_grace_period: 60s` leva ao `exit=0` em ~8 s, com
 `sqs_visibilidade_liberada` e a mensagem processada **uma** vez pela instância nova.
 O cenário manual é:
@@ -563,7 +583,7 @@ docker logs jungle-sigterm | grep -E 'shutdown_signal_received|sqs_visibilidade_
 
 - `GET /metrics` (público) expõe as 12 métricas Prometheus `jungleg_wager_*`, sem
   label de alta cardinalidade. Cada uma tem teste que dispara o gatilho e lê o
-  valor em `/metrics` (`docs/evidencias/FASE_11.md` §3).
+  valor em `/metrics` (`EVIDENCIAS.md` §4).
 - `GET /health/live` e `GET /health/ready` (públicos) — readiness com PostgreSQL,
   IdP, SQS e `workers`.
 - Logs JSON com `correlationId`, `messageId`, `transactionId`, `walletId` e
@@ -577,18 +597,18 @@ docker logs jungle-sigterm | grep -E 'shutdown_signal_received|sqs_visibilidade_
 
 | Documento | Para quem | O que tem |
 | --- | --- | --- |
-| [`SISTEMA_EXPLICADO.md`](SISTEMA_EXPLICADO.md) | quem vai **manter** o código | do zero de vocabulário ao onde-cada-garantia-é-imposta |
-| [`ENTREVISTA.md`](ENTREVISTA.md) | quem vai **defender** o projeto | pergunta → resposta de 60 s, com número e limitação admitida |
-| [`../ARCHITECTURE.md`](../ARCHITECTURE.md) | avaliador técnico | decisões, concorrência, idempotência, SQS, outbox, 50 defeitos, limitações |
-| [`../docs/CONFORMIDADE_README.md`](../docs/CONFORMIDADE_README.md) | avaliador | requisito do enunciado → onde está atendido, e as 23 interpretações adotadas |
-| [`../docs/evidencias/`](../docs/evidencias/) | avaliador | saída real de cada fase (13 arquivos) |
-| [`../docs/LEDGER_VS_WALLET.md`](../docs/LEDGER_VS_WALLET.md) | quem mantém | a distinção carteira × ledger, em uma página |
+| [`README.md`](README.md) (este) | quem vai **rodar** | subir, configurar, migrar, autenticar e testar |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | avaliador técnico | decisões, concorrência, idempotência, SQS, outbox, os 50 defeitos, limitações |
+| [`CONFORMIDADE.md`](CONFORMIDADE.md) | avaliador | requisito do enunciado → onde está atendido, e as 23 interpretações adotadas |
+| [`EVIDENCIAS.md`](EVIDENCIAS.md) | avaliador | saída real dos testes, dos curls e do checkout limpo |
+| [`../docs_desafio/SISTEMA_EXPLICADO.md`](../docs_desafio/SISTEMA_EXPLICADO.md) | quem vai **manter** o código | do zero de vocabulário ao onde-cada-garantia-é-imposta |
+| [`../docs_desafio/ENTREVISTA.md`](../docs_desafio/ENTREVISTA.md) | quem vai **defender** o projeto | pergunta → resposta de 60 s, com número e limitação admitida |
 
 ---
 
 ## 12. Limitações conhecidas (resumo)
 
-A lista completa está no [`../ARCHITECTURE.md`](../ARCHITECTURE.md) §16. As que mais
+A lista completa está no [`ARCHITECTURE.md`](ARCHITECTURE.md) §16. As que mais
 importam para operar:
 
 - **sem consumidor de `wallet-events.fifo`** nesta entrega: o contrato de consumo

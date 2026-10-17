@@ -1,10 +1,18 @@
 # SISTEMA EXPLICADO — o Jungle Desafio, do zero ao detalhe
 
+> **Mapa do repositório.** Este documento (e o [`ENTREVISTA.md`](ENTREVISTA.md)) fica
+> em `docs_desafio/` e é material de estudo. A documentação que o avaliador lê está
+> em `docs/`: [`README.md`](../docs/README.md) (como rodar),
+> [`ARCHITECTURE.md`](../docs/ARCHITECTURE.md) (decisões),
+> [`CONFORMIDADE.md`](../docs/CONFORMIDADE.md) (requisito → onde está) e
+> [`EVIDENCIAS.md`](../docs/EVIDENCIAS.md) (saída real dos testes). O enunciado é o
+> `README.md` da raiz.
+
 Este documento ensina o serviço que está neste repositório para quem vai
 **mantê-lo** — não para quem vai defendê-lo numa banca. A diferença importa: aqui
 interessa "por que está assim", "o que quebra se eu mexer" e "onde eu provo que
 continua certo", e não a narrativa de como o projeto foi construído (essa está em
-`docs/evidencias/FASE_0.md` a `FASE_11.md`).
+`docs/EVIDENCIAS.md`).
 
 **Como ler os ponteiros.** Toda afirmação técnica relevante aponta para o lugar
 onde ela pode ser conferida: um `caminho/arquivo.go:linha` com o símbolo entre
@@ -14,8 +22,8 @@ repositório e pode andar quando o arquivo mudar. Se os dois discordarem, o sím
 manda — e o `grep` acha o resto.
 
 **O que este documento não é.** Não é o enunciado (esse é o `README.md` da raiz,
-que não se edita), não é o registro de decisões (esse é o `ARCHITECTURE.md`) e não
-é o mapa de conformidade item por item (`docs/CONFORMIDADE_README.md`). Ele
+que não se edita), não é o registro de decisões (esse é o `docs/ARCHITECTURE.md`) e
+não é o mapa de conformidade item por item (`docs/CONFORMIDADE.md`). Ele
 **traduz** os três para a linguagem de quem chega hoje.
 
 ---
@@ -1014,7 +1022,7 @@ confiável aparece em mais de uma camada de propósito: a primeira dá mensagem 
 > `internal/observability` (duração de operação em log e os buckets do histograma
 > do Prometheus). Não é caminho monetário: nenhum valor de dinheiro é convertido
 > ali. A regra correta é "zero float nos caminhos monetários", e não "zero float em
-> `internal/`" — está registrada em `docs/CONFORMIDADE_README.md` §5.
+> `internal/`" — está registrada em `docs/CONFORMIDADE.md` §5.
 
 ## 5.2 As garantias de recuperação (README §3 e §13)
 
@@ -1032,7 +1040,7 @@ absorve e o teste que a reproduz.
 | queda **depois de publicar, antes de marcar** | republicação com o **mesmo `eventId`** e o **mesmo corpo**; o consumidor deduplica | `TestQuedaEntrePublicacaoEMarkPublishedRepublicaComOMesmoEvento`, `TestOutboxRepublicacaoPreservaOEvento` |
 | dois publishers na mesma outbox | `FOR UPDATE SKIP LOCKED` dá lotes disjuntos (`outbox_repository.go:121`) | `TestDoisPublishersDisputamAMesmaOutbox`, `TestT6TresPublishersReaisDisputamAMesmaOutbox` |
 | mensagem reentregue pelo SQS | inbox recusa a segunda por `(consumer_name, message_id)`; o `body_hash` distingue reentrega de conflito | `TestSQSReentregaDaMesmaMensagemNaoReaplica`, `TestProcessarReentregaNaoReaplica` |
-| queda **depois do commit, antes do delete** | a mensagem volta; a instância nova a recebe, a inbox a reconhece (`attempts` 1→2) e **nenhum débito novo** acontece | `TestT5QuedaEntreCommitEDeleteReentregaReconhecida` + a prova de SIGTERM no container (`docs/evidencias/FASE_10.md` §6) |
+| queda **depois do commit, antes do delete** | a mensagem volta; a instância nova a recebe, a inbox a reconhece (`attempts` 1→2) e **nenhum débito novo** acontece | `TestT5QuedaEntreCommitEDeleteReentregaReconhecida` + a prova de SIGTERM no container (`docs/EVIDENCIAS.md` §6) |
 | referência que **nunca** chega | `PENDING_REFERENCE` é durável; `REFERENCE_MAX_ATTEMPTS`/`REFERENCE_PENDING_MAX_AGE` esgotam → `REJECTED` com `REFERENCE_NOT_FOUND` + evento | `TestReferenciaQueNuncaChegaExpiraEmREFERENCENOTFOUND`, `TestRetomadaExpiraEmREFERENCENOTFOUND`, `TestRetomadaExpiraPelaIdadeDaPendencia` |
 | **reversão antes da referência** | fica `PENDING_REFERENCE` sem movimentar nada; quando a referência chega, o worker resolve com o ledger correto | `TestREFUNDAntesDaReferenciaResolveDepois`, `TestREFUNDAntesDaReferenciaFicaPendenteEDuravel`, `TestT7REFUNDAntesDaReferenciaResolvidoPorOutraInstancia` |
 | reinício da aplicação | tentativas, instantes e pendências são **colunas de banco**; nada vive em memória | `TestT8ReinicioPreservaIdempotenciaPendenciaEConsistencia`, `TestIdempotenciaSobreviveAProcessoNovo` |
@@ -1254,8 +1262,7 @@ Um contraste importante: em `BET`, `WIN` e `LOSS` a referência é **informativa
 conferida quando resolve, mas **não bloqueia** a operação (`reference.go:47`).
 Sem essa diferença, um `WIN` cuja `BET` ainda não chegou ficaria pendente e o
 jogador não receberia por causa de um vínculo que ele não precisa. A régua está
-registrada como interpretação 1 em `docs/CONFORMIDADE_README.md` e em
-`docs/evidencias/FASE_6.md` §8; o teste é
+registrada como interpretação 1 em `docs/CONFORMIDADE.md`; o teste é
 `TestReferenciaInformativaNaoBloqueiaOProcessamento`.
 
 ## 6.6 Por que uma reversão sem saldo tem `failureCode` diferente
@@ -1336,7 +1343,7 @@ A última linha é a distinção que o README §7 chama de "distinguir entradas
 corrigíveis de resultados definitivos": no erro de entrada **nada foi gravado**, e
 a **mesma chave** pode ser reenviada depois de corrigido o pedido. Na rejeição, o
 resultado é definitivo e está no histórico
-(`erros.go:116`; `docs/evidencias/FASE_6.md` §8).
+(`erros.go:116`).
 
 Os textos vivem em `internal/app/wagering/codes.go` (os que a aplicação decide) e
 nos pacotes de domínio (os que o domínio já nomeia). **Não duplique** um código:
@@ -1373,12 +1380,11 @@ reversões do mesmo débito por tipos diferentes.
 
 Toda decisão de arquitetura é uma troca. Este capítulo registra **o que se ganhou**
 e **o que se pagou** — na ordem em que as decisões foram tomadas. A seção 7.1
-traz as decisões congeladas antes da primeira linha de código (`PLANO.md` §1,
-A1–A14);
+traz as decisões congeladas antes da primeira linha de código (A1–A14);
 as seguintes são as que apareceram durante as fases 6 a 11, cada uma com um
 "sem isso" que é a consequência concreta de remover a decisão.
 
-## 7.1 As decisões congeladas (A1–A14 do `PLANO.md`)
+## 7.1 As decisões congeladas antes da primeira linha de código (A1–A14)
 
 **A1 — Versões e dependências.** Fixar stack e versões antes de codificar evita
 refactor no meio do caminho: o `go.mod` traz `go 1.26.0` com `toolchain go1.26.5`
@@ -1447,7 +1453,7 @@ essa disciplina, o mesmo problema sairia com três grafias diferentes e nenhum
 cliente conseguiria automatizar tratamento. Os códigos planejados de overflow e de
 escala (`ErrOverflow`, `ErrScaleExceeded`) **não** foram criados: limite e escala
 são ambos `INVALID_AMOUNT`, porque dois códigos a mais só criariam ruído no
-contrato (decisão revista na Fase 1, registrada no `PLANO.md`).
+contrato (decisão revista na Fase 1).
 
 **A9 — Contrato HTTP de respostas.** `201` para operação nova, `200` para replay,
 `202` para pendência, `422` para rejeição, `400`/`403`/`409`/`503` para o que
@@ -1987,7 +1993,7 @@ alguém prometer por você.
 | --- | --- | --- |
 | o encerramento gracioso depende do prazo do orquestrador | medido: `docker stop` **sem** `--timeout` matou o processo em ~3,4 s (`exit=137`) com uma mensagem em voo, e a mensagem voltou pelo `VisibilityTimeout` (60 s) em vez de pela liberação explícita. **Nada se perde** — só demora mais | o `docker-compose.yml` define `stop_grace_period: 60s` para o `api` exatamente por isso; em Kubernetes, configure `terminationGracePeriodSeconds` compatível com `HTTP_STOP_TIMEOUT` |
 | `ChangeMessageVisibility(0)` não antecipa a entrega no LocalStack | a chamada devolve sucesso e a mensagem continua invisível até o prazo original da fila; em SQS real ela antecipa | nos testes, o `VisibilityTimeout` da fila é encurtado para 2 s em vez de empurrar a mensagem; em produção, o comportamento é o do SQS |
-| a queda entre commit e delete é **reproduzida**, não provocada por sinal | a janela dura microssegundos e o Windows não tem `SIGTERM` de host. O que se reproduz é o estado durável (transação commitada + inbox `PROCESSED` + mensagem ainda na fila), com o consumidor real e só o `Delete` embrulhado | a prova de sinal de verdade está no container Linux (`docs/evidencias/FASE_10.md` §6: `exit=0`, `sqs_visibilidade_liberada`) |
+| a queda entre commit e delete é **reproduzida**, não provocada por sinal | a janela dura microssegundos e o Windows não tem `SIGTERM` de host. O que se reproduz é o estado durável (transação commitada + inbox `PROCESSED` + mensagem ainda na fila), com o consumidor real e só o `Delete` embrulhado | a prova de sinal de verdade está no container Linux (`docs/EVIDENCIAS.md` §6: `exit=0`, `sqs_visibilidade_liberada`) |
 | o encerramento dos laços (SIGTERM) não foi provado **no Windows** | `Stop-Process` é terminação dura | a prova de sinal é do ambiente Linux/container; no Windows, não prometa "shutdown gracioso comprovado" |
 | o reaper repete indefinidamente uma linha que não consegue concluir | não há contador durável de falhas para `PENDING` sem referência, e conflito de ledger é classificado como transitório; o desfecho `FAILED` só é dado quando a carteira não existe | se aparecer uma linha `PENDING` inconsistente, ela vai girar; intervenha à mão ou implemente o contador antes de confiar no reaper |
 | o `PENDING` do reaper é **inalcançável** por caminho normal | o caso de uso grava `PENDING` e o estado definitivo no **mesmo commit**, então nenhuma linha `PENDING` é confirmada | o reaper é segurança extra (README §6.3) e só é provado por inserção direta; no dia em que existir aceite assíncrono, ele já está lá |
@@ -2013,7 +2019,7 @@ alguém prometer por você.
 | `Rehydrate` da transação tem ~20 parâmetros | espelha as colunas e evita depender de ordem de campo. Feio, mas explícito e seguro contra troca de argumentos |
 | `Kind` é `string`, então um valor inválido responde `true` a `MovesMoney` | mitigado por `Validate` rodar **antes** em todo caminho. Um tipo fechado exigiria enumeração em Go, que não existe |
 | sem foreign key de `outbox_events` para o agregado | a outbox precisa sobreviver à remoção do agregado; ela é a fila, não um detalhe dele |
-| `LOSS` com referência: o serviço confere quando ela resolve | o README permite referência opcional; a régua adotada é que referência informativa **não bloqueia** a operação (`docs/evidencias/FASE_6.md` §8) |
+| `LOSS` com referência: o serviço confere quando ela resolve | o README permite referência opcional; a régua adotada é que referência informativa **não bloqueia** a operação (`docs/EVIDENCIAS.md` §8) |
 | o dublê em memória não prova lock nem concorrência | ele tem semântica de transação (cópia do estado, troca só no fim sem erro), mas não tem `FOR UPDATE`. Lock, *lost update* e disputa entre processos são provados contra o PostgreSQL real |
 | `next_resolution_attempt_at` fica preenchido em reversão já `PROCESSED` | efeito de usar `MarkPendingReference` + `ResolveReference`, que é o único caminho que o agregado oferece para vincular a referência interna. A coluna só é lida para `PENDING_REFERENCE`, então o valor é inerte |
 | `ListLedger` faz uma consulta a mais por página | confere a existência da carteira antes de listar, para não devolver página vazia ambígua |
@@ -2037,9 +2043,8 @@ alguém prometer por você.
   há teste de carga com metodologia, throughput e p99 de produção — o §14 trata isso
   como diferencial opcional e não há meta de RPS.
 - **README da solução na raiz.** O `README.md` da raiz é o **enunciado** e não pode ser
-  editado, então a entrega vive em `docs_desafio/`: o
-  [`README.md`](README.md) desta pasta é o README da solução (decisão registrada na
-  conformidade, ⚠️ 3).
+  editado; o guia de execução da entrega é o [`docs/README.md`](../docs/README.md)
+  (mesma decisão registrada na conformidade).
 
 ## 9.4 As três coisas que eu verificaria primeiro ao assumir este código
 
@@ -2057,9 +2062,9 @@ alguém prometer por você.
 
 ---
 
-*Documento derivado de `README.md` (enunciado, fonte de verdade), `ARCHITECTURE.md`
-(§1–§17), `docs/CONFORMIDADE_README.md` (23 interpretações registradas) e
-`docs/evidencias/FASE_0.md` a `FASE_11.md`. Quando este texto e o repositório
+*Documento derivado de `README.md` (enunciado, fonte de verdade), `docs/ARCHITECTURE.md`
+(§1–§17), `docs/CONFORMIDADE.md` (23 interpretações registradas) e
+`docs/EVIDENCIAS.md`. Quando este texto e o repositório
 divergirem, vale o repositório — e o `grep` resolve em segundos.*
 
 

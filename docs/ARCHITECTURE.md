@@ -6,10 +6,12 @@ Este é o registro técnico do projeto, denso e em terceira pessoa: as decisões
 o porquê de cada uma, os 50 defeitos encontrados e corrigidos e as limitações.
 Ele está completo e atualizado até a Fase 12 (a entrega).
 
-**A entrega em si está em `docs_desafio/`**:
-  docs_desafio/README.md             como rodar, configurar, migrar e testar
-  docs_desafio/SISTEMA_EXPLICADO.md  o sistema explicado do zero (para quem mantém)
-  docs_desafio/ENTREVISTA.md         treino de entrevista (40 perguntas)
+**A documentação da entrega está em `docs/`**:
+  README.md                              como rodar, configurar, migrar e testar
+  CONFORMIDADE.md                        requisito do enunciado → onde está atendido
+  EVIDENCIAS.md                          saída real dos testes, curls e checkout limpo
+  ../docs_desafio/SISTEMA_EXPLICADO.md   o sistema explicado do zero (para quem mantém)
+  ../docs_desafio/ENTREVISTA.md          treino de entrevista (40 perguntas)
 
 Marcadores de estado usados aqui:
 
@@ -27,9 +29,9 @@ Serviço em Go que processa operações financeiras de provedores de jogos
 precisão monetária, idempotência persistente, ledger append-only, concorrência
 sem perda de atualização, entrega de eventos sem perda e recuperação de falhas.
 
-**Estado atual:** Fases 0–8 concluídas (domínio + schema + persistência + caso de
-uso + API HTTP autenticada + consumo por SQS). Os workers de publicação e de
-referências entram na Fase 9 — o prompt de abertura dela está em `PROMPT_FASE_9.md`.
+**Estado atual:** todas as fases concluídas — domínio, schema, persistência, caso de
+uso, API HTTP autenticada, consumo por SQS, workers de publicação e de referências,
+prova multi-instância e observabilidade. A entrega está em `docs/`.
 
 **Índice de estado:**
 
@@ -528,9 +530,9 @@ e **entre elas outra instância pode comitar a mesma operação**.
 Comparar a chave da linha encontrada na segunda consulta não é zelo: sem isso,
 esse instante é lido como "registrada sob outra chave" e um pedido **legítimo**
 recebe 409. Foi um teste de 12 disparos simultâneos da mesma operação que pegou —
-a linha aparecia entre a primeira e a segunda consulta (`docs/evidencias/FASE_6.md`
-§6.2). O texto do README sustenta a regra: a operação não pode ser reaplicada
-usando **outra** chave.
+a linha aparecia entre a primeira e a segunda consulta (defeito 14 da §15). O texto
+do README sustenta a regra: a operação não pode ser reaplicada usando **outra**
+chave.
 
 ### [DECISÃO] O conflito de unicidade é retentado, não é erro
 
@@ -1670,7 +1672,7 @@ introduzido de propósito, e todos foram corrigidos com teste que os trava.
 | 46 | 12 | **Duas variáveis de ambiente existiam e nunca eram lidas** | `SHUTDOWN_TIMEOUT` (no topo do `Config`) e `SQS_PROVISION_QUEUES_ON_BOOT` estavam declaradas com `env:`/default e **nenhum** código as lia: configuração que promete comportamento que não existe, e que alguém ligaria esperando efeito | campos removidos de `internal/config`; a suíte (inclusive a composição Fx) confirma que nada dependia delas |
 | 47 | 12 | **O container do compose nunca ficava `healthy`** | o healthcheck executava `/app/api -health-check`, mas o Dockerfile instala o binário em `/app/app` (`ENTRYPOINT ["/app/app"]`): o comando falhava sempre com "no such file or directory", mesmo com o serviço pronto. Nenhuma fase anterior olhou o estado do container no compose | healthcheck passou a `/app/app`; o ensaio de entrega mostra `Up (healthy)` |
 | 48 | 12 | **O SEGUNDO `docker compose up` nunca subia a API** | o job `migrate` devolve 1 quando não há nada a aplicar (contrato do golang-migrate: 0 = mudou, 1 = nada a fazer), e o `depends_on: service_completed_successfully` exige 0. No primeiro `up` as migrations aplicavam (0); em todos os seguintes o job "falhava" e a API não era criada | flag `up --noop-ok` no `cmd/migrate` (contrato preservado para uso manual) e `command: ["up","--noop-ok"]` no compose. O ensaio de entrega do checkout limpo e o segundo `up` passam |
-| 49 | 12 | **Credenciais do broker documentadas com o nome errado** | o `.env.example` e o compose traziam `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, mas a aplicação monta as credenciais estáticas de `SQSConfig` — os nomes reais são `SQS_ACCESS_KEY_ID`/`SQS_SECRET_ACCESS_KEY`. As variáveis documentadas eram inertes, e os defaults `test` escondiam o erro. O mesmo script de conferência achou três variáveis reais ausentes do exemplo (`SQS_BASE_BACKOFF`, `SQS_MAX_BACKOFF`, `SQS_SHUTDOWN_GRACE`) | `.env.example`, compose e a tabela do `docs_desafio/README.md` corrigidos; a conferência automática (61 variáveis × exemplo) fecha com 0 faltando |
+| 49 | 12 | **Credenciais do broker documentadas com o nome errado** | o `.env.example` e o compose traziam `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`, mas a aplicação monta as credenciais estáticas de `SQSConfig` — os nomes reais são `SQS_ACCESS_KEY_ID`/`SQS_SECRET_ACCESS_KEY`. As variáveis documentadas eram inertes, e os defaults `test` escondiam o erro. O mesmo script de conferência achou três variáveis reais ausentes do exemplo (`SQS_BASE_BACKOFF`, `SQS_MAX_BACKOFF`, `SQS_SHUTDOWN_GRACE`) | `.env.example`, compose e a tabela do `README.md` corrigidos; a conferência automática (61 variáveis × exemplo) fecha com 0 faltando |
 | 50 | 12 | **`REFUND` depois de `ROLLBACK` da mesma `BET` criava dinheiro** | a guarda de coerência entre `REFUND` e `ROLLBACK` existia em uma direção só: `ROLLBACK` de `BET` já estornada era recusado, mas `REFUND` de `BET` já desfeita por `ROLLBACK` era **aceito**. `BET 40 → ROLLBACK 40 → REFUND 40` levava 100.00 a **140.00**, e o ledger ficava consistente com o saldo — a reconciliação não acusaria nada. Achado ao escrever o `SISTEMA_EXPLICADO.md` (o documento expôs a assimetria), confirmado contra o container | `jaRevertida` passou a consultar o outro tipo nos DOIS sentidos; provado por `TestREFUNDDeBETJaDesfeitaPorROLLBACKEhRejeitado` (unidade) e `...NoBanco` (integração, saldo 100.00 e dois lançamentos) |
 
 ---
@@ -1686,13 +1688,13 @@ que funciona não ajuda quem vai manter.
 | `Kind` é `string`, então um valor inválido responde `true` a `MovesMoney` | Mitigado por `Validate` rodar antes em todo caminho. Um tipo fechado exigiria enumeração em Go, que não existe |
 | Sem foreign key de `outbox_events` para o agregado | A outbox precisa sobreviver à remoção do agregado; ela é a fila, não um detalhe dele |
 | `testcontainers-go` foi baixado e **não é usado** | Resolvido na Fase 11 com `go mod tidy` — os testes apontam para o Postgres do compose (`TEST_DATABASE_URL`), e a dependência saiu junto com a árvore dela |
-| `LOSS` com referência: o serviço confere quando ela resolve | O README permite referência opcional. A régua adotada está registrada em `docs/evidencias/FASE_6.md` §8: referência informativa não bloqueia a operação |
+| `LOSS` com referência: o serviço confere quando ela resolve | O README permite referência opcional. A régua adotada está registrada em [`CONFORMIDADE.md`](CONFORMIDADE.md) (interpretações): referência informativa não bloqueia a operação |
 | O dublê em memória não prova lock nem concorrência | Ele tem semântica de transação (cópia do estado, troca só no fim sem erro), mas não tem `FOR UPDATE`. Lock, lost update e disputa entre processos são provados contra o PostgreSQL real |
 | `next_resolution_attempt_at` fica preenchido em reversão já `PROCESSED` | Efeito de usar `MarkPendingReference` + `ResolveReference`, que é o único caminho que o agregado oferece para vincular a referência interna. A coluna só é lida para linhas `PENDING_REFERENCE`, então o valor é inerte |
 | `ListLedger` faz uma consulta a mais por página | Confere a existência da carteira antes de listar (para não devolver página vazia ambígua). É uma leitura a mais dentro da mesma transação de leitura |
 | `Reconcile` não emite métrica nem log de divergência | **Resolvido na Fase 7 na borda**: o handler emite `wager_reconciliation_divergences_total` e o log `reconciliacao_divergente`. O caso de uso continua sem conhecer Prometheus (de propósito) |
 | O `PENDING` do reaper é inalcançável por caminho normal | O caso de uso grava `PENDING` e o estado definitivo no **mesmo commit**, então nenhuma linha `PENDING` é confirmada (interpretação 6 da conformidade). O reaper é a segurança extra do README §6.3 e é provado por inserção direta; ele existe para o dia em que houver aceite assíncrono |
-| O reaper **repete indefinidamente** uma linha que não consegue concluir | Não há contador durável de falhas para `PENDING` sem referência, e o conflito de ledger é classificado como transitório; o desfecho `FAILED` só é dado quando a carteira não existe. Encontrado no binário real, com uma linha inconsistente de teste manual antigo (ver `FASE_9.md` §6). Um contador de tentativas do reaper é trabalho da Fase 10/11 |
+| O reaper **repete indefinidamente** uma linha que não consegue concluir | Não há contador durável de falhas para `PENDING` sem referência, e o conflito de ledger é classificado como transitório; o desfecho `FAILED` só é dado quando a carteira não existe. Encontrado no binário real, com uma linha inconsistente de teste manual antigo. Um contador de tentativas do reaper continua trabalho futuro |
 | Ordem por carteira depende do lote | Com mais eventos pendentes da MESMA carteira do que `OUTBOX_BATCH_SIZE` numa rodada, dois publishers podem dividir a carteira e a ordem de ENVIO fica sujeita ao escalonamento. Na prática (batch 50) é preciso uma rajada de 50+ eventos da mesma carteira. O consumidor pode ordenar por `walletVersion` |
 | Publicação sem `SendMessageBatch` | Cada evento é um `SendMessage`. O lote existe no claim, não no envio: manter o `MarkPublished` por evento é o que torna a recuperação observável e o lease preciso |
 | O encerramento dos laços (SIGTERM) não foi provado no Windows | `Stop-Process` é terminação dura. A prova de sinal é do ambiente Linux/container (pendência P8, herdada da Fase 7) |
@@ -1770,17 +1772,18 @@ inteira na Fase 11 (integração: 147,9 s e 146,8 s). Cobertura do domínio: `mo
 
 **Migrations:** cinco (`000001_init`, `000002_opening_sem_jogo_e_rodada`,
 `000003_ordem_da_outbox`, `000004_inbox_attempts`,
-`000005_correlation_id`). O binário `bin/migrate.exe` carrega as migrations
-**embutidas** (`go:embed`): depois de criar uma migration nova, é preciso
-**rebuidá-lo** (`go build -o bin/migrate.exe ./cmd/migrate`) — um binário velho
-responde "schema já está atualizado" e não aplica nada.
+`000005_correlation_id`). As migrations são **embutidas** no binário (`go:embed`):
+depois de criar ou alterar uma, é preciso **reconstruir** quem as carrega — com
+`go run ./cmd/migrate` o binário é sempre o do código atual; para o job do Compose,
+`docker compose build migrate`.
 
 Os dois pacotes de integração usam o MESMO banco de teste e truncam tabelas.
 Como `go test ./...` roda pacotes em processos paralelos, cada `TestMain` toma um
 lock consultivo do PostgreSQL (`pg_advisory_lock`) e espera a vez — **não é
 preciso `-p 1`**.
 
-**Evidências por fase:** `docs/evidencias/FASE_1.md` a `FASE_12.md`.
+**Evidências:** [`EVIDENCIAS.md`](EVIDENCIAS.md) — saída real da suíte, dos curls e
+do checkout limpo.
 
 **Dependências de teste:** os testes de integração da borda HTTP precisam do
 **Keycloak** de pé (o token é obtido por `client_credentials`), e o de
@@ -1806,4 +1809,4 @@ primeiro. O `-timeout` sobe para **600s**.
 60s) e os cenários da Fase 10 **drenam** a fila no `t.Cleanup`, inclusive as
 mensagens em voo. Sem isso, uma mensagem recebida e não apagada reaparece no teste
 seguinte e o faz falhar por um motivo que não é dele — foi o que aconteceu na
-primeira rodada da suíte inteira (ver `FASE_10.md` §5.3).
+primeira rodada da suíte inteira (ver [`EVIDENCIAS.md`](EVIDENCIAS.md) §5).

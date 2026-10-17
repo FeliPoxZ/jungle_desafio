@@ -42,7 +42,7 @@
 | **Publisher da outbox + workers** | ✅ **Fase 9** | `internal/worker` (publicador, referências, reaper, runner) |
 | **Concorrência e recuperação com 3 processos** | ✅ **Fase 10** | `test/integration` (T1–T8 + conferência final + latência) e a prova de SIGTERM no container |
 | Métricas de negócio + dashboard/alerta | ✅ **Fase 11** | **12 de 12 emitidas E provadas** em `/metrics`; dashboard e 7 alertas em `deploy/observability/` |
-| README da solução + `.env.example` | ✅ **Fase 12** | [`docs_desafio/README.md`](../docs_desafio/README.md) (decisão da ⚠️ 3) + `.env.example` conferido |
+| README da solução + `.env.example` | ✅ **Fase 12** | [`README.md`](README.md) (decisão da ⚠️ 3) + `.env.example` conferido |
 
 ### Os cinco pontos de atenção que valem mais que o resto
 
@@ -63,7 +63,7 @@
    pré-requisitos, variáveis, filas, migrations, execução, exemplos e testes no
    "README da solução"; o `README.md` da raiz **é o enunciado** e não pode ser
    editado. A decisão, tomada com o usuário, foi uma pasta de entrega
-   [`docs_desafio/`](../docs_desafio/README.md) com o README da solução e os dois
+   [`docs/`](README.md) com o README da solução e os dois
    documentos finais.
 4. **✅ "pelo menos três processos independentes" (README §8 e §13.4) e
    "carteiras distintas simultaneamente" (§13.3) têm prova desde a Fase 10:**
@@ -138,7 +138,7 @@ com a conferência final saldo × ledger.
 
 | # | Garantia | Estado |
 | --- | --- | --- |
-| 1 | Dinheiro nunca em `float32`/`float64` | ✅ `int64` em unidades mínimas, `Money` sem aritmética de ponto flutuante, parsing por dígitos, JSON como **string** decimal. Há teste de estilo em `money` que recusa `float`, `math` e `strconv.ParseFloat`. **Nuance:** `float64` aparece em `internal/observability` (duração de log e buckets do Prometheus) — não é caminho monetário. O `PLANO.md` E3 dizia "grep vazio em `internal/`", e o certo é "vazio nos caminhos monetários" |
+| 1 | Dinheiro nunca em `float32`/`float64` | ✅ `int64` em unidades mínimas, `Money` sem aritmética de ponto flutuante, parsing por dígitos, JSON como **string** decimal. Há teste de estilo em `money` que recusa `float`, `math` e `strconv.ParseFloat`. **Nuance:** `float64` aparece em `internal/observability` (duração de log e buckets do Prometheus) — não é caminho monetário. O `ARCHITECTURE.md` E3 dizia "grep vazio em `internal/`", e o certo é "vazio nos caminhos monetários" |
 | 2 | Idempotência persistente, sobrevive a reinício | ✅ índices únicos no banco + decisão de replay no caso de uso; provado com um `Service` e um Unit of Work **novos** devolvendo o resultado original |
 | 3 | Invariantes financeiras no banco, independentes de lock e da dedup do SQS | ✅ 29 CHECK, 4 FK, 2 UNIQUE, 3 índices únicos parciais, 5 triggers; 32 operações inválidas testadas e recusadas |
 | 4 | Evento só publicado depois do commit | ✅ os eventos entram na outbox **na mesma transação** e o publisher publica **fora** dela, sempre antes de marcar (Fase 9); provado no caminho de saída (T6: 12 eventos → 12 mensagens) e na queda entre commit e publicação |
@@ -182,9 +182,9 @@ assume no dia em que existir aceite assíncrono.
 | Concordância em provedor, jogador, carteira, moeda e rodada; valor igual | ✅ `REFERENCE_MISMATCH` |
 | Zero aceito no saldo inicial e em `LOSS`; os outros exigem valor > 0 | ✅ validado no domínio e por CHECK no banco |
 | Sem duas reversões bem-sucedidas do mesmo tipo | ✅ índice único parcial + leitura prévia (`ALREADY_REVERSED`) |
-| Documentar `REFUND` + `ROLLBACK` sobre a mesma aposta | ✅ `ARCHITECTURE.md` §9 e `docs/evidencias/FASE_6.md` §7: a PRIMEIRA reversão do débito vale; a segunda, de qualquer tipo, é recusada com `ALREADY_REVERSED` (guarda simétrica desde o defeito 50); desfazer o estorno é `ROLLBACK` do `REFUND` |, que debita |
+| Documentar `REFUND` + `ROLLBACK` sobre a mesma aposta | ✅ `ARCHITECTURE.md` §9 e `EVIDENCIAS.md` §5: a PRIMEIRA reversão do débito vale; a segunda, de qualquer tipo, é recusada com `ALREADY_REVERSED` (guarda simétrica desde o defeito 50); desfazer o estorno é `ROLLBACK` do `REFUND` |, que debita |
 | Reversão que exigiria mais saldo: código DIFERENTE do de aposta sem saldo | ✅ `ROLLBACK_INSUFFICIENT_FUNDS` × `INSUFFICIENT_FUNDS`, separados pelo tipo |
-| `PENDING_REFERENCE` persistida, worker com backoff exponencial **após reinício**, TTL/máx. de tentativas, e comportamento quando a referência existe mas está pendente ou terminou mal | 🟡 persistência, backoff inicial e os dois comportamentos ✅; o **worker** com backoff/TTL é a Fase 9 (`PLANO.md` A7 define 20 tentativas/24h) |
+| `PENDING_REFERENCE` persistida, worker com backoff exponencial **após reinício**, TTL/máx. de tentativas, e comportamento quando a referência existe mas está pendente ou terminou mal | 🟡 persistência, backoff inicial e os dois comportamentos ✅; o **worker** com backoff/TTL é a Fase 9 (`ARCHITECTURE.md` A7 define 20 tentativas/24h) |
 | Toda rejeição com `failureCode` estável e documentado | ✅ 17 códigos na tabela A8 + os dois novos (`WALLET_PLAYER_MISMATCH`, `TRANSACTION_NOT_FOUND`), distinguindo corrigível de definitivo |
 
 ## 8. Concorrência — ✅ Fase 10
@@ -259,7 +259,7 @@ assume no dia em que existir aceite assíncrono.
 | --- | --- |
 | **Testes unitários** (parsing e operações de `Money`, escala, limites, entradas inválidas, moedas, invariantes da carteira, transições, regras dos cinco tipos, conflito de payload, política de zero, abertura interna com metadados e eventos) | ✅ 574 casos no domínio + 56 no caso de uso + **51 em `internal/infra/auth`** (+2 da Fase 10) + **67 em `internal/httpapi`** + **45 da Fase 8** (26 inbox + 19 consumer) + **38 da Fase 9** (23 em `internal/worker`: publicador 10, referências/reaper 7, runner 6; 10 de `Retomar` em `internal/app/wagering`; 4 de config; 1 de composição do Fx) |
 | **Testes de integração** com PostgreSQL, IdP e LocalStack em containers reais | ✅ PostgreSQL ✅ real (migrations, constraints, imutabilidade do ledger, atomicidade, outbox concorrente, retry, lease — 29 casos) + **IdP ✅ real** (30 casos na borda HTTP com token por `client_credentials` + 2 do binário real) + LocalStack ✅ real (9 funções de consumo, **8 funções de publicação e recuperação**) + **11 funções da Fase 10** com três processos independentes + **2 funções** de `application_name` |
-| Verificação da composição Fx, início, encerramento e liberação de recursos dos workers | ✅ `TestValidateAppComposition` (grafo inteiro, com e **sem** os workers ligados), `TestBuildAppFailsWithInvalidConfig`, o teste do binário real (encerramento e liberação do pool), **6 casos do runner** (Fase 9) e a **prova de SIGTERM no container Linux** (`docs/evidencias/FASE_10.md` §6): `exit=0` em 8,09 s, `sqs_visibilidade_liberada`, pool fechado por último |
+| Verificação da composição Fx, início, encerramento e liberação de recursos dos workers | ✅ `TestValidateAppComposition` (grafo inteiro, com e **sem** os workers ligados), `TestBuildAppFailsWithInvalidConfig`, o teste do binário real (encerramento e liberação do pool), **6 casos do runner** (Fase 9) e a **prova de SIGTERM no container Linux** (`EVIDENCIAS.md` §6): `exit=0` em 8,09 s, `sqs_visibilidade_liberada`, pool fechado por último |
 | **Não substituir toda a infraestrutura por mocks** | ✅ os testes de integração usam PostgreSQL, Keycloak e **LocalStack** reais; os dublês existem só nos unitários, e registram chamadas para as asserções incluírem a **ausência** delas. A única substituição na Fase 10 é o **passo `Delete` do consumidor**, embrulhado para reproduzir a queda entre commit e delete — o banco, o domínio e o consumidor são os de produção |
 | Autenticação/autorização | ✅ **Fase 7** (11 formas de token inválido, isolamento por corpo/path/leitura/replay, contagem de tabelas antes/depois) e **Fase 10**: o container do compose passa a autenticar de verdade (defeito 41 — `OIDC_JWKS_URL`) |
 | Concorrência e recuperação (8 cenários) | ✅ **todos com prova**, e os de concorrência com **três processos independentes**: 1 mesma aposta 50× (`TestT1MesmaAposta50VezesEntreTresInstancias` e `TestT1MesmaOperacao50VezesPelaFila`); 2 disputa 80+80 (`TestT2DuasApostasDe80Sobre100EmInstanciasDiferentes`); 3 carteiras distintas (`TestT3CarteirasDistintasEmParaleloSemLockGlobal`); 4 três instâncias (a rodada consolidada de T1–T3, T5–T8 e da conferência); 5 interrupção entre commit e delete (`TestT5QuedaEntreCommitEDeleteReentregaReconhecida` **e** o SIGTERM no container); 6 publishers disputando a outbox (Fase 9 + `TestT6TresPublishersReaisDisputamAMesmaOutbox`); 7 reversão antes da referência (Fase 9, as duas metades + `TestT7REFUNDAntesDaReferenciaResolvidoPorOutraInstancia`); 8 reinício (`TestT8ReinicioPreservaIdempotenciaPendenciaEConsistencia`, com `PENDING_REFERENCE` resolvida por instância nova) |
@@ -289,10 +289,10 @@ reais de observabilidade foram corrigidos (42 e 43) e dois de documentação/có
 morto (44 e 45).
 
 **Documentação (5 pontos):** ✅ **fechada na Fase 12** — o
-[`docs_desafio/README.md`](../docs_desafio/README.md) é o README da solução (⚠️ 3
+[`README.md`](README.md) é o README da solução (⚠️ 3
 decidida com o usuário), com todo comando **executado** e a saída na evidência; os
-dois documentos finais estão em [`docs_desafio/SISTEMA_EXPLICADO.md`](../docs_desafio/SISTEMA_EXPLICADO.md)
-e [`docs_desafio/ENTREVISTA.md`](../docs_desafio/ENTREVISTA.md); o `ARCHITECTURE.md`
+dois documentos finais estão em [`../docs_desafio/SISTEMA_EXPLICADO.md`](../docs_desafio/SISTEMA_EXPLICADO.md)
+e [`../docs_desafio/ENTREVISTA.md`](../docs_desafio/ENTREVISTA.md); o `ARCHITECTURE.md`
 está completo (§12 com a tabela métrica → teste, §15 com os 50 defeitos, §16 com as
 limitações, §17 com os números finais).
 
@@ -300,8 +300,8 @@ limitações, §17 com os números finais).
 
 | Exigência | Estado |
 | --- | --- |
-| Código, migrations, Docker Compose e instruções para reproduzir de um checkout limpo | ✅ **provado**: `git clone` para diretório temporário + `docker compose up -d --build` = 52 s, `api` `healthy`, `/health/ready` 200 com as quatro dependências e carteira criada em banco novo. Saída em `docs/evidencias/FASE_12.md` |
-| `README.md` da solução com pré-requisitos, variáveis, filas, migrations (aplicar/reverter), execução, exemplos e testes | ✅ [`docs_desafio/README.md`](../docs_desafio/README.md) — todas as 61 variáveis conferidas contra `internal/config`, migrations aplicadas **e revertidas** no ensaio, curls autenticados com saída real, comandos de teste com build tag e dependências. O `README.md` da raiz continua sendo o enunciado, intocado |
+| Código, migrations, Docker Compose e instruções para reproduzir de um checkout limpo | ✅ **provado**: `git clone` para diretório temporário + `docker compose up -d --build` = 52 s, `api` `healthy`, `/health/ready` 200 com as quatro dependências e carteira criada em banco novo. Saída em `EVIDENCIAS.md` |
+| `README.md` da solução com pré-requisitos, variáveis, filas, migrations (aplicar/reverter), execução, exemplos e testes | ✅ [`README.md`](README.md) — todas as 61 variáveis conferidas contra `internal/config`, migrations aplicadas **e revertidas** no ensaio, curls autenticados com saída real, comandos de teste com build tag e dependências. O `README.md` da raiz continua sendo o enunciado, intocado |
 | `.env.example` sem segredos reais | ✅ completo e **conferido por script** contra `internal/config`: as 61 variáveis da aplicação estão lá (as 5 restantes são `POSTGRES_*`/`KEYCLOAK_*`, do compose) e nenhuma credencial real |
 | Provisionamento automático do IdP, identidades de teste e instruções dos fluxos autenticados | ✅ `deploy/keycloak/realm.json` importado no boot (realm, 3 clients `client_credentials`, roles, mapper de audience); token e curls autenticados documentados e **executados** (§7 do README da solução) |
 | `ARCHITECTURE.md` com decisões e limitações | ✅ atualizado até a **Fase 12** (§12 métrica → teste e log por caminho, §13 recuperação, §15 defeitos 42–50, §16 limitações, §17 números e comandos) |
@@ -313,9 +313,8 @@ limitações, §17 com os números finais).
 
 ## Divergências e interpretações registradas (para o avaliador)
 
-Nenhuma contraria o enunciado; todas são escolhas onde ele deixou margem. Estão
-detalhadas em `docs/evidencias/FASE_6.md` §8, `docs/evidencias/FASE_7.md` §8 e no
-`ARCHITECTURE.md` §9, §10 e §11 e `docs/evidencias/FASE_8.md` §8:
+Nenhuma contraria o enunciado; todas são escolhas onde ele deixou margem. O detalhe
+técnico de cada uma está no `ARCHITECTURE.md` §9, §10 e §11: 
 
 1. Referência em `BET`/`WIN`/`LOSS` é **informativa** e não bloqueia a operação.
 2. `WALLET_PLAYER_MISMATCH` e `TRANSACTION_NOT_FOUND` são códigos **novos**, além da
@@ -374,9 +373,9 @@ detalhadas em `docs/evidencias/FASE_6.md` §8, `docs/evidencias/FASE_7.md` §8 e
     processo do binário tem PID, pool e memória próprios — provado em
     `pg_stat_activity` por `application_name`. O container entra na prova de
     **SIGTERM**, que é o que o processo local no Windows não consegue provar. O
-    `PLANO.md` falava em "3 containers `api` no compose"; a redação foi ajustada
+    `ARCHITECTURE.md` falava em "3 containers `api` no compose"; a redação foi ajustada
     (o compose **não** ganhou `api-2`/`api-3`).
-21. **O T4 do `PLANO.md` não é um teste separado** (Fase 10): é a rodada
+21. **O T4 do `ARCHITECTURE.md` não é um teste separado** (Fase 10): é a rodada
     consolidada — T1–T3, T5–T8 e a conferência final rodando com três processos
     na mesma suíte.
 22. **O T6 não assere a ORDEM por carteira quando `OUTBOX_BATCH_SIZE=1`** (Fase
@@ -402,10 +401,10 @@ detalhadas em `docs/evidencias/FASE_6.md` §8, `docs/evidencias/FASE_7.md` §8 e
 - **Contador durável de falhas do reaper**: uma linha `PENDING` inconsistente é
   repetida indefinidamente em vez de virar `FAILED` (`ARCHITECTURE.md` §16).
 - **Prova de SIGTERM no Windows** (P8): não existe sinal de término de host; a
-  prova é do container Linux (`docs/evidencias/FASE_10.md` §6).
+  prova é do container Linux (`EVIDENCIAS.md` §3).
 - **Teste de carga com metodologia e throughput**: há medição de latência sob
   concorrência (Fase 10), mas não teste de carga — diferencial opcional, sem meta de
   RPS no enunciado.
 - **`README.md` da solução na raiz**: o arquivo da raiz é o enunciado e não pode ser
-  editado; a entrega vive em [`docs_desafio/`](../docs_desafio/README.md) (a ⚠️ 3,
+  editado; a entrega vive em [`docs/`](README.md) (a ⚠️ 3,
   decidida com o usuário na Fase 12), junto com os dois documentos finais.

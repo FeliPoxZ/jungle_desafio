@@ -1,10 +1,16 @@
 # ENTREVISTA.md — treino de defesa do desafio
 
+> **Mapa do repositório.** Este documento e o [`SISTEMA_EXPLICADO.md`](SISTEMA_EXPLICADO.md)
+> ficam em `docs_desafio/` e são material de estudo. A documentação que o avaliador
+> lê está em `docs/`: [`README.md`](../docs/README.md) (como rodar),
+> [`ARCHITECTURE.md`](../docs/ARCHITECTURE.md) (decisões),
+> [`CONFORMIDADE.md`](../docs/CONFORMIDADE.md) e [`EVIDENCIAS.md`](../docs/EVIDENCIAS.md).
+>
 > Documento de treino para a entrevista do desafio **já concluído**. Cada resposta tem
 > três partes: a fala de 30–60 s, o detalhe que só aparece se insistirem, e o número ou
 > **nome de teste que existe no repositório**.
 >
-> **Regra deste arquivo:** nada aqui é decorado. Todo número saiu de `docs/evidencias/`
+> **Regra deste arquivo:** nada aqui é decorado. Todo número saiu de `docs/EVIDENCIAS.md`
 > ou do próprio código, e todo nome de teste existe no repositório (`func Test...`). Quando
 > o enunciado admitia duas leituras, está dito qual foi adotada e por quê. Caminhos são
 > relativos à raiz do repositório.
@@ -398,7 +404,7 @@ enunciado admite duas interpretações: quem atribui esse valor é o broker, no
 `SendMessage`, e o produtor não tem como conhecê-lo antes de enviar. Exigir o campo
 obrigaria a inventar um segundo identificador para a mesma mensagem — e aí eles podem
 divergir. A leitura adotada está registrada como interpretação 12 em
-`docs/CONFORMIDADE_README.md`.
+`docs/CONFORMIDADE.md`.
 
 **Se insistirem:** a régua final ficou: o campo do envelope, quando presente, **precisa
 coincidir** com o da entrega; divergência é mensagem inválida (permanente → DLQ). E isso
@@ -663,7 +669,7 @@ vazia. O que a camada automatizada não prova é a **latência** da recuperaçã
 caminho sem prazo é o `VisibilityTimeout` inteiro (60 s).
 
 **Número/teste que sustenta:** `TestT5QuedaEntreCommitEDeleteReentregaReconhecida`
-(`attempts` 1→2 em 2,013 s) e a prova de `SIGTERM` no container (`docs/evidencias/FASE_10.md`
+(`attempts` 1→2 em 2,013 s) e a prova de `SIGTERM` no container (`docs/EVIDENCIAS.md`
 §6).
 
 ### "A ordem por carteira vale com três publishers?"
@@ -731,7 +737,7 @@ mesmo commit (interpretação 6); o reaper é a segurança extra para o dia em q
 assíncrono.
 
 **Número/teste que sustenta:** `TestReaperRetomaPendingAntigo` (prova o mecanismo por
-inserção direta) e o achado do §6 de `docs/evidencias/FASE_9.md`.
+inserção direta) e o defeito correspondente em `docs/ARCHITECTURE.md` §15.
 
 ### "Se eu matar com SIGKILL, perde dinheiro?"
 
@@ -748,7 +754,7 @@ serviço `api`: sem prazo, o encerramento gracioso é abortado e o sistema demor
 voltar ao normal — mas continua correto.
 
 **Número/teste que sustenta:** a medição de `exit=137` em ~3,4 s e saldo 100000/versão 1
-(`docs/evidencias/FASE_10.md` §6.4) e, para o lado do publisher,
+(`docs/EVIDENCIAS.md` §3) e, para o lado do publisher,
 `TestQuedaEntreCommitEPublicacaoOutraInstanciaAssume`.
 
 ### "Por que o readiness não é métrica?"
@@ -786,7 +792,7 @@ instância e sem publicação antes do commit. A lista completa, com o motivo de
 está no bloco final.
 
 **Número/teste que sustenta:** a §16 do `ARCHITECTURE.md` e a seção "O que ainda NÃO existe"
-de `docs/CONFORMIDADE_README.md`.
+de `docs/CONFORMIDADE.md`.
 
 ---
 
@@ -823,7 +829,7 @@ de `docs/CONFORMIDADE_README.md`.
 
 ## O que eu não entreguei e por quê
 
-Ligado à §16 do `ARCHITECTURE.md` e à seção final de `docs/CONFORMIDADE_README.md`:
+Ligado à §16 do `ARCHITECTURE.md` e à seção final de `docs/CONFORMIDADE.md`:
 
 - **Tracing com OpenTelemetry.** Diferencial opcional do §14. A correlação é feita por
   `correlationId` em log estruturado (`X-Correlation-Id` no HTTP, `MessageId` no SQS, coluna
@@ -845,21 +851,19 @@ Ligado à §16 do `ARCHITECTURE.md` e à seção final de `docs/CONFORMIDADE_REA
   `SIGTERM` é do container Linux (§16).
 - **Envio em lote (`SendMessageBatch`) e resolução da URL da fila por `GetQueueUrl`.** Cada
   evento é um `SendMessage` (é o que mantém o `MarkPublished` por evento e o lease preciso),
-  e a URL da fila é derivada do `SQS_ENDPOINT` — sem ele, o que sobra é o nome (§16 e §9 de
-  `docs/evidencias/FASE_9.md`).
+  e a URL da fila é derivada do `SQS_ENDPOINT` — sem ele, o que sobra é o nome (§16).
 - **Dashboard exercitado em CI.** A definição está versionada e validada (`promtool` e
   inspeção do JSON), mas não há Grafana no compose por decisão registrada: o compose é o
   artefato que precisa subir limpo, e o painel sobe com dois `docker run` documentados (§16).
-- **README da solução.** A decisão de **onde** ele vive foi tomada com o usuário: esta
-  pasta, `docs_desafio/` (o enunciado ocupa o nome `README.md` na raiz e não pode ser
-  editado). O arquivo é o [`README.md`](README.md) desta pasta.
+- **README da solução.** Fica em `docs/README.md` (o enunciado ocupa o nome
+  `README.md` na raiz e não pode ser editado); é o guia de execução da entrega.
 
 ---
 
 ## Anexo — as 23 interpretações adotadas (decore o "por quê", não a lista)
 
 O enunciado deixou margem em 23 pontos. Nenhuma escolha contraria o `README.md`; todas
-estão registradas em `docs/CONFORMIDADE_README.md`. Se o entrevistador perguntar "isso
+estão registradas em `docs/CONFORMIDADE.md`. Se o entrevistador perguntar "isso
 estava no enunciado?", a resposta honesta é: **o enunciado permitia, e eu escolhi assim
 por este motivo**.
 
@@ -885,7 +889,7 @@ por este motivo**.
 | 18 | `FAILED` não emite `WagerTransactionRejected` | O §11 define o evento como rejeição de **negócio**; dado inconsistente não é decisão de negócio |
 | 19 | As tentativas de referência incluem a do intake | A operação que entra em `PENDING_REFERENCE` grava `attempt = 1`; o default (20) e o TTL por idade decidem na prática |
 | 20 | "Três processos" são três processos do binário | O §8 pede conexões e memória próprias — PID, pool e memória próprios; o container entra na prova de SIGTERM |
-| 21 | O T4 do `PLANO.md` não é um teste separado | É a rodada consolidada (T1–T3, T5–T8 e a conferência com três processos) |
+| 21 | O T4 não é um teste separado | É a rodada consolidada (T1–T3, T5–T8 e a conferência com três processos) |
 | 22 | O T6 não assere a ordem com `OUTBOX_BATCH_SIZE=1` | Nesse arranjo dois publishers podem trocar a ordem; a invariante é a partição (12→12, sem perda) |
 | 23 | O endereço do JWKS é configurável | O Keycloak anuncia o nome público, inalcançável de dentro do container; `OIDC_JWKS_URL` muda **onde** busca, não afrouxa a validação |
 
