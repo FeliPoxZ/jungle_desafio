@@ -123,8 +123,8 @@ defaults são os valores de desenvolvimento abaixo.
 | --- | --- | --- |
 | `SQS_ENDPOINT` | `http://localhost:4566` | endpoint do broker |
 | `SQS_REGION` | `us-east-1` | região |
-| `AWS_ACCESS_KEY_ID` | `test` | credencial local |
-| `AWS_SECRET_ACCESS_KEY` | `test` | credencial local |
+| `SQS_ACCESS_KEY_ID` | `test` | credencial local (os nomes do SDK, `AWS_ACCESS_KEY_ID`, **não** são lidos pela aplicação) |
+| `SQS_SECRET_ACCESS_KEY` | `test` | credencial local |
 | `SQS_TRANSACTIONS_QUEUE` | `wager-transactions.fifo` | fila de entrada (precisa terminar em `.fifo`) |
 | `SQS_TRANSACTIONS_DLQ` | `wager-transactions-dlq.fifo` | DLQ da entrada |
 | `SQS_EVENTS_QUEUE` | `wallet-events.fifo` | destino dos eventos publicados |

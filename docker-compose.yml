@@ -224,8 +224,11 @@ services:
       OIDC_TOKEN_URL: http://localhost:8080/realms/jungleg/protocol/openid-connect/token
       SQS_ENDPOINT: http://localstack:4566
       SQS_REGION: ${SQS_REGION:-us-east-1}
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-test}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-test}
+      # Credenciais do broker: a aplicação monta as estáticas a partir da própria
+      # configuração (SQSConfig), então os nomes são SQS_*; os do SDK
+      # (AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY) NÃO são lidos por ela (defeito 49).
+      SQS_ACCESS_KEY_ID: ${SQS_ACCESS_KEY_ID:-test}
+      SQS_SECRET_ACCESS_KEY: ${SQS_SECRET_ACCESS_KEY:-test}
       SQS_TRANSACTIONS_QUEUE: wager-transactions.fifo
       SQS_TRANSACTIONS_DLQ: wager-transactions-dlq.fifo
       # O retry do consumidor é o `ChangeMessageVisibility` com backoff exponencial:
