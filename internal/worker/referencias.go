@@ -162,6 +162,11 @@ func (w *ReferenceWorker) retomarUma(ctx context.Context, tx *wagerdomain.WagerT
 	// desiste (a linha volta pelo lease).
 	retomada, err := w.retomador.Retomar(context.WithoutCancel(ctx), appwagering.RetomarRequest{
 		TransactionID: tx.ID(),
+		// O que o CLAIM leu. É a guarda contra dois workers agindo sobre a mesma
+		// linha: se a tentativa ou o estado mudaram desde o claim, outro chegou
+		// primeiro e o caso de uso ignora o pedido.
+		EstadoEsperado:    tx.Status(),
+		TentativaEsperada: tx.ReferenceResolutionAttempt(),
 		Politica: appwagering.PoliticaDeReferencia{
 			MaxAttempts:   int(w.cfg.MaxAttempts),
 			PendingMaxAge: w.cfg.PendingMaxAge,
@@ -344,6 +349,10 @@ func (r *PendingReaper) retomar(ctx context.Context, tx *wagerdomain.WagerTransa
 	// espera que ainda nem começou.
 	retomada, err := r.retomador.Retomar(context.WithoutCancel(ctx), appwagering.RetomarRequest{
 		TransactionID: tx.ID(),
+		// A linha continua em PENDING com esta tentativa? Se outro reaper (ou o
+		// próprio caso de uso) já agiu, o pedido é ignorado.
+		EstadoEsperado:    tx.Status(),
+		TentativaEsperada: tx.ReferenceResolutionAttempt(),
 		Politica: appwagering.PoliticaDeReferencia{
 			MaxAttempts:   int(r.cfg.MaxAttempts),
 			PendingMaxAge: 0,

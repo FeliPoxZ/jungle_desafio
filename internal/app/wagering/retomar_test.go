@@ -11,15 +11,44 @@ import (
 )
 
 // retomar é o atalho dos testes desta suíte, com a política padrão.
+//
+// O pedido é montado como o WORKER monta: lendo o estado e a tentativa da linha
+// antes de chamar (é o que o claim do worker entrega). Um teste que passasse
+// valores "de mentira" aqui não exercitaria a guarda de concorrência de verdade.
 func retomar(t *testing.T, a *ambiente, id wagerdomain.TransactionID, pol appwagering.PoliticaDeReferencia) appwagering.Retomada {
 	t.Helper()
 
 	if pol.NextAttemptAt.IsZero() {
 		pol.NextAttemptAt = a.relogio.Now().Add(30 * time.Second)
 	}
-	retomada, err := a.servico.Retomar(context.Background(), appwagering.RetomarRequest{
+
+	pedido := appwagering.RetomarRequest{
 		TransactionID: id,
 		Politica:      pol,
+	}
+	if tx := a.transacaoPorID(id); tx != nil {
+		pedido.EstadoEsperado = tx.Status()
+		pedido.TentativaEsperada = tx.ReferenceResolutionAttempt()
+	}
+
+	retomada, err := a.servico.Retomar(context.Background(), pedido)
+	if err != nil {
+		t.Fatalf("Retomar devolveu erro: %v", err)
+	}
+	return retomada
+}
+
+// retomarComoWorker monta o pedido com estado/tentativa ANTIGOS: é o caso de um
+// worker que reivindicou a linha e, quando chegou a vez dele, outro já tinha
+// agido.
+func retomarComoWorker(t *testing.T, a *ambiente, id wagerdomain.TransactionID, estado wagerdomain.Status, tentativa int) appwagering.Retomada {
+	t.Helper()
+
+	retomada, err := a.servico.Retomar(context.Background(), appwagering.RetomarRequest{
+		TransactionID:     id,
+		EstadoEsperado:    estado,
+		TentativaEsperada: tentativa,
+		Politica:          appwagering.PoliticaDeReferencia{MaxAttempts: 20},
 	})
 	if err != nil {
 		t.Fatalf("Retomar devolveu erro: %v", err)
@@ -225,23 +254,63 @@ func TestRetomadaExpiraPelaIdadeDaPendencia(t *testing.T) {
 // Guardas de concorrência
 // ---------------------------------------------------------------------------
 
-// A janela do agendamento ainda vale: outra instância está com a linha, e esta
-// não pode nem consumir uma tentativa.
-func TestRetomadaIgnoraEnquantoAJanelaNaoVenceu(t *testing.T) {
+// transacaoPorID procura a transação no estado em memória.
+func (a *ambiente) transacaoPorID(id wagerdomain.TransactionID) *wagerdomain.WagerTransaction {
+	for _, t := range a.estado.txns {
+		if t.ID() == id {
+			return t
+		}
+	}
+	return nil
+}
+
+// Dois workers sobre a mesma linha: o segundo chega com o estado/tentativa que o
+// claim dele leu, e precisa ser IGNORADO — senão o TTL é consumido duas vezes
+// mais rápido.
+func TestRetomadaIgnoraQuandoOutroWorkerJaAgiu(t *testing.T) {
 	a := novoAmbiente()
 	_, refundID := refundPendente(t, a)
+	a.relogio.avancar(10 * time.Second)
 
-	// Sem avançar o relógio: o instante agendado no intake (agora + 5s) ainda
-	// está no futuro.
-	retomada := retomar(t, a, refundID, appwagering.PoliticaDeReferencia{MaxAttempts: 5})
+	// O primeiro worker age: reagenda (tentativa 1 -> 2).
+	primeira := retomar(t, a, refundID, appwagering.PoliticaDeReferencia{MaxAttempts: 20})
+	if primeira.Desfecho != appwagering.RetomadaPendente {
+		t.Fatalf("a primeira retomada deveria reagendar, veio %q", primeira.Desfecho)
+	}
+
+	// O segundo worker tem a visão ANTIGA da linha (estado PENDING_REFERENCE,
+	// tentativa 1), como se tivesse reivindicado antes do primeiro comitar.
+	segunda := retomarComoWorker(t, a, refundID, wagerdomain.StatusPendingReference, 1)
+
+	if segunda.Desfecho != appwagering.RetomadaIgnorada {
+		t.Fatalf("desfecho = %q, esperado ignorada (outro worker já agiu)", segunda.Desfecho)
+	}
+
+	tx := a.transacaoPorID(refundID)
+	if tx.ReferenceResolutionAttempt() != 2 {
+		t.Errorf("tentativa = %d, esperado 2: o segundo worker NÃO pode consumir outra tentativa",
+			tx.ReferenceResolutionAttempt())
+	}
+}
+
+// O estado esperado mudou (o reaper pegou um PENDING que já virou
+// PENDING_REFERENCE): ignorar.
+func TestRetomadaIgnoraQuandoOEstadoEsperadoMudou(t *testing.T) {
+	a := novoAmbiente()
+	_, refundID := refundPendente(t, a)
+	a.relogio.avancar(10 * time.Second)
+
+	// O worker"acha" que a linha está em PENDING (visão de um claim antigo).
+	retomada := retomarComoWorker(t, a, refundID, wagerdomain.StatusPending, 0)
 
 	if retomada.Desfecho != appwagering.RetomadaIgnorada {
 		t.Fatalf("desfecho = %q, esperado ignorada", retomada.Desfecho)
 	}
-
-	tx := a.transacao("provider-a", "key-refund")
-	if tx.ReferenceResolutionAttempt() != 1 {
-		t.Errorf("a tentativa NÃO podia ser consumida: veio %d, esperado 1", tx.ReferenceResolutionAttempt())
+	if tx := a.transacaoPorID(refundID); tx.Status() != wagerdomain.StatusPendingReference {
+		t.Errorf("o estado não podia mudar: veio %s", tx.Status())
+	}
+	if tx := a.transacaoPorID(refundID); tx.ReferenceResolutionAttempt() != 1 {
+		t.Errorf("a tentativa não podia mudar: veio %d", tx.ReferenceResolutionAttempt())
 	}
 	exigirEventos(t, a, wagerdomain.EventTypePendingReference)
 }

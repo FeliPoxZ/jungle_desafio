@@ -64,9 +64,34 @@ type PoliticaDeReferencia struct {
 }
 
 // RetomarRequest é o pedido de retomada de UMA transação persistida.
+//
+// # Por que o pedido carrega o estado ESPERADO
+//
+// Quem retoma é um worker que acabou de REIVINDICAR a linha. Entre o claim e o
+// lock da linha existe uma janela em que outro worker pode ter concluído a mesma
+// transação — e o caso de uso precisa saber recusar esse trabalho em dobro. A
+// forma barata de saber é comparar com o que o claim LEU:
+//
+//   - `EstadoEsperado`: se a linha não está mais nesse estado, alguém agiu;
+//   - `TentativaEsperada`: o claim não mexe em `reference_resolution_attempt`,
+//     então qualquer retomada bem-sucedida (resolver, reagendar ou rejeitar)
+//     muda esse número — e um número diferente significa "outro worker chegou
+//     primeiro".
+//
+// A comparação com a TENTATIVA, e não com `next_resolution_attempt_at`, é
+// deliberada: o claim SOBRESCREVE `next_resolution_attempt_at` com o lease, então
+// esse campo não serve para distinguir "a linha que eu peguei" de "a linha que o
+// outro pegou".
 type RetomarRequest struct {
 	TransactionID wagerdomain.TransactionID
-	Politica      PoliticaDeReferencia
+
+	// EstadoEsperado é o estado lido no claim. Vazio desliga a verificação.
+	EstadoEsperado wagerdomain.Status
+
+	// TentativaEsperada é a `reference_resolution_attempt` lida no claim.
+	TentativaEsperada int
+
+	Politica PoliticaDeReferencia
 }
 
 // Retomada é o desfecho da retomada, com o resultado da operação quando ela
@@ -94,16 +119,17 @@ type Retomada struct {
 //  1. `GetByIDForUpdate` — o lock da LINHA. Dois workers podem receber a mesma
 //     transação (o claim do reaper não tem lease, e o do worker de referências
 //     pode vencer no meio do processamento). Em `READ COMMITTED` o `FOR UPDATE`
-//     espera o lock e devolve a versão MAIS NOVA da linha: quem chega segundo vê
-//     o estado terminal que o primeiro gravou e não faz nada. Sem esta releitura,
-//     o segundo aplicaria a reversão de novo — dinheiro criado do nada;
-//  2. a janela do agendamento — `next_resolution_attempt_at` no futuro significa
-//     que outra instância reivindicou a linha (o worker empurra esse instante no
-//     claim) ou que esta tentativa já foi agendada. É o que impede o teto de
-//     tentativas de ser consumido duas vezes mais rápido.
+//     espera o lock e devolve a versão MAIS NOVA da linha. Sem esta releitura, o
+//     segundo aplicaria a reversão de novo — dinheiro criado do nada;
+//  2. o estado ESPERADO (`EstadoEsperado` + `TentativaEsperada`, lidos no claim).
+//     O lock sozinho não basta: depois de esperar, o segundo worker encontra a
+//     linha ainda em PENDING_REFERENCE (o primeiro só reagendou) e agiria de novo,
+//     consumindo uma segunda tentativa do TTL. Comparar com o que o claim leu é o
+//     que distingue "esta linha ainda é o trabalho que eu peguei" de "alguém já
+//     cuidou disto".
 //
 // O lock da carteira continua sendo a coordenação final do DINHEIRO: ele é tomado
-// depois das duas guardas e antes de qualquer leitura de saldo.
+// depois das guardas e antes de qualquer leitura de saldo.
 func (s *Service) Retomar(ctx context.Context, req RetomarRequest) (Retomada, error) {
 	if strings.TrimSpace(string(req.TransactionID)) == "" {
 		return Retomada{}, invalid(CodeInvalidRequest, "retomada exige o identificador da transação")
@@ -138,7 +164,7 @@ func (s *Service) retomar(ctx context.Context, req RetomarRequest) (Retomada, er
 		}
 
 		var e error
-		retomada, e = s.retomarTransacao(ctx, r, tx, req.Politica)
+		retomada, e = s.retomarTransacao(ctx, r, tx, req)
 		return e
 	})
 	if err != nil {
@@ -156,8 +182,10 @@ func (s *Service) retomarTransacao(
 	ctx context.Context,
 	r ports.Repos,
 	tx *wagerdomain.WagerTransaction,
-	pol PoliticaDeReferencia,
+	req RetomarRequest,
 ) (Retomada, error) {
+	pol := req.Politica
+
 	// 1. Estado terminal: outra instância concluiu. Caminho esperado da disputa.
 	if tx.Status().IsTerminal() {
 		return Retomada{
@@ -166,15 +194,22 @@ func (s *Service) retomarTransacao(
 		}, nil
 	}
 
-	now := s.clock.Now().UTC()
-
-	// 2. A janela do agendamento (o lease do claim).
-	if tx.Status() == wagerdomain.StatusPendingReference && tx.NextResolutionAttemptAt().After(now) {
+	// 2. O trabalho que eu peguei ainda é este? Ver a explicação em
+	//    `RetomarRequest`: a tentativa é o campo que o CLAIM não altera.
+	if req.EstadoEsperado != "" && tx.Status() != req.EstadoEsperado {
 		return Retomada{
 			Desfecho: RetomadaIgnorada,
 			Result:   Result{TransactionID: tx.ID(), Status: tx.Status()},
 		}, nil
 	}
+	if tx.ReferenceResolutionAttempt() != req.TentativaEsperada {
+		return Retomada{
+			Desfecho: RetomadaIgnorada,
+			Result:   Result{TransactionID: tx.ID(), Status: tx.Status()},
+		}, nil
+	}
+
+	now := s.clock.Now().UTC()
 
 	// 3. A requisição reconstruída do que está PERSISTIDO. Nada vem da memória:
 	//    o processo que aceitou a operação pode ter morrido há horas.
@@ -294,7 +329,15 @@ func (s *Service) manterPendente(
 		proximo = now.Add(baseReferenciaPendente)
 	}
 
-	if err := tx.ReagendarReferencia(tentativa, proximo, now); err != nil {
+	// A linha presa em PENDING (reaper) precisa TRANSITAR para PENDING_REFERENCE;
+	// a que já espera referência apenas REAGENDA. São operações diferentes porque
+	// uma muda de estado e a outra não — misturar as duas obrigaria a máquina de
+	// estados a aceitar um auto-laço.
+	if tx.Status() == wagerdomain.StatusPending {
+		if err := tx.MarkPendingReference(tentativa, proximo, now); err != nil {
+			return Retomada{}, err
+		}
+	} else if err := tx.ReagendarReferencia(tentativa, proximo, now); err != nil {
 		return Retomada{}, err
 	}
 	if err := r.Transactions.Save(ctx, tx); err != nil {
